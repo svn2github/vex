@@ -169,7 +169,8 @@ int main ( int argc, char** argv )
 #endif
                  False, /* do_self_check ? */
                  NULL, /* access checker */
-                 TEST_FLAGS 
+                 TEST_FLAGS,
+                 False /* do_noredir_check */
               );
 
       if (tres != VexTransOK)

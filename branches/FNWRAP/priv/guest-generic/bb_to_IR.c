@@ -82,13 +82,16 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
                  /*IN*/ DisOneInstrFn    dis_instr_fn,
                  /*IN*/ UChar*           guest_code,
                  /*IN*/ Addr64           guest_IP_bbstart,
+                 /*IN*/ Addr64           guest_IP_bbstart_noredir,
                  /*IN*/ Bool             (*chase_into_ok)(Addr64),
                  /*IN*/ Bool             host_bigendian,
                  /*IN*/ VexArchInfo*     archinfo_guest,
                  /*IN*/ IRType           guest_word_type,
                  /*IN*/ Bool             do_self_check,
+                 /*IN*/ Bool             do_noredir_check,
                  /*IN*/ Int              offB_TISTART,
-                 /*IN*/ Int              offB_TILEN )
+                 /*IN*/ Int              offB_TILEN,
+                 /*IN*/ Int              offB_NOREDIR )
 {
    Long       delta;
    Int        i, n_instrs, first_stmt_idx;
@@ -100,6 +103,8 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
    Int        selfcheck_idx = 0;
    IRBB*      irbb;
    Addr64     guest_IP_curr_instr;
+   IRConst*   guest_IP_bbstart_IRConst = NULL;
+   IRConst*   guest_IP_bbstart_noredir_IRConst = NULL;
 
    Bool (*resteerOKfn)(Addr64) = NULL;
 
@@ -130,6 +135,48 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
       so far gone. */
    delta    = 0;
    n_instrs = 0;
+
+   /* Guest addresses as IRConsts.  Used in the two self-checks
+      generated. */
+   if (do_self_check) {
+      guest_IP_bbstart_IRConst
+         = guest_word_type==Ity_I32 
+              ? IRConst_U32(toUInt(guest_IP_bbstart))
+              : IRConst_U64(guest_IP_bbstart);
+   }
+
+   if (do_noredir_check) {
+      guest_IP_bbstart_noredir_IRConst
+         = guest_word_type==Ity_I32 
+              ? IRConst_U32(toUInt(guest_IP_bbstart_noredir))
+              : IRConst_U64(guest_IP_bbstart_noredir);
+   }
+
+   /* If asked to make a noredir-check, put it before the self-check.
+      The noredir-check checks whether we should be running code at
+      this guest address at all, whereas the self-check establishes
+      whether the translation is still valid once we've decided we
+      should be here.  So the noredir check comes first. */
+   if (do_noredir_check) {
+      IRTemp  noredir_tmp = newIRTemp(irbb->tyenv, guest_word_type);
+      IRExpr* zero = guest_word_type==Ity_I32 
+                        ? IRExpr_Const(IRConst_U32(0)) 
+                        : IRExpr_Const(IRConst_U64(0));
+      IROp cmpNE = guest_word_type==Ity_I32 ? Iop_CmpNE32 : Iop_CmpNE64;
+
+      /* fetch old setting */
+      addStmtToIRBB( irbb, 
+         IRStmt_Tmp( noredir_tmp, 
+                     IRExpr_Get( offB_NOREDIR, guest_word_type)));
+      /* zero it */
+      addStmtToIRBB( irbb,
+         IRStmt_Put( offB_NOREDIR, zero ));
+      /* exit if it wasn't zero */
+      addStmtToIRBB( irbb,
+         IRStmt_Exit( IRExpr_Binop( cmpNE, IRExpr_Tmp(noredir_tmp), zero ),
+                      Ijk_NoRedir,
+                      guest_IP_bbstart_noredir_IRConst ));
+   }
 
    /* If asked to make a self-checking translation, leave a 5 spaces
       in which to put the check statements.  We'll fill them in later
@@ -298,7 +345,6 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
    if (do_self_check) {
 
       UInt     len2check, adler32;
-      IRConst* guest_IP_bbstart_IRConst;
       IRTemp   tistart_tmp, tilen_tmp;
 
       vassert(vge->n_used == 1);
@@ -307,11 +353,6 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
          len2check = 1;
 
      adler32 = genericg_compute_adler32( (HWord)guest_code, len2check );
-
-     guest_IP_bbstart_IRConst
-        = guest_word_type==Ity_I32 
-             ? IRConst_U32(toUInt(guest_IP_bbstart))
-             : IRConst_U64(guest_IP_bbstart);
 
      /* Set TISTART and TILEN.  These will describe to the despatcher
         the area of guest code to invalidate should we exit with a

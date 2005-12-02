@@ -145,6 +145,11 @@ typedef
       ULong guest_TISTART;
       ULong guest_TILEN;
 
+      /* Affects behaviour on entry to redirected translations: if
+         nonzero, will cause an immediate exit and attempt to execute
+         the non-redirected version instead.  Is almost always zero. */
+      ULong guest_NOREDIR;
+
       /* Padding to make it have an 8-aligned size */
       /* UInt   padding; */
    }

@@ -199,13 +199,18 @@ typedef
       /* Emulation warnings */
       /* 940 */ UInt guest_EMWARN;
 
-      /* For icbi: record start and length of area to invalidate */
-      /* 944 */ UInt guest_TISTART;
-      /* 948 */ UInt guest_TILEN;
-
       /* For lwarx/stwcx.: 0 == no reservation exists, non-0 == a
          reservation exists. */
-      /* 952 */ UInt guest_RESVN;
+      /* 944 */ UInt guest_RESVN;
+
+      /* For icbi: record start and length of area to invalidate */
+      /* 948 */ UInt guest_TISTART;
+      /* 952 */ UInt guest_TILEN;
+
+      /* Affects behaviour on entry to redirected translations: if
+         nonzero, will cause an immediate exit and attempt to execute
+         the non-redirected version instead.  Is almost always zero. */
+      /* 956 */ UInt guest_NOREDIR;
 
       /* Padding to make it have an 8-aligned size */
       UInt  padding;

@@ -218,8 +218,13 @@ typedef
       UInt guest_TISTART;
       UInt guest_TILEN;
 
+      /* Affects behaviour on entry to redirected translations: if
+         nonzero, will cause an immediate exit and attempt to execute
+         the non-redirected version instead.  Is almost always zero. */
+      UInt guest_NOREDIR;
+
       /* Padding to make it have an 8-aligned size */
-      /* UInt   padding; */
+      UInt padding;
    }
    VexGuestX86State;
 

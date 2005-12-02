@@ -337,7 +337,9 @@ VexTranslateResult LibVEX_Translate (
    /* IN: optionally, an access check function for guest code. */
    Bool    (*byte_accessible) ( Addr64 ),
    /* IN: debug: trace vex activity at various points */
-   Int     traceflags
+   Int     traceflags,
+   /* IN: should this translation do a check of guest_NOREDIR ? */
+   Bool    do_noredir_check
 );
 
 /* A subtlety re interaction between self-checking translations and
@@ -399,6 +401,12 @@ extern void LibVEX_ShowStats ( void );
    guest code, translations of which are to be invalidated, back to
    the despatcher.  Both pseudo-regs must have size equal to the guest
    word size.
+
+   The architecture must contain a third pseudo-register,
+   guest_NOREDIR, which is guest-word-sized.  This is tested and
+   zeroed at the start of translations of redirected blocks (under
+   LibVEX's client's control), and the block immediately exited if it
+   is set.
 */
 #endif /* ndef __LIBVEX_H */
 
