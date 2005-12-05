@@ -365,7 +365,7 @@ static ULong MASK64( UInt begin, UInt end )
    return mask;
 }
 
-static Addr64 nextInsnAddr() { return guest_CIA_curr_instr + 4; }
+static Addr64 nextInsnAddr(void) { return guest_CIA_curr_instr + 4; }
 
 
 /*------------------------------------------------------------*/
