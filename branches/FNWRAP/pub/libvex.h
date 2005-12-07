@@ -402,11 +402,12 @@ extern void LibVEX_ShowStats ( void );
    the despatcher.  Both pseudo-regs must have size equal to the guest
    word size.
 
-   The architecture must contain a third pseudo-register,
-   guest_NOREDIR, which is guest-word-sized.  This is tested and
-   zeroed at the start of translations of redirected blocks (under
-   LibVEX's client's control), and the block immediately exited if it
-   is set.
+   The architecture must contain a two more pseudo-registers,
+   guest_NRFLAG and guest_NRADDR, which are both guest-word-sized.
+   These are tested and zeroed at the start of translations of
+   redirected blocks (under LibVEX's client's control).  If _NRFLAG is
+   nonzero and _NRADDR equals the unredirected guest address of the
+   block, then _NRFLAG is zeroed, and the block immediately exited.
 */
 #endif /* ndef __LIBVEX_H */
 

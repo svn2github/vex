@@ -57,6 +57,26 @@ __attribute((regparm(2)))
 static UInt genericg_compute_adler32 ( HWord addr, HWord len );
 
 
+/* Small helpers */
+
+static Bool const_False ( Addr64 a ) { return False; }
+
+static IRExpr* mkAnd1 ( IRType ty, IRExpr* x, IRExpr* y )
+{
+   vassert(ty == Ity_I32 || ty == Ity_I64);
+   return 
+      ty == Ity_I32
+         ? IRExpr_Unop(Iop_32to1,
+                       IRExpr_Binop(Iop_And32,
+                                    IRExpr_Unop(Iop_1Uto32,x),
+                                    IRExpr_Unop(Iop_1Uto32,y)))
+         : IRExpr_Unop(Iop_64to1,
+                       IRExpr_Binop(Iop_And64,
+                                    IRExpr_Unop(Iop_1Uto64,x),
+                                    IRExpr_Unop(Iop_1Uto64,y)));
+}
+
+
 /* Disassemble a complete basic block, starting at guest_IP_start, 
    returning a new IRBB.  The disassembler may chase across basic
    block boundaries if it wishes and if chase_into_ok allows it.
@@ -76,8 +96,6 @@ static UInt genericg_compute_adler32 ( HWord addr, HWord len );
    without knowing what it is, those offsets have to passed in.
 */
 
-static Bool const_False ( Addr64 a ) { return False; }
-
 IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
                  /*IN*/ DisOneInstrFn    dis_instr_fn,
                  /*IN*/ UChar*           guest_code,
@@ -91,7 +109,8 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
                  /*IN*/ Bool             do_noredir_check,
                  /*IN*/ Int              offB_TISTART,
                  /*IN*/ Int              offB_TILEN,
-                 /*IN*/ Int              offB_NOREDIR )
+                 /*IN*/ Int              offB_NRFLAG,
+                 /*IN*/ Int              offB_NRADDR )
 {
    Long       delta;
    Int        i, n_instrs, first_stmt_idx;
@@ -158,27 +177,47 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
       whether the translation is still valid once we've decided we
       should be here.  So the noredir check comes first. */
    if (do_noredir_check) {
-      IRTemp  noredir_tmp = newIRTemp(irbb->tyenv, guest_word_type);
+      /* Create this:
+           tmp = _NRFLAG;
+           _NRFLAG = 0;
+           if (tmp != 0 && _NRADDR == guest_IP_bbstart_noredir)
+              exit, request noredir xfer to guest_IP_bbstart_noredir
+           _NRFLAG = tmp   -- restores _NRFLAG to whatever it was
+      */
+      IRTemp  tmp  = newIRTemp(irbb->tyenv, guest_word_type);
       IRExpr* zero = guest_word_type==Ity_I32 
                         ? IRExpr_Const(IRConst_U32(0)) 
                         : IRExpr_Const(IRConst_U64(0));
+      IROp cmpEQ = guest_word_type==Ity_I32 ? Iop_CmpEQ32 : Iop_CmpEQ64;
       IROp cmpNE = guest_word_type==Ity_I32 ? Iop_CmpNE32 : Iop_CmpNE64;
 
-      /* fetch old setting */
+      /* fetch old flag */
       addStmtToIRBB( irbb, 
-         IRStmt_Tmp( noredir_tmp, 
-                     IRExpr_Get( offB_NOREDIR, guest_word_type)));
-      /* zero it */
+         IRStmt_Tmp( tmp, 
+                     IRExpr_Get(offB_NRFLAG, guest_word_type)));
+      /* zero flag */
       addStmtToIRBB( irbb,
-         IRStmt_Put( offB_NOREDIR, zero ));
-      /* exit if it wasn't zero */
+         IRStmt_Put( offB_NRFLAG, zero ));
+      /* exit, maybe */
       addStmtToIRBB( irbb,
-         IRStmt_Exit( IRExpr_Binop( cmpNE, IRExpr_Tmp(noredir_tmp), zero ),
-                      Ijk_NoRedir,
-                      guest_IP_bbstart_noredir_IRConst ));
+         IRStmt_Exit( 
+            mkAnd1( guest_word_type,
+                    IRExpr_Binop( cmpNE, IRExpr_Tmp(tmp), zero ),
+                    IRExpr_Binop( 
+                       cmpEQ, 
+                       IRExpr_Get(offB_NRADDR, guest_word_type),
+                       IRExpr_Const(guest_IP_bbstart_noredir_IRConst)
+                    )
+            ),
+            Ijk_NoRedir,
+            guest_IP_bbstart_noredir_IRConst 
+      ));
+      /* if we didn't exit, now need to restore the flag */
+      addStmtToIRBB( irbb,
+         IRStmt_Put( offB_NRFLAG, IRExpr_Tmp(tmp) ));
    }
 
-   /* If asked to make a self-checking translation, leave a 5 spaces
+   /* If asked to make a self-checking translation, leave 5 spaces
       in which to put the check statements.  We'll fill them in later
       when we know the length and adler32 of the area to check. */
    if (do_self_check) {

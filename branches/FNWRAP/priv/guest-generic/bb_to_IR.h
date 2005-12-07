@@ -163,7 +163,8 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
                  /*IN*/ Bool             do_noredir_check,
                  /*IN*/ Int              offB_TISTART,
                  /*IN*/ Int              offB_TILEN,
-                 /*IN*/ Int              offB_NOREDIR );
+                 /*IN*/ Int              offB_NRFLAG,
+                 /*IN*/ Int              offB_NRADDR );
 
 
 #endif /* ndef GENERIC_BB_TO_IR_H */
