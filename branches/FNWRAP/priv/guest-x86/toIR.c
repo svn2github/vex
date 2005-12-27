@@ -7031,6 +7031,42 @@ DisResult disInstr_X86_WRK (
       }
    }
 
+   /* Spot the even-more-magical "call-noredir *%eax" sequence, and
+      treat it as a normal "call *%eax", except that the jump itself
+      is marked NoRedir. */
+   {
+      UChar* code = (UChar*)(guest_code + delta);
+      /* Spot this:
+         C1C81C                rorl $28, %eax
+         C1C804                rorl $4,  %eax
+         C1C01A                roll $26, %eax
+         C1C006                roll $6,  %eax
+         C1C80C                rorl $12, %eax
+         C1C814                rorl $20, %eax
+         FFD0                  call *%eax
+      */
+      if (code[ 0] == 0xC1 && code[ 1] == 0xC8 && code[ 2] == 0x1C &&
+          code[ 3] == 0xC1 && code[ 4] == 0xC8 && code[ 5] == 0x04 &&
+          code[ 6] == 0xC1 && code[ 7] == 0xC0 && code[ 8] == 0x1A &&
+          code[ 9] == 0xC1 && code[10] == 0xC0 && code[11] == 0x06 &&
+          code[12] == 0xC1 && code[13] == 0xC8 && code[14] == 0x0C &&
+          code[15] == 0xC1 && code[16] == 0xC8 && code[17] == 0x14 &&
+          code[18] == 0xFF && code[19] == 0xD0
+         ) {
+         DIP("call-noredir *%%eax\n");
+         delta += 20;
+         t1 = newTemp(Ity_I32);
+         assign(t1, getIReg(4,R_EAX));
+         t2 = newTemp(Ity_I32);
+         assign(t2, binop(Iop_Sub32, getIReg(4,R_ESP), mkU32(4)));
+         putIReg(4, R_ESP, mkexpr(t2));
+         storeLE( mkexpr(t2), mkU32(guest_EIP_bbstart+delta));
+         jmp_treg(Ijk_NoRedir,t1);
+         dres.whatNext = Dis_StopHere;
+         goto decode_success;
+      }
+   }
+
    /* Skip a LOCK prefix. */
    /* 2005 Jan 06: the following insns are observed to sometimes
       have a LOCK prefix:

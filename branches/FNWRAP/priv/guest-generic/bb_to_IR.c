@@ -61,37 +61,6 @@ static UInt genericg_compute_adler32 ( HWord addr, HWord len );
 
 static Bool const_False ( Addr64 a ) { return False; }
 
-static IRExpr* mkAnd1 ( IRType ty, IRExpr* x, IRExpr* y )
-{
-   vassert(ty == Ity_I32 || ty == Ity_I64);
-   return 
-      ty == Ity_I32
-         ? IRExpr_Unop(Iop_32to1,
-                       IRExpr_Binop(Iop_And32,
-                                    IRExpr_Unop(Iop_1Uto32,x),
-                                    IRExpr_Unop(Iop_1Uto32,y)))
-         : IRExpr_Unop(Iop_64to1,
-                       IRExpr_Binop(Iop_And64,
-                                    IRExpr_Unop(Iop_1Uto64,x),
-                                    IRExpr_Unop(Iop_1Uto64,y)));
-}
-
-static IRExpr* mkOr1 ( IRType ty, IRExpr* x, IRExpr* y )
-{
-   vassert(ty == Ity_I32 || ty == Ity_I64);
-   return 
-      ty == Ity_I32
-         ? IRExpr_Unop(Iop_32to1,
-                       IRExpr_Binop(Iop_Or32,
-                                    IRExpr_Unop(Iop_1Uto32,x),
-                                    IRExpr_Unop(Iop_1Uto32,y)))
-         : IRExpr_Unop(Iop_64to1,
-                       IRExpr_Binop(Iop_Or64,
-                                    IRExpr_Unop(Iop_1Uto64,x),
-                                    IRExpr_Unop(Iop_1Uto64,y)));
-}
-
-
 /* Disassemble a complete basic block, starting at guest_IP_start, 
    returning a new IRBB.  The disassembler may chase across basic
    block boundaries if it wishes and if chase_into_ok allows it.
@@ -121,10 +90,9 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
                  /*IN*/ VexArchInfo*     archinfo_guest,
                  /*IN*/ IRType           guest_word_type,
                  /*IN*/ Bool             do_self_check,
-                 /*IN*/ Bool             do_noredir_check,
+                 /*IN*/ Bool             do_set_NRADDR,
                  /*IN*/ Int              offB_TISTART,
                  /*IN*/ Int              offB_TILEN,
-                 /*IN*/ Int              offB_NRFLAG,
                  /*IN*/ Int              offB_NRADDR )
 {
    Long       delta;
@@ -179,66 +147,11 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
               : IRConst_U64(guest_IP_bbstart);
    }
 
-   if (do_noredir_check) {
+   if (do_set_NRADDR) {
       guest_IP_bbstart_noredir_IRConst
          = guest_word_type==Ity_I32 
               ? IRConst_U32(toUInt(guest_IP_bbstart_noredir))
               : IRConst_U64(guest_IP_bbstart_noredir);
-   }
-
-   /* If asked to make a noredir-check, put it before the self-check.
-      The noredir-check checks whether we should be running code at
-      this guest address at all, whereas the self-check establishes
-      whether the translation is still valid once we've decided we
-      should be here.  So the noredir check comes first. */
-   if (do_noredir_check) {
-      /* Create this:
-           tmp = _NRFLAG;
-           _NRFLAG = tmp-1;
-           if ( (tmp == 1 && _NRADDR == guest_IP_bbstart_noredir)
-                || tmp == 2)
-              exit, request noredir xfer to guest_IP_bbstart_noredir
-           _NRFLAG = tmp   -- restores _NRFLAG to whatever it was
-      */
-      IRTemp  tmp  = newIRTemp(irbb->tyenv, guest_word_type);
-      IRExpr* one = guest_word_type==Ity_I32 
-                       ? IRExpr_Const(IRConst_U32(1)) 
-                       : IRExpr_Const(IRConst_U64(1));
-      IRExpr* two = guest_word_type==Ity_I32 
-                       ? IRExpr_Const(IRConst_U32(2)) 
-                       : IRExpr_Const(IRConst_U64(2));
-      IROp cmpEQ = guest_word_type==Ity_I32 ? Iop_CmpEQ32 : Iop_CmpEQ64;
-      IROp opSUB = guest_word_type==Ity_I32 ? Iop_Sub32 : Iop_Sub64;
-
-      /* fetch old flag */
-      addStmtToIRBB( irbb, 
-         IRStmt_Tmp( tmp, 
-                     IRExpr_Get(offB_NRFLAG, guest_word_type)));
-      /* flag-- */
-      addStmtToIRBB( irbb,
-         IRStmt_Put( offB_NRFLAG, IRExpr_Binop(opSUB, IRExpr_Tmp(tmp), one) ));
-      /* exit, maybe */
-      addStmtToIRBB( irbb,
-         IRStmt_Exit(
-            mkOr1(
-               guest_word_type,
-               mkAnd1( guest_word_type,
-                       IRExpr_Binop( cmpEQ, IRExpr_Tmp(tmp), one ),
-                       IRExpr_Binop( 
-                          cmpEQ, 
-                          IRExpr_Get(offB_NRADDR, guest_word_type),
-                          IRExpr_Const(guest_IP_bbstart_noredir_IRConst)
-                       )
-               ),
-               IRExpr_Binop( cmpEQ, IRExpr_Tmp(tmp), two )
-            ),
-            Ijk_NoRedir,
-            guest_IP_bbstart_noredir_IRConst 
-      ));
-      /* if we didn't exit, now need to restore the flag */
-      addStmtToIRBB( irbb,
-         IRStmt_Put( offB_NRFLAG, IRExpr_Tmp(tmp) ));
-
    }
 
    /* If asked to make a self-checking translation, leave 5 spaces
@@ -251,6 +164,18 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
       addStmtToIRBB( irbb, IRStmt_NoOp() );
       addStmtToIRBB( irbb, IRStmt_NoOp() );
       addStmtToIRBB( irbb, IRStmt_NoOp() );
+   }
+
+   /* Set guest_NRADDR if asked to.  This records the unredirected
+      guest address of this bb, so that it can later be read (and so
+      used by a function wrapper to get to the function itself. */
+   if (do_set_NRADDR) {
+      /* set guest_NRADDR to guest_IP_bbstart_noredir */
+      addStmtToIRBB( 
+         irbb,
+         IRStmt_Put( offB_NRADDR, 
+                     IRExpr_Const(guest_IP_bbstart_noredir_IRConst))
+      );
    }
 
    /* Process instructions. */
@@ -307,7 +232,7 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
       vassert(dres.whatNext == Dis_StopHere
               || dres.whatNext == Dis_Continue
               || dres.whatNext == Dis_Resteer);
-      vassert(dres.len >= 0 && dres.len <= 18);
+      vassert(dres.len >= 0 && dres.len <= 20);
       if (dres.whatNext != Dis_Resteer)
          vassert(dres.continueAt == 0);
 

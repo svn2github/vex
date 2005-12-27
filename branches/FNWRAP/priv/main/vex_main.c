@@ -208,8 +208,8 @@ VexTranslateResult LibVEX_Translate (
    Bool    (*byte_accessible) ( Addr64 ),
    /* IN: debug: trace vex activity at various points */
    Int     traceflags,
-   /* IN: should this translation do a check of guest_NOREDIR ? */
-   Bool    do_noredir_check
+   /* IN: should this translation set guest_NRADDR? */
+   Bool    do_set_NRADDR
 )
 {
    /* This the bundle of functions we need to do the back-end stuff
@@ -237,8 +237,7 @@ VexTranslateResult LibVEX_Translate (
    HInstrArray*    vcode;
    HInstrArray*    rcode;
    Int             i, j, k, out_used, guest_sizeB;
-   Int             offB_TISTART, offB_TILEN;
-   Int             offB_NRFLAG,  offB_NRADDR;
+   Int             offB_TISTART, offB_TILEN, offB_NRADDR;
    UChar           insn_bytes[32];
    IRType          guest_word_type;
    IRType          host_word_type;
@@ -262,7 +261,6 @@ VexTranslateResult LibVEX_Translate (
    host_word_type         = Ity_INVALID;
    offB_TISTART           = 0;
    offB_TILEN             = 0;
-   offB_NRFLAG            = 0;
    offB_NRADDR            = 0;
 
    vex_traceflags = traceflags;
@@ -347,7 +345,6 @@ VexTranslateResult LibVEX_Translate (
          guest_layout     = &x86guest_layout;
          offB_TISTART     = offsetof(VexGuestX86State,guest_TISTART);
          offB_TILEN       = offsetof(VexGuestX86State,guest_TILEN);
-         offB_NRFLAG      = offsetof(VexGuestX86State,guest_NRFLAG);
          offB_NRADDR      = offsetof(VexGuestX86State,guest_NRADDR);
          vassert(archinfo_guest->subarch == VexSubArchX86_sse0
                  || archinfo_guest->subarch == VexSubArchX86_sse1
@@ -355,7 +352,6 @@ VexTranslateResult LibVEX_Translate (
          vassert(0 == sizeof(VexGuestX86State) % 8);
          vassert(sizeof( ((VexGuestX86State*)0)->guest_TISTART) == 4);
          vassert(sizeof( ((VexGuestX86State*)0)->guest_TILEN  ) == 4);
-         vassert(sizeof( ((VexGuestX86State*)0)->guest_NRFLAG ) == 4);
          vassert(sizeof( ((VexGuestX86State*)0)->guest_NRADDR ) == 4);
          break;
 
@@ -368,13 +364,11 @@ VexTranslateResult LibVEX_Translate (
          guest_layout     = &amd64guest_layout;
          offB_TISTART     = offsetof(VexGuestAMD64State,guest_TISTART);
          offB_TILEN       = offsetof(VexGuestAMD64State,guest_TILEN);
-         offB_NRFLAG      = offsetof(VexGuestAMD64State,guest_NRFLAG);
          offB_NRADDR      = offsetof(VexGuestAMD64State,guest_NRADDR);
          vassert(archinfo_guest->subarch == VexSubArch_NONE);
          vassert(0 == sizeof(VexGuestAMD64State) % 8);
          vassert(sizeof( ((VexGuestAMD64State*)0)->guest_TISTART ) == 8);
          vassert(sizeof( ((VexGuestAMD64State*)0)->guest_TILEN   ) == 8);
-         vassert(sizeof( ((VexGuestAMD64State*)0)->guest_NRFLAG  ) == 8);
          vassert(sizeof( ((VexGuestAMD64State*)0)->guest_NRADDR  ) == 8);
          break;
 
@@ -387,7 +381,6 @@ VexTranslateResult LibVEX_Translate (
          guest_layout     = &armGuest_layout;
          offB_TISTART     = 0; /* hack ... arm has bitrot */
          offB_TILEN       = 0; /* hack ... arm has bitrot */
-         offB_NRFLAG      = 0; /* hack ... arm has bitrot */
          offB_NRADDR      = 0; /* hack ... arm has bitrot */
          vassert(archinfo_guest->subarch == VexSubArchARM_v4);
          break;
@@ -401,7 +394,6 @@ VexTranslateResult LibVEX_Translate (
          guest_layout     = &ppc32Guest_layout;
          offB_TISTART     = offsetof(VexGuestPPC32State,guest_TISTART);
          offB_TILEN       = offsetof(VexGuestPPC32State,guest_TILEN);
-         offB_NRFLAG      = offsetof(VexGuestPPC32State,guest_NRFLAG);
          offB_NRADDR      = offsetof(VexGuestPPC32State,guest_NRADDR);
          vassert(archinfo_guest->subarch == VexSubArchPPC32_I
                  || archinfo_guest->subarch == VexSubArchPPC32_FI
@@ -409,7 +401,6 @@ VexTranslateResult LibVEX_Translate (
          vassert(0 == sizeof(VexGuestPPC32State) % 8);
          vassert(sizeof( ((VexGuestPPC32State*)0)->guest_TISTART ) == 4);
          vassert(sizeof( ((VexGuestPPC32State*)0)->guest_TILEN   ) == 4);
-         vassert(sizeof( ((VexGuestPPC32State*)0)->guest_NRFLAG  ) == 4);
          vassert(sizeof( ((VexGuestPPC32State*)0)->guest_NRADDR  ) == 4);
          break;
 
@@ -442,10 +433,9 @@ VexTranslateResult LibVEX_Translate (
                      archinfo_guest,
                      guest_word_type,
                      do_self_check,
-                     do_noredir_check,
+                     do_set_NRADDR,
                      offB_TISTART,
                      offB_TILEN,
-                     offB_NRFLAG,
                      offB_NRADDR );
 
    vexAllocSanityCheck();

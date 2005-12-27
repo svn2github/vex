@@ -160,10 +160,9 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
                  /*IN*/ VexArchInfo*     archinfo_guest,
                  /*IN*/ IRType           guest_word_type,
                  /*IN*/ Bool             do_self_check,
-                 /*IN*/ Bool             do_noredir_check,
+                 /*IN*/ Bool             do_set_NRADDR,
                  /*IN*/ Int              offB_TISTART,
                  /*IN*/ Int              offB_TILEN,
-                 /*IN*/ Int              offB_NRFLAG,
                  /*IN*/ Int              offB_NRADDR );
 
 

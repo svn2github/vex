@@ -145,14 +145,12 @@ typedef
       ULong guest_TISTART;
       ULong guest_TILEN;
 
-      /* Affects behaviour on entry to redirected translations: if
-         _NRFLAG ("NR", no-redirect) is nonzero and _NRADDR equals the
-         unredirected guest address for this translation, will cause
-         an immediate exit, requesting to execute the unredirected
-         version instead.  Such an exit "uses up" the setting, in that
-         _NRFLAG must be reset to zero if the exit occurs, and
-         unchanged if it doesn't. */
-      ULong guest_NRFLAG;
+      /* Used to record the unredirected guest address at the start of
+         a translation whose start has been redirected.  By reading
+         this pseudo-register shortly afterwards, the translation can
+         find out what the corresponding no-redirection address was.
+         Note, this is only set for wrap-style redirects, not for
+         replace-style ones. */
       ULong guest_NRADDR;
 
       /* Padding to make it have an 8-aligned size */

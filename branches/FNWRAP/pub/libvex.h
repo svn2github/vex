@@ -338,8 +338,8 @@ VexTranslateResult LibVEX_Translate (
    Bool    (*byte_accessible) ( Addr64 ),
    /* IN: debug: trace vex activity at various points */
    Int     traceflags,
-   /* IN: should this translation do a check of guest_NOREDIR ? */
-   Bool    do_noredir_check
+   /* IN: should this translation set guest_NRADDR? */
+   Bool    do_set_NRADDR
 );
 
 /* A subtlety re interaction between self-checking translations and
@@ -396,18 +396,19 @@ extern void LibVEX_ShowStats ( void );
 
    ALL GUEST ARCHITECTURES
    ~~~~~~~~~~~~~~~~~~~~~~~
-   The architecture must contain two pseudo-registers, guest_TISTART
+   The guest state must contain two pseudo-registers, guest_TISTART
    and guest_TILEN.  These are used to pass the address of areas of
    guest code, translations of which are to be invalidated, back to
    the despatcher.  Both pseudo-regs must have size equal to the guest
    word size.
 
-   The architecture must contain a two more pseudo-registers,
-   guest_NRFLAG and guest_NRADDR, which are both guest-word-sized.
-   These are tested and zeroed at the start of translations of
-   redirected blocks (under LibVEX's client's control).  If _NRFLAG is
-   nonzero and _NRADDR equals the unredirected guest address of the
-   block, then _NRFLAG is zeroed, and the block immediately exited.
+   The architecture must a third pseudo-register, guest_NRADDR, also
+   guest-word-sized.  This is used to record the unredirected guest
+   address at the start of a translation whose start has been
+   redirected.  By reading this pseudo-register shortly afterwards,
+   the translation can find out what the corresponding no-redirection
+   address was.  Note, this is only set for wrap-style redirects, not
+   for replace-style ones.
 */
 #endif /* ndef __LIBVEX_H */
 

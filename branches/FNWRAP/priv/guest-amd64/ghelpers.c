@@ -1931,7 +1931,6 @@ void LibVEX_GuestAMD64_initialise ( /*OUT*/VexGuestAMD64State* vex_state )
    vex_state->guest_TISTART = 0;
    vex_state->guest_TILEN   = 0;
 
-   vex_state->guest_NRFLAG = 0;
    vex_state->guest_NRADDR = 0;
 }
 
