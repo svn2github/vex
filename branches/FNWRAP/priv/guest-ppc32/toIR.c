@@ -77,6 +77,27 @@
        results would then be zeroed, too.
 */
 
+/* "Special" instructions.
+
+   This instruction decoder can decode three special instructions
+   which mean nothing natively (are no-ops as far as regs/mem are
+   concerned) but have meaning for supporting Valgrind.  A special
+   instruction is flagged by the 16-byte preamble 54001800 54006800
+   5400E800 54009800 (in the standard interpretation, that means:
+   rlwinm 0,0,3,0,0; rlwinm 0,0,13,0,0; rlwinm 0,0,29,0,0; rlwinm
+   0,0,19,0,0).  Following that, one of the following 3 are allowed
+   (standard interpretation in parentheses):
+
+      7C210B78 (or 1,1,1)   %R3 = client_request ( %R4 )
+      7C421378 (or 2,2,2)   %R3 = guest_NRADDR
+      7C631B78 (or 3,3,3)   branch-and-link-to-noredir %R11
+
+   Any other bytes following the 16-byte preamble are illegal and
+   constitute a failure in instruction decoding.  This all assumes
+   that the preamble will never occur except in specific code
+   fragments designed for Valgrind to catch.
+*/
+
 
 /* Translates PPC32 & PPC64 code to IR. */
 
@@ -199,6 +220,8 @@ static void vex_printf_binary( ULong x, UInt len, Bool spaces )
 #define OFFB64_TILEN      offsetof(VexGuestPPC64State,guest_TILEN)
 
 #define OFFB64_RESVN      offsetof(VexGuestPPC64State,guest_RESVN)
+#define OFFB64_NRADDR     offsetof(VexGuestPPC64State,guest_NRADDR)
+
 
 // 32-bit offsets
 #define OFFB32_CIA        offsetof(VexGuestPPC32State,guest_CIA)
@@ -221,6 +244,7 @@ static void vex_printf_binary( ULong x, UInt len, Bool spaces )
 #define OFFB32_TILEN      offsetof(VexGuestPPC32State,guest_TILEN)
 
 #define OFFB32_RESVN      offsetof(VexGuestPPC32State,guest_RESVN)
+#define OFFB32_NRADDR     offsetof(VexGuestPPC32State,guest_NRADDR)
 
 
 /*------------------------------------------------------------*/
@@ -7867,33 +7891,56 @@ DisResult disInstr_PPC32_WRK (
    if (put_IP)
       putGST( PPC_GST_CIA, mkSzImm(ty, guest_CIA_curr_instr) );
 
-   /* Spot the client-request magic sequence. */
-   // Essentially a v. unlikely sequence of noops that we can catch
+   /* Spot "Special" instructions (see comment at top of file). */
    {
-      UChar* code = (UChar*)(&guest_code[delta]);
-
-      /* Spot this:                                       
-         0x7C03D808   tw 0,3,27            => trap word if (0) => nop
-         0x5400E800   rlwinm 0,0,29,0,0    => r0 = rotl(r0,29)
-         0x54001800   rlwinm 0,0, 3,0,0    => r0 = rotl(r0, 3)
-         0x54006800   rlwinm 0,0,13,0,0    => r0 = rotl(r0,13)
-         0x54009800   rlwinm 0,0,19,0,0    => r0 = rotl(r0,19)
-         0x60000000   nop
+      UChar* code = (UChar*)(guest_code + delta);
+      /* Spot the 16-byte preamble:
+         54001800  rlwinm 0,0,3,0,0
+         54006800  rlwinm 0,0,13,0,0
+         5400E800  rlwinm 0,0,29,0,0
+         54009800  rlwinm 0,0,19,0,0
       */
-      if (getUIntBigendianly(code+ 0) == 0x7C03D808 &&
-          getUIntBigendianly(code+ 4) == 0x5400E800 &&
-          getUIntBigendianly(code+ 8) == 0x54001800 &&
-          getUIntBigendianly(code+12) == 0x54006800 &&
-          getUIntBigendianly(code+16) == 0x54009800 &&
-          getUIntBigendianly(code+20) == 0x60000000) {
-         DIP("%%r3 = client_request ( %%r31 )\n");
-         dres.len = 24;
-         delta += 24;
-
-         irbb->next     = mkSzImm( ty, guest_CIA_bbstart + delta );
-         irbb->jumpkind = Ijk_ClientReq;
-         dres.whatNext  = Dis_StopHere;
-         goto decode_success;
+      if (getUIntBigendianly(code+ 0) == 0x54001800 &&
+          getUIntBigendianly(code+ 4) == 0x54006800 &&
+          getUIntBigendianly(code+ 8) == 0x5400E800 &&
+          getUIntBigendianly(code+12) == 0x54009800) {
+         /* Got a "Special" instruction preamble.  Which one is it? */
+         if (getUIntBigendianly(code+16) == 0x7C210B78 /* or 1,1,1 */) {
+            /* %R3 = client_request ( %R4 ) */
+            DIP("r3 = client_request ( %%r4 )\n");
+            delta += 20;
+            irbb->next     = mkSzImm( ty, guest_CIA_bbstart + delta );
+            irbb->jumpkind = Ijk_ClientReq;
+            dres.whatNext  = Dis_StopHere;
+            goto decode_success;
+         }
+         else
+         if (getUIntBigendianly(code+16) == 0x7C421378 /* or 2,2,2 */) {
+            /* %R3 = guest_NRADDR */
+            DIP("r3 = guest_NRADDR\n");
+            delta += 20;
+            dres.len = 20;
+            putIReg(3, IRExpr_Get( mode64 ? OFFB64_NRADDR : OFFB32_NRADDR, ty ));
+            goto decode_success;
+         }
+         else
+         if (getUIntBigendianly(code+16) == 0x7C631B78 /* or 3,3,3 */) {
+            /*  branch-and-link-to-noredir %R11 */
+            DIP("branch-and-link-to-noredir r11\n");
+            delta += 20;
+	    putGST( PPC_GST_LR, mkSzImm(ty, guest_CIA_bbstart + delta) );
+            irbb->next     = getIReg(11);
+            irbb->jumpkind = Ijk_NoRedir;
+            dres.whatNext  = Dis_StopHere;
+            goto decode_success;
+         }
+         /* We don't know what it is.  Set opc1/opc2 so decode_failure
+            can print the insn following the Special-insn preamble. */
+         theInstr = getUIntBigendianly(code+16);
+         opc1     = ifieldOPC(theInstr);
+         opc2     = ifieldOPClo10(theInstr);
+         goto decode_failure;
+         /*NOTREACHED*/
       }
    }
 
@@ -8420,7 +8467,11 @@ DisResult disInstr_PPC32_WRK (
    /* All decode successes end up here. */
    DIP("\n");
 
-   dres.len = 4;
+   if (dres.len == 0) {
+      dres.len = 4;
+   } else {
+      vassert(dres.len == 20);
+   }
    return dres;
 }
 
