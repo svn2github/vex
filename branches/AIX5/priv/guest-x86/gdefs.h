@@ -64,8 +64,8 @@ DisResult disInstr_X86 ( IRBB*        irbb,
                          UChar*       guest_code,
                          Long         delta,
                          Addr64       guest_IP,
-                         VexArch      guest_arch,
                          VexArchInfo* archinfo,
+                         VexMiscInfo* miscinfo,
                          Bool         host_bigendian );
 
 /* Used by the optimiser to specialise calls to helpers. */

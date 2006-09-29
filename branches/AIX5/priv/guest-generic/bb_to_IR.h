@@ -140,8 +140,10 @@ typedef
       /*IN*/  Addr64       guest_IP,
 
       /* Info about the guest architecture */
-      /*IN*/  VexArch      guest_arch,
       /*IN*/  VexArchInfo* archinfo,
+
+      /* Misc info about guest and host */
+      /*IN*/  VexMiscInfo* miscinfo,
 
       /* Is the host bigendian? */
       /*IN*/  Bool         host_bigendian
@@ -162,8 +164,8 @@ IRBB* bb_to_IR ( /*OUT*/VexGuestExtents* vge,
                  /*IN*/ Addr64           guest_IP_bbstart,
                  /*IN*/ Bool             (*chase_into_ok)(void*,Addr64),
                  /*IN*/ Bool             host_bigendian,
-                 /*IN*/ VexArch          arch_guest,
                  /*IN*/ VexArchInfo*     archinfo_guest,
+                 /*IN*/ VexMiscInfo*     miscinfo_both,
                  /*IN*/ IRType           guest_word_type,
                  /*IN*/ Bool             do_self_check,
                  /*IN*/ Bool             (*preamble_function)(void*,IRBB*),

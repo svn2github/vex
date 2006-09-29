@@ -1123,11 +1123,11 @@ PPCInstr* PPCInstr_AvLdVSCR ( HReg src ) {
 
 /* Pretty Print instructions */
 static void ppLoadImm ( HReg dst, ULong imm, Bool mode64 ) {
+XXX tidy this up
 #if 1
    vex_printf("li_word ");
    ppHRegPPC(dst);
    if (!mode64) {
-      vassert(imm == (ULong)(Long)(Int)(UInt)imm);
       vex_printf(",0x%08x", (UInt)imm);
    } else {
       vex_printf(",0x%016llx", imm);
@@ -2496,19 +2496,26 @@ static UChar* mkLoadImm ( UChar* p, UInt r_dst, ULong imm, Bool mode64 )
          vassert(mode64);
 
          // load high word
+
          // lis r_dst, (imm>>48) & 0xFFFF
          p = mkFormD(p, 15, r_dst, 0, (imm>>48) & 0xFFFF);
+
          // ori r_dst, r_dst, (imm>>32) & 0xFFFF
-         p = mkFormD(p, 24, r_dst, r_dst, (imm>>32) & 0xFFFF);
+         if ((imm>>32) & 0xFFFF)
+            p = mkFormD(p, 24, r_dst, r_dst, (imm>>32) & 0xFFFF);
          
          // shift r_dst low word to high word => rldicr
          p = mkFormMD(p, 30, r_dst, r_dst, 32, 31, 1);
 
          // load low word
+
          // oris r_dst, r_dst, (imm>>16) & 0xFFFF
-         p = mkFormD(p, 25, r_dst, r_dst, (imm>>16) & 0xFFFF);
+         if ((imm>>16) & 0xFFFF)
+            p = mkFormD(p, 25, r_dst, r_dst, (imm>>16) & 0xFFFF);
+
          // ori r_dst, r_dst, (imm) & 0xFFFF
-         p = mkFormD(p, 24, r_dst, r_dst, imm & 0xFFFF);
+         if (imm & 0xFFFF)
+            p = mkFormD(p, 24, r_dst, r_dst, imm & 0xFFFF);
       }
    }
    return p;
