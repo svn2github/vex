@@ -3878,7 +3878,8 @@ static void iselNext ( ISelEnv* env, IRExpr* next, IRJumpKind jk )
 
 /* Translate an entire BB to ppc code. */
 
-HInstrArray* iselBB_PPC ( IRBB* bb, VexArchInfo* archinfo_host,
+HInstrArray* iselBB_PPC ( IRBB* bb, VexArch      arch_host,
+                                    VexArchInfo* archinfo_host,
                                     VexMiscInfo* vmi )
 {
    Int      i, j;
@@ -3886,32 +3887,23 @@ HInstrArray* iselBB_PPC ( IRBB* bb, VexArchInfo* archinfo_host,
    ISelEnv* env;
    UInt     hwcaps_host = archinfo_host->hwcaps;
    Bool     mode64 = False;
-   Bool     is32, is64;
    UInt     mask32, mask64;
 
-   /* Figure out whether we're being ppc32 or ppc64 today. */
+   vassert(arch_host == VexArchPPC32 || arch_host == VexArchPPC64);
+   mode64 = arch_host == VexArchPPC64;
+
+   /* do some sanity checks */
    mask32 = VEX_HWCAPS_PPC32_F | VEX_HWCAPS_PPC32_V
             | VEX_HWCAPS_PPC32_FX | VEX_HWCAPS_PPC32_GX;
-
-   is32 = (hwcaps_host & mask32) > 0;
 
    mask64 = VEX_HWCAPS_PPC64_V
             | VEX_HWCAPS_PPC64_FX | VEX_HWCAPS_PPC64_GX;
 
- XXX this is a mess, fix me
    if (mode64) {
       vassert((hwcaps_host & mask32) == 0);
    } else {
       vassert((hwcaps_host & mask64) == 0);
    }
-   is64 = (hwcaps_host & mask64) > 0;
-
-   if (is32 && !is64)
-      mode64 = False;
-   else if (is64 && !is32)
-      mode64 = True;
-   else
-      vpanic("iselBB_PPC: illegal subarch");
 
    /* Make up an initial environment to use. */
    env = LibVEX_Alloc(sizeof(ISelEnv));

@@ -12900,6 +12900,7 @@ DisResult disInstr_X86 ( IRBB*        irbb_IN,
                          UChar*       guest_code_IN,
                          Long         delta,
                          Addr64       guest_IP,
+                         VexArch      guest_arch,
                          VexArchInfo* archinfo,
                          VexMiscInfo* miscinfo,
                          Bool         host_bigendian_IN )

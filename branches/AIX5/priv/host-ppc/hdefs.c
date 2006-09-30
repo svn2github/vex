@@ -1123,8 +1123,6 @@ PPCInstr* PPCInstr_AvLdVSCR ( HReg src ) {
 
 /* Pretty Print instructions */
 static void ppLoadImm ( HReg dst, ULong imm, Bool mode64 ) {
-XXX tidy this up
-#if 1
    vex_printf("li_word ");
    ppHRegPPC(dst);
    if (!mode64) {
@@ -1132,58 +1130,6 @@ XXX tidy this up
    } else {
       vex_printf(",0x%016llx", imm);
    }
-#else
-   if (imm >= 0xFFFFFFFFFFFF8000ULL || imm < 0x8000) {
-      // sign-extendable from 16 bits
-      vex_printf("li ");
-      ppHRegPPC(dst);
-      vex_printf(",0x%x", (UInt)imm);
-   } else {
-      if (imm >= 0xFFFFFFFF80000000ULL || imm < 0x80000000ULL) {
-         // sign-extendable from 32 bits
-         vex_printf("lis ");
-         ppHRegPPC(dst);
-         vex_printf(",0x%x ; ", (UInt)(imm >> 16));
-         vex_printf("ori ");
-         ppHRegPPC(dst);
-         vex_printf(",");
-         ppHRegPPC(dst);
-         vex_printf(",0x%x", (UInt)(imm & 0xFFFF));
-      } else {
-         // full 64bit immediate load: 5 (five!) insns.
-         vassert(mode64);
-
-         // load high word
-         vex_printf("lis ");
-         ppHRegPPC(dst);
-         vex_printf(",0x%x ; ", (UInt)(imm >> 48) & 0xFFFF);
-         vex_printf("ori ");
-         ppHRegPPC(dst);
-         vex_printf(",");
-         ppHRegPPC(dst);
-         vex_printf(",0x%x ; ", (UInt)(imm >> 32) & 0xFFFF);
-         
-         // shift r_dst low word to high word => rldicr
-         vex_printf("rldicr ");
-         ppHRegPPC(dst);
-         vex_printf(",");
-         ppHRegPPC(dst);
-         vex_printf(",32,31 ; ");
-
-         // load low word
-         vex_printf("oris ");
-         ppHRegPPC(dst);
-         vex_printf(",");
-         ppHRegPPC(dst);
-         vex_printf(",0x%x ; ", (UInt)(imm >> 16) & 0xFFFF);
-         vex_printf("ori ");
-         ppHRegPPC(dst);
-         vex_printf(",");
-         ppHRegPPC(dst);
-         vex_printf(",0x%x", (UInt)(imm >>  0) & 0xFFFF);
-      }
-   }
-#endif
 }
 
 static void ppMovReg ( HReg dst, HReg src ) {

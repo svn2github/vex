@@ -3801,7 +3801,8 @@ static void iselNext ( ISelEnv* env, IRExpr* next, IRJumpKind jk )
 
 /* Translate an entire BB to amd64 code. */
 
-HInstrArray* iselBB_AMD64 ( IRBB* bb, VexArchInfo* archinfo_host,
+HInstrArray* iselBB_AMD64 ( IRBB* bb, VexArch      arch_host,
+                                      VexArchInfo* archinfo_host,
                                       VexMiscInfo* vmi/*UNUSED*/ )
 {
    Int      i, j;
