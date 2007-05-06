@@ -126,6 +126,11 @@ typedef
       /* Used when .disp == Bound and we are looking for vregs to
          spill. */
       Bool is_spill_cand;
+      /* Optimisation: used when .disp == Bound.  Indicates when the
+         rreg has the same value as the spill slot for the associated
+         vreg.  Is safely left at False, and becomes True after a
+         spill store or reload for this rreg. */
+      Bool eq_spill_slot;
    }
    RRegState;
 
@@ -339,6 +344,8 @@ HInstrArray* doRegisterAllocation (
 {
 #  define N_SPILL64S  (LibVEX_N_SPILL_BYTES / 8)
 
+   const Bool eq_spill_opt = True;
+
    /* Iterators and temporaries. */
    Int       ii, j, k, m, spillee, k_suboptimal;
    HReg      rreg, vreg, vregS, vregD;
@@ -462,6 +469,7 @@ HInstrArray* doRegisterAllocation (
       rreg_state[j].disp          = Free;
       rreg_state[j].vreg          = INVALID_HREG;
       rreg_state[j].is_spill_cand = False;
+      rreg_state[j].eq_spill_slot = False;
    }
 
    for (j = 0; j < n_vregs; j++)
@@ -783,7 +791,7 @@ HInstrArray* doRegisterAllocation (
       two spill slots.
 
       Do a rank-based allocation of vregs to spill slot numbers.  We
-      put as few values as possible in spill slows, but nevertheless
+      put as few values as possible in spill slots, but nevertheless
       need to have a spill slot available for all vregs, just in case.
    */
    /* max_ss_no = -1; */
@@ -956,8 +964,10 @@ HInstrArray* doRegisterAllocation (
          /* Sanity check 3: all vreg-rreg bindings must bind registers
             of the same class. */
          for (j = 0; j < n_rregs; j++) {
-            if (rreg_state[j].disp != Bound)
+            if (rreg_state[j].disp != Bound) {
+               vassert(rreg_state[j].eq_spill_slot == False);
                continue;
+            }
             vassert(hregClass(rreg_state[j].rreg) 
                     == hregClass(rreg_state[j].vreg));
             vassert( hregIsVirtual(rreg_state[j].vreg));
@@ -1033,6 +1043,10 @@ HInstrArray* doRegisterAllocation (
          vreg_state[hregNumber(vregD)] = toShort(m);
          vreg_state[hregNumber(vregS)] = INVALID_RREG_NO;
 
+         /* FIXME check this.  This rreg has become associated with a different
+            vreg and hence with a different spill slot.  Play safe. */
+	 rreg_state[m].eq_spill_slot = False;
+
          /* Move on to the next insn.  We skip the post-insn stuff for
             fixed registers, since this move should not interact with
             them in any way. */
@@ -1052,6 +1066,7 @@ HInstrArray* doRegisterAllocation (
          vassert(IS_VALID_VREGNO(vreg));
          if (vreg_lrs[vreg].dead_before <= ii) {
             rreg_state[j].disp = Free;
+            rreg_state[j].eq_spill_slot = False;
             m = hregNumber(rreg_state[j].vreg);
             vassert(IS_VALID_VREGNO(m));
             vreg_state[m] = INVALID_RREG_NO;
@@ -1115,13 +1130,17 @@ HInstrArray* doRegisterAllocation (
             vreg_state[m] = INVALID_RREG_NO;
             if (vreg_lrs[m].dead_before > ii) {
                vassert(vreg_lrs[m].reg_class != HRcINVALID);
-               EMIT_INSTR( (*genSpill)( rreg_state[k].rreg,
-                                        vreg_lrs[m].spill_offset,
-                                        mode64 ) );
+               if ((!eq_spill_opt) || !rreg_state[k].eq_spill_slot) {
+                  EMIT_INSTR( (*genSpill)( rreg_state[k].rreg,
+                                           vreg_lrs[m].spill_offset,
+                                           mode64 ) );
+               }
+               rreg_state[k].eq_spill_slot = True;
             }
          }
          rreg_state[k].disp = Unavail;
          rreg_state[k].vreg = INVALID_HREG;
+         rreg_state[k].eq_spill_slot = False;
 
          /* check for further rregs entering HLRs at this point */
          rreg_lrs_la_next++;
@@ -1170,6 +1189,10 @@ HInstrArray* doRegisterAllocation (
          if (IS_VALID_RREGNO(k)) {
             vassert(rreg_state[k].disp == Bound);
             addToHRegRemap(&remap, vreg, rreg_state[k].rreg);
+            /* If this rreg is written or modified, mark it as different
+               from any spill slot value. */
+            if (reg_usage.mode[j] != HRmRead)
+               rreg_state[k].eq_spill_slot = False;
             continue;
          } else {
             vassert(k == INVALID_RREG_NO);
@@ -1205,13 +1228,22 @@ HInstrArray* doRegisterAllocation (
             vassert(IS_VALID_VREGNO(m));
             vreg_state[m] = toShort(k);
             addToHRegRemap(&remap, vreg, rreg_state[k].rreg);
-            /* Generate a reload if needed. */
+            /* Generate a reload if needed.  This only creates needed
+               reloads because the live range builder for vregs will
+               guarantee that the first event for a vreg is a write.
+               Hence, if this reference is not a write, it cannot be
+               the first reference for this vreg, and so a reload is
+               indeed needed. */
             if (reg_usage.mode[j] != HRmWrite) {
                vassert(vreg_lrs[m].reg_class != HRcINVALID);
                EMIT_INSTR( (*genReload)( rreg_state[k].rreg,
                                          vreg_lrs[m].spill_offset,
                                          mode64 ) );
-            }
+               rreg_state[k].eq_spill_slot = True;
+            } else {
+               rreg_state[k].eq_spill_slot = False;
+	    }
+
             continue;
          }
 
@@ -1272,14 +1304,18 @@ HInstrArray* doRegisterAllocation (
             live vreg. */
          vassert(vreg_lrs[m].dead_before > ii);
          vassert(vreg_lrs[m].reg_class != HRcINVALID);
-         EMIT_INSTR( (*genSpill)( rreg_state[spillee].rreg,
-                                  vreg_lrs[m].spill_offset,
-                                  mode64 ) );
+         if ((!eq_spill_opt) || !rreg_state[spillee].eq_spill_slot) {
+            EMIT_INSTR( (*genSpill)( rreg_state[spillee].rreg,
+                                     vreg_lrs[m].spill_offset,
+                                     mode64 ) );
+         }
 
          /* Update the rreg_state to reflect the new assignment for this
             rreg. */
          rreg_state[spillee].vreg = vreg;
          vreg_state[m] = INVALID_RREG_NO;
+
+         rreg_state[spillee].eq_spill_slot = False; /* be safe */
 
          m = hregNumber(vreg);
          vassert(IS_VALID_VREGNO(m));
@@ -1292,6 +1328,7 @@ HInstrArray* doRegisterAllocation (
             EMIT_INSTR( (*genReload)( rreg_state[spillee].rreg,
                                       vreg_lrs[m].spill_offset,
                                       mode64 ) );
+            rreg_state[spillee].eq_spill_slot = True;
          }
 
          /* So after much twisting and turning, we have vreg mapped to
@@ -1344,6 +1381,7 @@ HInstrArray* doRegisterAllocation (
          vassert(rreg_state[k].disp == Unavail);
          rreg_state[k].disp = Free;
          rreg_state[k].vreg = INVALID_HREG;
+         rreg_state[k].eq_spill_slot = False;
 
          /* check for further rregs leaving HLRs at this point */
          rreg_lrs_db_next++;
