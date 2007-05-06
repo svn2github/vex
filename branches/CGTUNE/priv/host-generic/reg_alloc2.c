@@ -56,19 +56,12 @@
 
 /* TODO 27 Oct 04:
 
-   (Critical): Need a way to statically establish the vreg classes,
-   else we can't allocate spill slots properly.
-
    Better consistency checking from what isMove tells us.
 
    We can possibly do V-V coalescing even when the src is spilled,
    providing we can arrange for the dst to have the same spill slot.
 
    Note that state[].hreg is the same as the available real regs.
-
-   Check whether rreg preferencing has any beneficial effect.
-
-   Remove preferencing fields in VRegInfo, if not used.
 
    Generally rationalise data structures.  */
 
@@ -109,20 +102,14 @@ typedef
    updated as the allocator processes instructions. */
 typedef
    struct {
-      /* FIELDS WHICH DO NOT CHANGE */
+      /* ------ FIELDS WHICH DO NOT CHANGE ------ */
       /* Which rreg is this for? */
       HReg rreg;
       /* Is this involved in any HLRs?  (only an optimisation hint) */
       Bool has_hlrs;
-      /* FIELDS WHICH DO CHANGE */
-      /* What's it's current disposition? */
-      enum { Free,     /* available for use */
-             Unavail,  /* in a real-reg live range */
-             Bound     /* in use (holding value of some vreg) */
-           }
-           disp;
-      /* If RRegBound, what vreg is it bound to? */
-      HReg vreg;
+      /* ------ FIELDS WHICH DO CHANGE ------ */
+      /* 6 May 07: rearranged fields below so the whole struct fits
+         into 16 bytes on both x86 and amd64. */
       /* Used when .disp == Bound and we are looking for vregs to
          spill. */
       Bool is_spill_cand;
@@ -131,6 +118,14 @@ typedef
          vreg.  Is safely left at False, and becomes True after a
          spill store or reload for this rreg. */
       Bool eq_spill_slot;
+      /* What's it's current disposition? */
+      enum { Free,     /* available for use */
+             Unavail,  /* in a real-reg live range */
+             Bound     /* in use (holding value of some vreg) */
+           }
+           disp;
+      /* If .disp == Bound, what vreg is it bound to? */
+      HReg vreg;
    }
    RRegState;
 
@@ -1043,9 +1038,9 @@ HInstrArray* doRegisterAllocation (
          vreg_state[hregNumber(vregD)] = toShort(m);
          vreg_state[hregNumber(vregS)] = INVALID_RREG_NO;
 
-         /* FIXME check this.  This rreg has become associated with a different
-            vreg and hence with a different spill slot.  Play safe. */
-	 rreg_state[m].eq_spill_slot = False;
+         /* This rreg has become associated with a different vreg and
+            hence with a different spill slot.  Play safe. */
+         rreg_state[m].eq_spill_slot = False;
 
          /* Move on to the next insn.  We skip the post-insn stuff for
             fixed registers, since this move should not interact with
@@ -1242,7 +1237,7 @@ HInstrArray* doRegisterAllocation (
                rreg_state[k].eq_spill_slot = True;
             } else {
                rreg_state[k].eq_spill_slot = False;
-	    }
+            }
 
             continue;
          }
