@@ -191,6 +191,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
    void         (*mapRegs)     ( HRegRemap*, HInstr*, Bool );
    HInstr*      (*genSpill)    ( HReg, Int, Bool );
    HInstr*      (*genReload)   ( HReg, Int, Bool );
+   HInstr*      (*directReload)( HInstr*, HReg, Short );
    void         (*ppInstr)     ( HInstr*, Bool );
    void         (*ppReg)       ( HReg );
    HInstrArray* (*iselSB)      ( IRSB*, VexArch, VexArchInfo*, 
@@ -221,6 +222,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
    mapRegs                = NULL;
    genSpill               = NULL;
    genReload              = NULL;
+   directReload           = NULL;
    ppInstr                = NULL;
    ppReg                  = NULL;
    iselSB                 = NULL;
@@ -254,6 +256,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          mapRegs     = (void(*)(HRegRemap*,HInstr*, Bool)) mapRegs_X86Instr;
          genSpill    = (HInstr*(*)(HReg,Int, Bool)) genSpill_X86;
          genReload   = (HInstr*(*)(HReg,Int, Bool)) genReload_X86;
+         directReload = (HInstr*(*)(HInstr*,HReg,Short)) directReload_X86;
          ppInstr     = (void(*)(HInstr*, Bool)) ppX86Instr;
          ppReg       = (void(*)(HReg)) ppHRegX86;
          iselSB      = iselSB_X86;
@@ -581,7 +584,8 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
    rcode = doRegisterAllocation ( vcode, available_real_regs,
                                   n_available_real_regs,
                                   isMove, getRegUsage, mapRegs, 
-                                  genSpill, genReload, guest_sizeB,
+                                  genSpill, genReload, directReload, 
+                                  guest_sizeB,
                                   ppInstr, ppReg, mode64 );
 
    vexAllocSanityCheck();
