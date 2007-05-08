@@ -1705,17 +1705,6 @@ static HReg iselWordExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          addInstr(env, PPCInstr_Unary(op_clz,r_dst,r_src));
          return r_dst;
       }
-      case Iop_Neg8:
-      case Iop_Neg16:
-      case Iop_Neg32:
-      case Iop_Neg64: {
-         HReg r_dst = newVRegI(env);
-         HReg r_src = iselWordExpr_R(env, e->Iex.Unop.arg);
-         if (op_unop == Iop_Neg64 && !mode64)
-            goto irreducible;
-         addInstr(env, PPCInstr_Unary(Pun_NEG,r_dst,r_src));
-         return r_dst;
-      }
 
       case Iop_Left8:
       case Iop_Left32: 
@@ -1805,8 +1794,6 @@ static HReg iselWordExpr_R_wrk ( ISelEnv* env, IRExpr* e )
       case Iop_32to16:
       case Iop_64to8:
          /* These are no-ops. */
-         if (op_unop == Iop_Neg64 && !mode64)
-            goto irreducible;
          return iselWordExpr_R(env, e->Iex.Unop.arg);
          
       /* ReinterpF64asI64(e) */
@@ -2812,22 +2799,6 @@ static void iselInt64Expr_wrk ( HReg* rHi, HReg* rLo,
          addInstr(env, PPCInstr_Shft(Pshft_SAR, True/*32bit shift*/,
                                      tLo, tLo, PPCRH_Imm(False,31)));
          addInstr(env, mk_iMOVds_RR(tHi, tLo));
-         *rHi = tHi;
-         *rLo = tLo;
-         return;
-      }
-         
-      case Iop_Neg64: {
-         HReg yLo, yHi;
-         HReg zero = newVRegI(env);
-         HReg tLo  = newVRegI(env);
-         HReg tHi  = newVRegI(env);
-         iselInt64Expr(&yHi, &yLo, env, e->Iex.Unop.arg);
-         addInstr(env, PPCInstr_LI(zero, 0, False/*mode32*/));
-         addInstr(env, PPCInstr_AddSubC( False/*sub*/, True/*set carry*/,
-                                         tLo, zero, yLo));
-         addInstr(env, PPCInstr_AddSubC( False/*sub*/, False/*read carry*/,
-                                         tHi, zero, yHi));
          *rHi = tHi;
          *rLo = tLo;
          return;

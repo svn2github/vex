@@ -422,7 +422,6 @@ typedef
       Iop_CmpNE8,  Iop_CmpNE16,  Iop_CmpNE32,  Iop_CmpNE64,
       /* Tags for unary ops */
       Iop_Not8,  Iop_Not16,  Iop_Not32,  Iop_Not64,
-      Iop_Neg8,  Iop_Neg16,  Iop_Neg32,  Iop_Neg64,
 
       /* -- Ordering not important after here. -- */
 

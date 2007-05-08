@@ -120,6 +120,13 @@ static Bool isZeroU8 ( IRExpr* e )
           && e->Iex.Const.con->Ico.U8 == 0;
 }
 
+static Bool isZeroU32 ( IRExpr* e )
+{
+   return e->tag == Iex_Const
+          && e->Iex.Const.con->tag == Ico_U32
+          && e->Iex.Const.con->Ico.U32 == 0;
+}
+
 static Bool isZeroU64 ( IRExpr* e )
 {
    return e->tag == Iex_Const
@@ -805,6 +812,15 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
       X86AluOp   aluOp;
       X86ShiftOp shOp;
 
+      /* Pattern: Sub32(0,x) */
+      if (e->Iex.Binop.op == Iop_Sub32 && isZeroU32(e->Iex.Binop.arg1)) {
+         HReg dst = newVRegI(env);
+         HReg reg = iselIntExpr_R(env, e->Iex.Binop.arg2);
+         addInstr(env, mk_iMOVsd_RR(reg,dst));
+         addInstr(env, X86Instr_Unary32(Xun_NEG,dst));
+         return dst;
+      }
+
       /* Is it an addition or logical style op? */
       switch (e->Iex.Binop.op) {
          case Iop_Add8: case Iop_Add16: case Iop_Add32:
@@ -1192,15 +1208,6 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
                                           X86RMI_Imm(31), dst));
             addInstr(env, X86Instr_Alu32R(Xalu_SUB,
                                           X86RMI_Reg(tmp), dst));
-            return dst;
-         }
-         case Iop_Neg8:
-         case Iop_Neg16:
-         case Iop_Neg32: {
-            HReg dst = newVRegI(env);
-            HReg reg = iselIntExpr_R(env, e->Iex.Unop.arg);
-            addInstr(env, mk_iMOVsd_RR(reg,dst));
-            addInstr(env, X86Instr_Unary32(Xun_NEG,dst));
             return dst;
          }
 
@@ -2489,24 +2496,6 @@ static void iselInt64Expr_wrk ( HReg* rHi, HReg* rLo, ISelEnv* env, IRExpr* e )
             addInstr(env, mk_iMOVsd_RR(sLo, tLo));
             addInstr(env, X86Instr_Unary32(Xun_NOT,tHi));
             addInstr(env, X86Instr_Unary32(Xun_NOT,tLo));
-            *rHi = tHi;
-            *rLo = tLo;
-            return;
-         }
-
-         /* Neg64(e) */
-         case Iop_Neg64: {
-            HReg yLo, yHi;
-            HReg tLo = newVRegI(env);
-            HReg tHi = newVRegI(env);
-            /* yHi:yLo = arg */
-            iselInt64Expr(&yHi, &yLo, env, e->Iex.Unop.arg);
-            /* tLo = 0 - yLo, and set carry */
-            addInstr(env, X86Instr_Alu32R(Xalu_MOV, X86RMI_Imm(0), tLo));
-            addInstr(env, X86Instr_Alu32R(Xalu_SUB, X86RMI_Reg(yLo), tLo));
-            /* tHi = 0 - yHi - carry */
-            addInstr(env, X86Instr_Alu32R(Xalu_MOV, X86RMI_Imm(0), tHi));
-            addInstr(env, X86Instr_Alu32R(Xalu_SBB, X86RMI_Reg(yHi), tHi));
             *rHi = tHi;
             *rLo = tLo;
             return;

@@ -1011,19 +1011,6 @@ static IRExpr* fold_Expr ( IRExpr* e )
                     notBool(e->Iex.Unop.arg->Iex.Const.con->Ico.U1)));
             break;
 
-         case Iop_Neg64:
-            e2 = IRExpr_Const(IRConst_U64(
-                    - (e->Iex.Unop.arg->Iex.Const.con->Ico.U64)));
-            break;
-         case Iop_Neg32:
-            e2 = IRExpr_Const(IRConst_U32(
-                    - (e->Iex.Unop.arg->Iex.Const.con->Ico.U32)));
-            break;
-         case Iop_Neg8:
-            e2 = IRExpr_Const(IRConst_U8(toUChar(
-                    - (e->Iex.Unop.arg->Iex.Const.con->Ico.U8))));
-            break;
-
          case Iop_64to8: {
             ULong w64 = e->Iex.Unop.arg->Iex.Const.con->Ico.U64;
             w64 &= 0xFFULL;

@@ -278,14 +278,21 @@ static Bool fitsIn32Bits ( ULong x )
    return toBool(x == y1);
 }
 
-//.. /* Is this a 32-bit zero expression? */
-//.. 
-//.. static Bool isZero32 ( IRExpr* e )
-//.. {
-//..    return e->tag == Iex_Const
-//..           && e->Iex.Const.con->tag == Ico_U32
-//..           && e->Iex.Const.con->Ico.U32 == 0;
-//.. }
+/* Is this a 64-bit zero expression? */
+
+static Bool isZeroU64 ( IRExpr* e )
+{
+   return e->tag == Iex_Const
+          && e->Iex.Const.con->tag == Ico_U64
+          && e->Iex.Const.con->Ico.U64 == 0ULL;
+}
+
+static Bool isZeroU32 ( IRExpr* e )
+{
+   return e->tag == Iex_Const
+          && e->Iex.Const.con->tag == Ico_U32
+          && e->Iex.Const.con->Ico.U32 == 0;
+}
 
 /* Make a int reg-reg move. */
 
@@ -841,16 +848,17 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
       AMD64AluOp   aluOp;
       AMD64ShiftOp shOp;
 
-//.. 
-//..       /* Pattern: Sub32(0,x) */
-//..       if (e->Iex.Binop.op == Iop_Sub32 && isZero32(e->Iex.Binop.arg1)) {
-//..          HReg dst = newVRegI(env);
-//..          HReg reg = iselIntExpr_R(env, e->Iex.Binop.arg2);
-//..          addInstr(env, mk_iMOVsd_RR(reg,dst));
-//..          addInstr(env, X86Instr_Unary32(Xun_NEG,X86RM_Reg(dst)));
-//..          return dst;
-//..       }
-//.. 
+      /* Pattern: Sub64(0,x) */
+      /*     and: Sub32(0,x) */
+      if ((e->Iex.Binop.op == Iop_Sub64 && isZeroU64(e->Iex.Binop.arg1))
+          || (e->Iex.Binop.op == Iop_Sub32 && isZeroU32(e->Iex.Binop.arg1))) {
+         HReg dst = newVRegI(env);
+         HReg reg = iselIntExpr_R(env, e->Iex.Binop.arg2);
+         addInstr(env, mk_iMOVsd_RR(reg,dst));
+         addInstr(env, AMD64Instr_Unary64(Aun_NEG,dst));
+         return dst;
+      }
+
       /* Is it an addition or logical style op? */
       switch (e->Iex.Binop.op) {
          case Iop_Add8: case Iop_Add16: case Iop_Add32: case Iop_Add64: 
@@ -1447,16 +1455,6 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
                                             AMD64RMI_Imm(63), dst));
             addInstr(env, AMD64Instr_Alu64R(Aalu_SUB,
                                             AMD64RMI_Reg(tmp), dst));
-            return dst;
-         }
-         case Iop_Neg8:
-         case Iop_Neg16:
-         case Iop_Neg32:
-         case Iop_Neg64: {
-            HReg dst = newVRegI(env);
-            HReg reg = iselIntExpr_R(env, e->Iex.Unop.arg);
-            addInstr(env, mk_iMOVsd_RR(reg,dst));
-            addInstr(env, AMD64Instr_Unary64(Aun_NEG,dst));
             return dst;
          }
 
