@@ -2501,6 +2501,29 @@ static void iselInt64Expr_wrk ( HReg* rHi, HReg* rLo, ISelEnv* env, IRExpr* e )
             return;
          }
 
+         /* Left64(e) */
+         case Iop_Left64: {
+            HReg yLo, yHi;
+            HReg tLo = newVRegI(env);
+            HReg tHi = newVRegI(env);
+            /* yHi:yLo = arg */
+            iselInt64Expr(&yHi, &yLo, env, e->Iex.Unop.arg);
+            /* tLo = 0 - yLo, and set carry */
+            addInstr(env, X86Instr_Alu32R(Xalu_MOV, X86RMI_Imm(0), tLo));
+            addInstr(env, X86Instr_Alu32R(Xalu_SUB, X86RMI_Reg(yLo), tLo));
+            /* tHi = 0 - yHi - carry */
+            addInstr(env, X86Instr_Alu32R(Xalu_MOV, X86RMI_Imm(0), tHi));
+            addInstr(env, X86Instr_Alu32R(Xalu_SBB, X86RMI_Reg(yHi), tHi));
+            /* So now we have tHi:tLo = -arg.  To finish off, or 'arg'
+               back in, so as to give the final result 
+               tHi:tLo = arg | -arg. */
+            addInstr(env, X86Instr_Alu32R(Xalu_OR, X86RMI_Reg(yLo), tLo));
+            addInstr(env, X86Instr_Alu32R(Xalu_OR, X86RMI_Reg(yHi), tHi));
+            *rHi = tHi;
+            *rLo = tLo;
+            return;
+         }
+
          /* --- patterns rooted at: CmpwNEZ64 --- */
 
          /* CmpwNEZ64(e) */
