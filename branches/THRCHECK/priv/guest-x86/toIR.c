@@ -12306,6 +12306,12 @@ DisResult disInstr_X86_WRK (
 
    /* ------------------------ XCHG ----------------------- */
 
+   /* XCHG reg,mem automatically asserts LOCK# even without a LOCK
+      prefix.  Therefore, surround it with a IRStmt_MBE(Imbe_BusLock)
+      and IRStmt_MBE(Imbe_BusUnlock) pair.  But be careful; if it is
+      used with an explicit LOCK prefix, we don't want to end up with
+      two IRStmt_MBE(Imbe_BusLock)s -- one made here and one made by
+      the generic LOCK logic at the top of disInstr. */
    case 0x86: /* XCHG Gb,Eb */
       sz = 1;
       /* Fall through ... */
@@ -12323,6 +12329,18 @@ DisResult disInstr_X86_WRK (
              nameISize(sz), nameIReg(sz,gregOfRM(modrm)), 
                             nameIReg(sz,eregOfRM(modrm)));
       } else {
+         /* Need to add IRStmt_MBE(Imbe_BusLock). */
+         if (pfx_lock) {
+            /* check it's already been taken care of */
+            vassert(unlock_bus_after_insn);
+         } else {
+            vassert(!unlock_bus_after_insn);
+            stmt( IRStmt_MBE(Imbe_BusLock) );
+            unlock_bus_after_insn = True;
+         }
+         /* Because unlock_bus_after_insn is now True, generic logic
+            at the bottom of disInstr will add the
+            IRStmt_MBE(Imbe_BusUnlock). */
          addr = disAMode ( &alen, sorb, delta, dis_buf );
          assign( t1, loadLE(ty,mkexpr(addr)) );
          assign( t2, getIReg(sz,gregOfRM(modrm)) );
