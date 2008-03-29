@@ -1421,8 +1421,9 @@ static IRExpr* fold_Expr ( IRExpr* e )
             e2 = e->Iex.Binop.arg1;
          } else
 
-         /* Or32/Add32(x,0) ==> x */
-         if ((e->Iex.Binop.op == Iop_Add32 || e->Iex.Binop.op == Iop_Or32)
+         /* Or32/Add32/Max32U(x,0) ==> x */
+         if ((e->Iex.Binop.op == Iop_Add32 
+              || e->Iex.Binop.op == Iop_Or32 || e->Iex.Binop.op == Iop_Max32U)
              && e->Iex.Binop.arg2->tag == Iex_Const
              && e->Iex.Binop.arg2->Iex.Const.con->Ico.U32 == 0) {
             e2 = e->Iex.Binop.arg1;
@@ -1500,8 +1501,8 @@ static IRExpr* fold_Expr ( IRExpr* e )
             e2 = e->Iex.Binop.arg2;
          } else
 
-         /* Or32(0,x) ==> x */
-         if (e->Iex.Binop.op == Iop_Or32
+         /* Or32/Max32U(0,x) ==> x */
+         if ((e->Iex.Binop.op == Iop_Or32 || e->Iex.Binop.op == Iop_Max32U)
              && e->Iex.Binop.arg1->tag == Iex_Const
              && e->Iex.Binop.arg1->Iex.Const.con->Ico.U32 == 0) {
             e2 = e->Iex.Binop.arg2;

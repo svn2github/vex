@@ -446,6 +446,7 @@ typedef
       Iop_CmpNEZ8, Iop_CmpNEZ16,  Iop_CmpNEZ32,  Iop_CmpNEZ64,
       Iop_CmpwNEZ32, Iop_CmpwNEZ64, /* all-0s -> all-Os; other -> all-1s */
       Iop_Left8, Iop_Left16, Iop_Left32, Iop_Left64, /*  \x -> x | -x */
+      Iop_Max32U, /* unsigned max */
 
       /* PowerPC-style 3-way integer comparisons.  Without them it is
          difficult to simulate PPC efficiently.

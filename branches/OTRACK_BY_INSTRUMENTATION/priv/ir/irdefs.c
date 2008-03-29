@@ -210,6 +210,7 @@ void ppIROp ( IROp op )
       case Iop_Left16: vex_printf("Left16"); return;
       case Iop_Left32: vex_printf("Left32"); return;
       case Iop_Left64: vex_printf("Left64"); return;
+      case Iop_Max32U: vex_printf("Max32U"); return;
 
       case Iop_CmpORD32U: vex_printf("CmpORD32U"); return;
       case Iop_CmpORD32S: vex_printf("CmpORD32S"); return;
@@ -1498,6 +1499,7 @@ void typeOfPrimop ( IROp op,
       case Iop_CmpORD32S:
       case Iop_Add32: case Iop_Sub32: case Iop_Mul32:
       case Iop_Or32:  case Iop_And32: case Iop_Xor32:
+      case Iop_Max32U:
          BINARY(Ity_I32,Ity_I32, Ity_I32);
 
       case Iop_Add64: case Iop_Sub64: case Iop_Mul64:
