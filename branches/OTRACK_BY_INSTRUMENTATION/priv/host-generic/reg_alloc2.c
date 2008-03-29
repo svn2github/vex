@@ -849,9 +849,9 @@ HInstrArray* doRegisterAllocation (
       }
 
       /* This reflects LibVEX's hard-wired knowledge of the baseBlock
-         layout: the guest state, then an equal sized area following
-         it for shadow state, and then the spill area. */
-      vreg_lrs[j].spill_offset = toShort(guest_sizeB * 2 + k * 8);
+         layout: the guest state, then two equal sized areas following
+         it for two sets of shadow state, and then the spill area. */
+      vreg_lrs[j].spill_offset = toShort(guest_sizeB * 3 + k * 8);
 
       /* if (j > max_ss_no) */
       /*    max_ss_no = j; */
