@@ -925,6 +925,8 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          return dst;
       }
 
+      /* Handle misc other ops. */
+
       if (e->Iex.Binop.op == Iop_Max32U) {
          HReg src1 = iselIntExpr_R(env, e->Iex.Binop.arg1);
          HReg dst  = newVRegI(env);
@@ -935,7 +937,6 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          return dst;
       }
 
-      /* Handle misc other ops. */
       if (e->Iex.Binop.op == Iop_8HLto16) {
          HReg hi8  = newVRegI(env);
          HReg lo8  = newVRegI(env);

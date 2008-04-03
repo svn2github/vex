@@ -1200,6 +1200,15 @@ static IRExpr* fold_Expr ( IRExpr* e )
                         - e->Iex.Binop.arg2->Iex.Const.con->Ico.U64)));
                break;
 
+            /* -- Max32U -- */
+            case Iop_Max32U: {
+               UInt u32a = e->Iex.Binop.arg1->Iex.Const.con->Ico.U32;
+               UInt u32b = e->Iex.Binop.arg2->Iex.Const.con->Ico.U32;
+               UInt res  = u32a > u32b ? u32a : u32b;
+               e2 = IRExpr_Const(IRConst_U32(res));
+               break;
+            }
+
             /* -- Mul -- */
             case Iop_Mul32:
                e2 = IRExpr_Const(IRConst_U32(
