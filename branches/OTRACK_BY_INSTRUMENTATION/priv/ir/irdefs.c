@@ -769,7 +769,9 @@ void ppIRStmt ( IRStmt* s )
       case Ist_AbiHint:
          vex_printf("====== AbiHint(");
          ppIRExpr(s->Ist.AbiHint.base);
-         vex_printf(", %d) ======", s->Ist.AbiHint.len);
+         vex_printf(", %d, ", s->Ist.AbiHint.len);
+         ppIRExpr(s->Ist.AbiHint.nia);
+         vex_printf(") ======");
          break;
       case Ist_Put:
          vex_printf( "PUT(%d) = ", s->Ist.Put.offset);
@@ -1156,11 +1158,12 @@ IRStmt* IRStmt_IMark ( Addr64 addr, Int len ) {
    s->Ist.IMark.len  = len;
    return s;
 }
-IRStmt* IRStmt_AbiHint ( IRExpr* base, Int len ) {
+IRStmt* IRStmt_AbiHint ( IRExpr* base, Int len, IRExpr* nia ) {
    IRStmt* s           = LibVEX_Alloc(sizeof(IRStmt));
    s->tag              = Ist_AbiHint;
    s->Ist.AbiHint.base = base;
    s->Ist.AbiHint.len  = len;
+   s->Ist.AbiHint.nia  = nia;
    return s;
 }
 IRStmt* IRStmt_Put ( Int off, IRExpr* data ) {
@@ -1384,7 +1387,8 @@ IRStmt* deepCopyIRStmt ( IRStmt* s )
          return IRStmt_NoOp();
       case Ist_AbiHint:
          return IRStmt_AbiHint(deepCopyIRExpr(s->Ist.AbiHint.base),
-                               s->Ist.AbiHint.len);
+                               s->Ist.AbiHint.len,
+                               deepCopyIRExpr(s->Ist.AbiHint.nia));
       case Ist_IMark:
          return IRStmt_IMark(s->Ist.IMark.addr, s->Ist.IMark.len);
       case Ist_Put: 
@@ -1984,7 +1988,8 @@ Bool isFlatIRStmt ( IRStmt* st )
 
    switch (st->tag) {
       case Ist_AbiHint:
-         return isIRAtom(st->Ist.AbiHint.base);
+         return isIRAtom(st->Ist.AbiHint.base)
+                && isIRAtom(st->Ist.AbiHint.nia);
       case Ist_Put:
          return isIRAtom(st->Ist.Put.data);
       case Ist_PutI:
@@ -2194,6 +2199,7 @@ void useBeforeDef_Stmt ( IRSB* bb, IRStmt* stmt, Int* def_counts )
          break;
       case Ist_AbiHint:
          useBeforeDef_Expr(bb,stmt,stmt->Ist.AbiHint.base,def_counts);
+         useBeforeDef_Expr(bb,stmt,stmt->Ist.AbiHint.nia,def_counts);
          break;
       case Ist_Put:
          useBeforeDef_Expr(bb,stmt,stmt->Ist.Put.data,def_counts);
@@ -2446,6 +2452,9 @@ void tcStmt ( IRSB* bb, IRStmt* stmt, IRType gWordTy )
       case Ist_AbiHint:
          if (typeOfIRExpr(tyenv, stmt->Ist.AbiHint.base) != gWordTy)
             sanityCheckFail(bb,stmt,"IRStmt.AbiHint.base: "
+                                    "not :: guest word type");
+         if (typeOfIRExpr(tyenv, stmt->Ist.AbiHint.nia) != gWordTy)
+            sanityCheckFail(bb,stmt,"IRStmt.AbiHint.nia: "
                                     "not :: guest word type");
          break;
       case Ist_Put:

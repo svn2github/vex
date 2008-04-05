@@ -448,7 +448,8 @@ static void flatten_Stmt ( IRSB* bb, IRStmt* st )
          break;
       case Ist_AbiHint:
          e1 = flatten_Expr(bb, st->Ist.AbiHint.base);
-         addStmtToIRSB(bb, IRStmt_AbiHint(e1, st->Ist.AbiHint.len));
+         e2 = flatten_Expr(bb, st->Ist.AbiHint.nia);
+         addStmtToIRSB(bb, IRStmt_AbiHint(e1, st->Ist.AbiHint.len, e2));
          break;
       case Ist_Exit:
          e1 = flatten_Expr(bb, st->Ist.Exit.guard);
@@ -712,6 +713,7 @@ static void handle_gets_Stmt (
          AbiHints.*/
       case Ist_AbiHint:
          vassert(isIRAtom(st->Ist.AbiHint.base));
+         vassert(isIRAtom(st->Ist.AbiHint.nia));
          /* fall through */
       case Ist_MBE:
       case Ist_Dirty:
@@ -1707,9 +1709,11 @@ static IRStmt* subst_and_fold_Stmt ( IRExpr** env, IRStmt* st )
    switch (st->tag) {
       case Ist_AbiHint:
          vassert(isIRAtom(st->Ist.AbiHint.base));
+         vassert(isIRAtom(st->Ist.AbiHint.nia));
          return IRStmt_AbiHint(
                    fold_Expr(subst_Expr(env, st->Ist.AbiHint.base)),
-                   st->Ist.AbiHint.len
+                   st->Ist.AbiHint.len,
+                   fold_Expr(subst_Expr(env, st->Ist.AbiHint.nia))
                 );
       case Ist_Put:
          vassert(isIRAtom(st->Ist.Put.data));
@@ -1953,6 +1957,7 @@ static void addUses_Stmt ( Bool* set, IRStmt* st )
    switch (st->tag) {
       case Ist_AbiHint:
          addUses_Expr(set, st->Ist.AbiHint.base);
+         addUses_Expr(set, st->Ist.AbiHint.nia);
          return;
       case Ist_PutI:
          addUses_Expr(set, st->Ist.PutI.ix);
@@ -3221,6 +3226,7 @@ static void deltaIRStmt ( IRStmt* st, Int delta )
          break;
       case Ist_AbiHint:
          deltaIRExpr(st->Ist.AbiHint.base, delta);
+         deltaIRExpr(st->Ist.AbiHint.nia, delta);
          break;
       case Ist_Put:
          deltaIRExpr(st->Ist.Put.data, delta);
@@ -3677,6 +3683,7 @@ static void aoccCount_Stmt ( UShort* uses, IRStmt* st )
    switch (st->tag) {
       case Ist_AbiHint:
          aoccCount_Expr(uses, st->Ist.AbiHint.base);
+         aoccCount_Expr(uses, st->Ist.AbiHint.nia);
          return;
       case Ist_WrTmp: 
          aoccCount_Expr(uses, st->Ist.WrTmp.data); 
@@ -3908,7 +3915,8 @@ static IRStmt* atbSubst_Stmt ( ATmpInfo* env, IRStmt* st )
       case Ist_AbiHint:
          return IRStmt_AbiHint(
                    atbSubst_Expr(env, st->Ist.AbiHint.base),
-                   st->Ist.AbiHint.len
+                   st->Ist.AbiHint.len,
+                   atbSubst_Expr(env, st->Ist.AbiHint.nia)
                 );
       case Ist_Store:
          return IRStmt_Store(
@@ -4241,6 +4249,7 @@ static void considerExpensives ( /*OUT*/Bool* hasGetIorPutI,
       switch (st->tag) {
          case Ist_AbiHint:
             vassert(isIRAtom(st->Ist.AbiHint.base));
+            vassert(isIRAtom(st->Ist.AbiHint.nia));
             break;
          case Ist_PutI: 
             *hasGetIorPutI = True;

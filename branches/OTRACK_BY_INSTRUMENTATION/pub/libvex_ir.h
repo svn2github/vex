@@ -1412,14 +1412,17 @@ typedef
             that a given chunk of address space, [base .. base+len-1],
             has become undefined.  This is used on amd64-linux and
             some ppc variants to pass stack-redzoning hints to whoever
-            wants to see them.
+            wants to see them.  It also indicates the address of the
+            next (dynamic) instruction that will be executed.  This is
+            to help Memcheck to origin tracking.
 
-            ppIRExpr output: ====== AbiHint(<base>, <len>) ======
-                         eg. ====== AbiHint(t1, 16) ======
+            ppIRExpr output: ====== AbiHint(<base>, <len>, <nia>) ======
+                         eg. ====== AbiHint(t1, 16, t2) ======
          */
          struct {
             IRExpr* base;     /* Start  of undefined chunk */
             Int     len;      /* Length of undefined chunk */
+            IRExpr* nia;      /* Address of next (guest) insn */
          } AbiHint;
 
          /* Write a guest register, at a fixed offset in the guest state.
@@ -1506,7 +1509,7 @@ typedef
 /* Statement constructors. */
 extern IRStmt* IRStmt_NoOp    ( void );
 extern IRStmt* IRStmt_IMark   ( Addr64 addr, Int len );
-extern IRStmt* IRStmt_AbiHint ( IRExpr* base, Int len );
+extern IRStmt* IRStmt_AbiHint ( IRExpr* base, Int len, IRExpr* nia );
 extern IRStmt* IRStmt_Put     ( Int off, IRExpr* data );
 extern IRStmt* IRStmt_PutI    ( IRRegArray* descr, IRExpr* ix, Int bias, 
                                 IRExpr* data );

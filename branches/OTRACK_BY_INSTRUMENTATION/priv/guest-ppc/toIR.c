@@ -1217,17 +1217,20 @@ static void make_redzone_AbiHint ( VexAbiInfo* vbi, HChar* who )
 {
    Int szB = vbi->guest_stack_redzone_size;
    if (0) vex_printf("AbiHint: %s\n", who);
+vassert(0); /*FIXME*/
    vassert(szB >= 0);
    if (szB > 0) {
       if (mode64)
          stmt( IRStmt_AbiHint( 
                   binop(Iop_Sub64, getIReg(1), mkU64(szB)), 
                   szB
+,mkU64(0)
          ));
       else
          stmt( IRStmt_AbiHint( 
                   binop(Iop_Sub32, getIReg(1), mkU32(szB)), 
                   szB
+,mkU32(0)
          ));
    }
 }
