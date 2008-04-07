@@ -1653,7 +1653,7 @@ static void setFlags_INC_DEC ( Bool inc, IRTemp res, IRType ty )
       may require reading all four thunk fields. */
    stmt( IRStmt_Put( OFFB_CC_NDEP, mk_amd64g_calculate_rflags_c()) );
    stmt( IRStmt_Put( OFFB_CC_OP,   mkU64(ccOp)) );
-   stmt( IRStmt_Put( OFFB_CC_DEP1, mkexpr(res)) );
+   stmt( IRStmt_Put( OFFB_CC_DEP1, widenUto64(mkexpr(res))) );
    stmt( IRStmt_Put( OFFB_CC_DEP2, mkU64(0)) );
 }
 
