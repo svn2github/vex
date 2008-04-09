@@ -1528,6 +1528,7 @@ static IRExpr* fold_Expr ( IRExpr* e )
 
          /* Or8/16/32/64(t,t) ==> t, for some IRTemp t */
          /* And8/16/32/64(t,t) ==> t, for some IRTemp t */
+         /* Max32U(t,t) ==> t, for some IRTemp t */
          if (   (e->Iex.Binop.op == Iop_And64
               || e->Iex.Binop.op == Iop_And32
               || e->Iex.Binop.op == Iop_And16
@@ -1535,7 +1536,8 @@ static IRExpr* fold_Expr ( IRExpr* e )
               || e->Iex.Binop.op == Iop_Or64
               || e->Iex.Binop.op == Iop_Or32
               || e->Iex.Binop.op == Iop_Or16
-              || e->Iex.Binop.op == Iop_Or8)
+              || e->Iex.Binop.op == Iop_Or8
+              || e->Iex.Binop.op == Iop_Max32U)
              && sameIRTemps(e->Iex.Binop.arg1, e->Iex.Binop.arg2)) {
             e2 = e->Iex.Binop.arg1;
          }
