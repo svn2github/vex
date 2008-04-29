@@ -570,8 +570,8 @@ PPCAMode* genGuestArrayOffset ( ISelEnv* env, IRRegArray* descr,
 
    if (bias < -100 || bias > 100) /* somewhat arbitrarily */
       vpanic("genGuestArrayOffset(ppc host)(3)");
-   if (descr->base < 0 || descr->base > 2000) /* somewhat arbitrarily */
-     vpanic("genGuestArrayOffset(ppc host)(4)");
+   if (descr->base < 0 || descr->base > 4000) /* somewhat arbitrarily */
+      vpanic("genGuestArrayOffset(ppc host)(4)");
 
    /* Compute off into a reg, %off.  Then return:
 
