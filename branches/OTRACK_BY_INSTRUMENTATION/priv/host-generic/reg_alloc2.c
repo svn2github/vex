@@ -878,6 +878,8 @@ HInstrArray* doRegisterAllocation (
          it for two sets of shadow state, and then the spill area. */
       vreg_lrs[j].spill_offset = toShort(guest_sizeB * 3 + k * 8);
 
+      /* Independent check that we've made a sane choice of slot */
+      sanity_check_spill_offset( &vreg_lrs[j] );
       /* if (j > max_ss_no) */
       /*    max_ss_no = j; */
    }
@@ -1155,7 +1157,6 @@ HInstrArray* doRegisterAllocation (
             if (vreg_lrs[m].dead_before > ii) {
                vassert(vreg_lrs[m].reg_class != HRcINVALID);
                if ((!eq_spill_opt) || !rreg_state[k].eq_spill_slot) {
-                  sanity_check_spill_offset( &vreg_lrs[m] );
                   EMIT_INSTR( (*genSpill)( rreg_state[k].rreg,
                                            vreg_lrs[m].spill_offset,
                                            mode64 ) );
@@ -1331,7 +1332,6 @@ HInstrArray* doRegisterAllocation (
                indeed needed. */
             if (reg_usage.mode[j] != HRmWrite) {
                vassert(vreg_lrs[m].reg_class != HRcINVALID);
-               sanity_check_spill_offset( &vreg_lrs[m] );
                EMIT_INSTR( (*genReload)( rreg_state[k].rreg,
                                          vreg_lrs[m].spill_offset,
                                          mode64 ) );
@@ -1401,7 +1401,6 @@ HInstrArray* doRegisterAllocation (
          vassert(vreg_lrs[m].dead_before > ii);
          vassert(vreg_lrs[m].reg_class != HRcINVALID);
          if ((!eq_spill_opt) || !rreg_state[spillee].eq_spill_slot) {
-            sanity_check_spill_offset( &vreg_lrs[m] );
             EMIT_INSTR( (*genSpill)( rreg_state[spillee].rreg,
                                      vreg_lrs[m].spill_offset,
                                      mode64 ) );
@@ -1422,7 +1421,6 @@ HInstrArray* doRegisterAllocation (
             written), we have to generate a reload for it. */
          if (reg_usage.mode[j] != HRmWrite) {
             vassert(vreg_lrs[m].reg_class != HRcINVALID);
-            sanity_check_spill_offset( &vreg_lrs[m] );
             EMIT_INSTR( (*genReload)( rreg_state[spillee].rreg,
                                       vreg_lrs[m].spill_offset,
                                       mode64 ) );
