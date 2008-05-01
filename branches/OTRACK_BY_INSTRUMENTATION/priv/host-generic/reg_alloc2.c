@@ -215,6 +215,17 @@ Int findMostDistantlyMentionedVReg (
 }
 
 
+/* Check that this vreg has been assigned a sane spill offset. */
+static inline void sanity_check_spill_offset ( VRegLR* vreg )
+{
+   if (vreg->reg_class == HRcVec128 || vreg->reg_class == HRcFlt64) {
+      vassert(0 == ((UShort)vreg->spill_offset % 16));
+   } else {
+      vassert(0 == ((UShort)vreg->spill_offset % 8));
+   }
+}
+
+
 /* Double the size of the real-reg live-range array, if needed. */
 static void ensureRRLRspace ( RRegLR** info, Int* size, Int used )
 {
@@ -396,8 +407,9 @@ HInstrArray* doRegisterAllocation (
       not at each insn processed. */
    Bool do_sanity_check;
 
-   vassert(0 == LibVEX_N_SPILL_BYTES % 16);
-   vassert(0 == guest_sizeB % 16);
+   vassert(0 == (guest_sizeB % 16));
+   vassert(0 == (LibVEX_N_SPILL_BYTES % 16));
+   vassert(0 == (N_SPILL64S % 2));
 
    /* The live range numbers are signed shorts, and so limiting the
       number of insns to 10000 comfortably guards against them
@@ -789,6 +801,16 @@ HInstrArray* doRegisterAllocation (
       64 bits to spill (classes Flt64 and Vec128), we have to allocate
       two spill slots.
 
+      For Vec128-class on PowerPC, the spill slot's actual address
+      must be 16-byte aligned.  Since the spill slot's address is
+      computed as an offset from the guest state pointer, and since
+      the user of the generated code must set that pointer to a
+      16-aligned value, we have the residual obligation here of
+      choosing a 16-aligned spill slot offset for Vec128-class values.
+      Since each spill slot is 8 bytes long, that means for
+      Vec128-class values we must allocated a spill slot number which
+      is zero mod 2.
+
       Do a rank-based allocation of vregs to spill slot numbers.  We
       put as few values as possible in spill slots, but nevertheless
       need to have a spill slot available for all vregs, just in case.
@@ -817,16 +839,19 @@ HInstrArray* doRegisterAllocation (
           || vreg_lrs[j].reg_class == HRcFlt64) {
 
          /* Find two adjacent free slots in which between them provide
-            up to 128 bits in which to spill the vreg. */
+            up to 128 bits in which to spill the vreg.  Since we are
+            trying to find an even:odd pair, move along in steps of 2
+            (slots). */
 
-         for (k = 0; k < N_SPILL64S-1; k++)
+         for (k = 0; k < N_SPILL64S-1; k += 2)
             if (ss_busy_until_before[k] <= vreg_lrs[j].live_after
                 && ss_busy_until_before[k+1] <= vreg_lrs[j].live_after)
                break;
-         if (k == N_SPILL64S-1) {
+         if (k >= N_SPILL64S-1) {
             vpanic("LibVEX_N_SPILL_BYTES is too low.  " 
                    "Increase and recompile.");
          }
+         if (0) vex_printf("16-byte spill offset in spill slot %d\n", (Int)k);
          ss_busy_until_before[k+0] = vreg_lrs[j].dead_before;
          ss_busy_until_before[k+1] = vreg_lrs[j].dead_before;
 
@@ -1130,6 +1155,7 @@ HInstrArray* doRegisterAllocation (
             if (vreg_lrs[m].dead_before > ii) {
                vassert(vreg_lrs[m].reg_class != HRcINVALID);
                if ((!eq_spill_opt) || !rreg_state[k].eq_spill_slot) {
+                  sanity_check_spill_offset( &vreg_lrs[m] );
                   EMIT_INSTR( (*genSpill)( rreg_state[k].rreg,
                                            vreg_lrs[m].spill_offset,
                                            mode64 ) );
@@ -1305,6 +1331,7 @@ HInstrArray* doRegisterAllocation (
                indeed needed. */
             if (reg_usage.mode[j] != HRmWrite) {
                vassert(vreg_lrs[m].reg_class != HRcINVALID);
+               sanity_check_spill_offset( &vreg_lrs[m] );
                EMIT_INSTR( (*genReload)( rreg_state[k].rreg,
                                          vreg_lrs[m].spill_offset,
                                          mode64 ) );
@@ -1374,6 +1401,7 @@ HInstrArray* doRegisterAllocation (
          vassert(vreg_lrs[m].dead_before > ii);
          vassert(vreg_lrs[m].reg_class != HRcINVALID);
          if ((!eq_spill_opt) || !rreg_state[spillee].eq_spill_slot) {
+            sanity_check_spill_offset( &vreg_lrs[m] );
             EMIT_INSTR( (*genSpill)( rreg_state[spillee].rreg,
                                      vreg_lrs[m].spill_offset,
                                      mode64 ) );
@@ -1394,6 +1422,7 @@ HInstrArray* doRegisterAllocation (
             written), we have to generate a reload for it. */
          if (reg_usage.mode[j] != HRmWrite) {
             vassert(vreg_lrs[m].reg_class != HRcINVALID);
+            sanity_check_spill_offset( &vreg_lrs[m] );
             EMIT_INSTR( (*genReload)( rreg_state[spillee].rreg,
                                       vreg_lrs[m].spill_offset,
                                       mode64 ) );
