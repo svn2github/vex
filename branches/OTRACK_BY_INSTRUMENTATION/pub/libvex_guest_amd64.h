@@ -152,8 +152,8 @@ typedef
          replace-style ones. */
       ULong guest_NRADDR;
 
-      /* Padding to make it have an 8-aligned size */
-      /* UInt   padding; */
+      /* Padding to make it have an 16-aligned size */
+      ULong padding;
    }
    VexGuestAMD64State;
 

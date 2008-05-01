@@ -397,7 +397,7 @@ HInstrArray* doRegisterAllocation (
    Bool do_sanity_check;
 
    vassert(0 == LibVEX_N_SPILL_BYTES % 16);
-   vassert(0 == guest_sizeB % 8);
+   vassert(0 == guest_sizeB % 16);
 
    /* The live range numbers are signed shorts, and so limiting the
       number of insns to 10000 comfortably guards against them
