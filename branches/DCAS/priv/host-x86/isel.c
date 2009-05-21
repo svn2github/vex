@@ -3858,6 +3858,68 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
       }
       break;
 
+   /* --------- ACAS --------- */
+   case Ist_CAS:
+      if (stmt->Ist.CAS.details->oldHi == IRTemp_INVALID) {
+         /* "normal" singleton CAS */
+         UChar  sz;
+         IRCAS* cas = stmt->Ist.CAS.details;
+         IRType ty  = typeOfIRExpr(env->type_env, cas->dataLo);
+         /* get: cas->expdLo into %eax, and cas->dataLo into %ebx */
+         X86AMode* am = iselIntExpr_AMode(env, cas->addr);
+         HReg rDataLo = iselIntExpr_R(env, cas->dataLo);
+         HReg rExpdLo = iselIntExpr_R(env, cas->expdLo);
+         HReg rOldLo  = lookupIRTemp(env, cas->oldLo);
+         vassert(cas->expdHi == NULL);
+         vassert(cas->dataHi == NULL);
+         addInstr(env, mk_iMOVsd_RR(rExpdLo, rOldLo));
+         addInstr(env, mk_iMOVsd_RR(rExpdLo, hregX86_EAX()));
+         addInstr(env, mk_iMOVsd_RR(rDataLo, hregX86_EBX()));
+         switch (ty) { 
+            case Ity_I32: sz = 4; break;
+            case Ity_I16: sz = 2; break;
+            case Ity_I8:  sz = 1; break; 
+            default: goto unhandled_cas;
+         }
+         addInstr(env, X86Instr_ACAS(am, sz));
+         addInstr(env,
+                  X86Instr_CMov32(Xcc_NZ,
+                                  X86RM_Reg(hregX86_EAX()), rOldLo));
+         return;
+      } else {
+         /* double CAS */
+         IRCAS* cas = stmt->Ist.CAS.details;
+         IRType ty  = typeOfIRExpr(env->type_env, cas->dataLo);
+         /* only 32-bit allowed in this case */
+         /* get: cas->expdLo into %eax, and cas->dataLo into %ebx */
+         /* get: cas->expdHi into %edx, and cas->dataHi into %ecx */
+         X86AMode* am = iselIntExpr_AMode(env, cas->addr);
+         HReg rDataHi = iselIntExpr_R(env, cas->dataHi);
+         HReg rDataLo = iselIntExpr_R(env, cas->dataLo);
+         HReg rExpdHi = iselIntExpr_R(env, cas->expdHi);
+         HReg rExpdLo = iselIntExpr_R(env, cas->expdLo);
+         HReg rOldHi  = lookupIRTemp(env, cas->oldHi);
+         HReg rOldLo  = lookupIRTemp(env, cas->oldLo);
+         if (ty != Ity_I32)
+            goto unhandled_cas;
+         addInstr(env, mk_iMOVsd_RR(rExpdHi, rOldHi));
+         addInstr(env, mk_iMOVsd_RR(rExpdLo, rOldLo));
+         addInstr(env, mk_iMOVsd_RR(rExpdHi, hregX86_EDX()));
+         addInstr(env, mk_iMOVsd_RR(rExpdLo, hregX86_EAX()));
+         addInstr(env, mk_iMOVsd_RR(rDataHi, hregX86_ECX()));
+         addInstr(env, mk_iMOVsd_RR(rDataLo, hregX86_EBX()));
+         addInstr(env, X86Instr_DACAS(am));
+         addInstr(env,
+                  X86Instr_CMov32(Xcc_NZ,
+                                  X86RM_Reg(hregX86_EDX()), rOldHi));
+         addInstr(env,
+                  X86Instr_CMov32(Xcc_NZ,
+                                  X86RM_Reg(hregX86_EAX()), rOldLo));
+         return;
+      }
+      unhandled_cas:
+      break;
+
    /* --------- INSTR MARK --------- */
    /* Doesn't generate any executable code ... */
    case Ist_IMark:
