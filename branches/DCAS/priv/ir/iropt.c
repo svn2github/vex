@@ -3033,6 +3033,13 @@ Bool guestAccessWhichMightOverlapPutI (
          /* just be paranoid ... these should be rare. */
          return True;
 
+      case Ist_CAS:
+         /* This is unbelievably lame, but it's probably not
+            significant from a performance point of view.  Really, a
+            CAS is a load-store op, so it should be safe to say False.
+            However .. */
+         return True;
+
       case Ist_Dirty:
          /* If the dirty call has any guest effects at all, give up.
             Probably could do better. */
