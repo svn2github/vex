@@ -641,7 +641,7 @@ static void assign ( IRTemp dst, IRExpr* e )
 
 static void storeLE ( IRExpr* addr, IRExpr* data )
 {
-   stmt( IRStmt_Store(Iend_LE,addr,data) );
+   stmt( IRStmt_Store(Iend_LE, IRTemp_INVALID, addr, data) );
 }
 
 static IRExpr* unop ( IROp op, IRExpr* a )
@@ -703,7 +703,7 @@ static IRExpr* mkV128 ( UShort mask )
 
 static IRExpr* loadLE ( IRType ty, IRExpr* data )
 {
-   return IRExpr_Load(Iend_LE,ty,data);
+   return IRExpr_Load(False, Iend_LE, ty, data);
 }
 
 static IROp mkSizedOp ( IRType ty, IROp op8 )
@@ -7827,9 +7827,6 @@ DisResult disInstr_X86_WRK (
    /* Gets set to True if a LOCK prefix is seen. */
    Bool pfx_lock = False;
 
-   /* do we need follow the insn with MBusEvent(BusUnlock) ? */
-   Bool unlock_bus_after_insn = False;
-
    /* Set result defaults. */
    dres.whatNext   = Dis_Continue;
    dres.len        = 0;
@@ -7983,8 +7980,6 @@ DisResult disInstr_X86_WRK (
 
    if (pfx_lock) {
       if (can_be_used_with_LOCK_prefix( (UChar*)&guest_code[delta] )) {
-         stmt( IRStmt_MBE(Imbe_BusLock) );
-         unlock_bus_after_insn = True;
          DIP("lock ");
       } else {
          *expect_CAS = False;
@@ -13791,18 +13786,6 @@ DisResult disInstr_X86_WRK (
                             nameIReg(sz,eregOfRM(modrm)));
       } else {
          *expect_CAS = True;
-         /* Need to add IRStmt_MBE(Imbe_BusLock). */
-         if (pfx_lock) {
-            /* check it's already been taken care of */
-            vassert(unlock_bus_after_insn);
-         } else {
-            vassert(!unlock_bus_after_insn);
-            stmt( IRStmt_MBE(Imbe_BusLock) );
-            unlock_bus_after_insn = True;
-         }
-         /* Because unlock_bus_after_insn is now True, generic logic
-            at the bottom of disInstr will add the
-            IRStmt_MBE(Imbe_BusUnlock). */
          addr = disAMode ( &alen, sorb, delta, dis_buf );
          assign( t1, loadLE(ty,mkexpr(addr)) );
          assign( t2, getIReg(sz,gregOfRM(modrm)) );
@@ -14726,8 +14709,6 @@ DisResult disInstr_X86_WRK (
       insn, but nevertheless be paranoid and update it again right
       now. */
    stmt( IRStmt_Put( OFFB_EIP, mkU32(guest_EIP_curr_instr) ) );
-   if (unlock_bus_after_insn)
-      stmt( IRStmt_MBE(Imbe_BusUnlock) );
    jmp_lit(Ijk_NoDecode, guest_EIP_curr_instr);
    dres.whatNext = Dis_StopHere;
    dres.len = 0;
@@ -14744,8 +14725,6 @@ DisResult disInstr_X86_WRK (
   decode_success:
    /* All decode successes end up here. */
    DIP("\n");
-   if (unlock_bus_after_insn)
-      stmt( IRStmt_MBE(Imbe_BusUnlock) );
    dres.len = delta - delta_start;
    return dres;
 }

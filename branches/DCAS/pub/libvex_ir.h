@@ -1036,10 +1036,20 @@ struct _IRExpr {
          IRExpr* arg;      /* operand */
       } Unop;
 
-      /* A load from memory.
+      /* A load from memory.  If .isLL is True then this load also
+         lodges a reservation (ppc-style lwarx/ldarx operation).  If
+         .isLL is True, then also, the address must be naturally
+         aligned - any misaligned addresses should be caught by a
+         dominating IR check and side exit.  This alignment
+         restriction exists because on at least some LL/SC platforms
+         (ppc), lwarx etc will trap w/ SIGBUS on misaligned addresses,
+         and we have to actually generate lwarx on the host, and we
+         don't want it trapping on the host.
+
          ppIRExpr output: LD<end>:<ty>(<addr>), eg. LDle:I32(t1)
       */
       struct {
+         Bool      isLL;   /* True iff load makes a reservation */
          IREndness end;    /* Endian-ness of the load */
          IRType    ty;     /* Type of the loaded value */
          IRExpr*   addr;   /* Address being loaded from */
@@ -1123,7 +1133,8 @@ extern IRExpr* IRExpr_Triop  ( IROp op, IRExpr* arg1,
                                         IRExpr* arg2, IRExpr* arg3 );
 extern IRExpr* IRExpr_Binop  ( IROp op, IRExpr* arg1, IRExpr* arg2 );
 extern IRExpr* IRExpr_Unop   ( IROp op, IRExpr* arg );
-extern IRExpr* IRExpr_Load   ( IREndness end, IRType ty, IRExpr* addr );
+extern IRExpr* IRExpr_Load   ( Bool isLL, IREndness end,
+                               IRType ty, IRExpr* addr );
 extern IRExpr* IRExpr_Const  ( IRConst* con );
 extern IRExpr* IRExpr_CCall  ( IRCallee* cee, IRType retty, IRExpr** args );
 extern IRExpr* IRExpr_Mux0X  ( IRExpr* cond, IRExpr* expr0, IRExpr* exprX );
@@ -1219,6 +1230,7 @@ typedef
       Ijk_NoRedir,        /* Jump to un-redirected guest addr */
       Ijk_SigTRAP,        /* current instruction synths SIGTRAP */
       Ijk_SigSEGV,        /* current instruction synths SIGSEGV */
+      Ijk_SigBUS,         /* current instruction synths SIGBUS */
       /* Unfortunately, various guest-dependent syscall kinds.  They
 	 all mean: do a syscall before continuing. */
       Ijk_Sys_syscall,    /* amd64 'syscall', ppc 'sc' */
@@ -1348,10 +1360,6 @@ IRDirty* unsafeIRDirty_1_N ( IRTemp dst,
 typedef
    enum { 
       Imbe_Fence=0x18000, 
-      Imbe_BusLock, 
-      Imbe_BusUnlock,
-      Imbe_SnoopedStoreBegin,
-      Imbe_SnoopedStoreEnd
    }
    IRMBusEvent;
 
@@ -1562,11 +1570,28 @@ typedef
             IRExpr* data;  /* Expression (RHS of assignment) */
          } WrTmp;
 
-         /* Write a value to memory.
+         /* Write a value to memory.  Normally scRes is
+            IRTemp_INVALID, denoting a normal store.  If scRes is not
+            IRTemp_INVALID, then this is a store-conditional, which
+            may fail or succeed depending on the outcome of a
+            previously lodged reservation on this address.  scRes is
+            written 1 if the store succeeds and 0 if it fails, and
+            must have type Ity_I1.
+
+            If scRes is not IRTemp_INVALID, then also, the address
+            must be naturally aligned - any misaligned addresses
+            should be caught by a dominating IR check and side exit.
+            This alignment restriction exists because on at least some
+            LL/SC platforms (ppc), stwcx. etc will trap w/ SIGBUS on
+            misaligned addresses, and we have to actually generate
+            stwcx. on the host, and we don't want it trapping on the
+            host.
+
             ppIRStmt output: ST<end>(<addr>) = <data>, eg. STle(t1) = t2
          */
          struct {
             IREndness end;    /* Endianness of the store */
+            IRTemp    resSC;  /* result of SC goes here (1 == success) */
             IRExpr*   addr;   /* store address */
             IRExpr*   data;   /* value to write */
          } Store;
@@ -1635,7 +1660,8 @@ extern IRStmt* IRStmt_Put     ( Int off, IRExpr* data );
 extern IRStmt* IRStmt_PutI    ( IRRegArray* descr, IRExpr* ix, Int bias, 
                                 IRExpr* data );
 extern IRStmt* IRStmt_WrTmp   ( IRTemp tmp, IRExpr* data );
-extern IRStmt* IRStmt_Store   ( IREndness end, IRExpr* addr, IRExpr* data );
+extern IRStmt* IRStmt_Store   ( IREndness end,
+                                IRTemp resSC, IRExpr* addr, IRExpr* data );
 extern IRStmt* IRStmt_CAS     ( IRCAS* details );
 extern IRStmt* IRStmt_Dirty   ( IRDirty* details );
 extern IRStmt* IRStmt_MBE     ( IRMBusEvent event );

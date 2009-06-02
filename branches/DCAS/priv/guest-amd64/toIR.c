@@ -305,12 +305,12 @@ static IRExpr* mkU ( IRType ty, ULong i )
 
 static void storeLE ( IRExpr* addr, IRExpr* data )
 {
-   stmt( IRStmt_Store(Iend_LE,addr,data) );
+   stmt( IRStmt_Store(Iend_LE, IRTemp_INVALID, addr, data) );
 }
 
 static IRExpr* loadLE ( IRType ty, IRExpr* data )
 {
-   return IRExpr_Load(Iend_LE,ty,data);
+   return IRExpr_Load(False, Iend_LE, ty, data);
 }
 
 static IROp mkSizedOp ( IRType ty, IROp op8 )
@@ -8825,9 +8825,6 @@ DisResult disInstr_AMD64_WRK (
    /* pfx holds the summary of prefixes. */
    Prefix pfx = PFX_EMPTY;
 
-   /* do we need follow the insn with MBusEvent(BusUnlock) ? */
-   Bool unlock_bus_after_insn = False;
-
    /* Set result defaults. */
    dres.whatNext   = Dis_Continue;
    dres.len        = 0;
@@ -8975,8 +8972,6 @@ DisResult disInstr_AMD64_WRK (
 
    if (pfx & PFX_LOCK) {
       if (can_be_used_with_LOCK_prefix( (UChar*)&guest_code[delta] )) {
-         stmt( IRStmt_MBE(Imbe_BusLock) );
-         unlock_bus_after_insn = True;
          DIP("lock ");
       } else {
          *expect_CAS = False;
@@ -15012,18 +15007,6 @@ DisResult disInstr_AMD64_WRK (
                             nameIRegE(sz, pfx, modrm));
       } else {
          *expect_CAS = True;
-         /* Need to add IRStmt_MBE(Imbe_BusLock). */
-         if (pfx & PFX_LOCK) {
-            /* check it's already been taken care of */
-            vassert(unlock_bus_after_insn);
-         } else {
-            vassert(!unlock_bus_after_insn);
-            stmt( IRStmt_MBE(Imbe_BusLock) );
-            unlock_bus_after_insn = True;
-         }
-         /* Because unlock_bus_after_insn is now True, generic logic
-            at the bottom of disInstr will add the
-            IRStmt_MBE(Imbe_BusUnlock). */
          addr = disAMode ( &alen, vbi, pfx, delta, dis_buf, 0 );
          assign( t1, loadLE(ty, mkexpr(addr)) );
          assign( t2, getIRegG(sz, pfx, modrm) );
@@ -16061,8 +16044,6 @@ DisResult disInstr_AMD64_WRK (
       insn, but nevertheless be paranoid and update it again right
       now. */
    stmt( IRStmt_Put( OFFB_RIP, mkU64(guest_RIP_curr_instr) ) );
-   if (unlock_bus_after_insn)
-      stmt( IRStmt_MBE(Imbe_BusUnlock) );
    jmp_lit(Ijk_NoDecode, guest_RIP_curr_instr);
    dres.whatNext = Dis_StopHere;
    dres.len      = 0;
@@ -16079,8 +16060,6 @@ DisResult disInstr_AMD64_WRK (
   decode_success:
    /* All decode successes end up here. */
    DIP("\n");
-   if (unlock_bus_after_insn)
-      stmt( IRStmt_MBE(Imbe_BusUnlock) );
    dres.len = (Int)toUInt(delta - delta_start);
    return dres;
 }

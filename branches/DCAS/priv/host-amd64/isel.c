@@ -857,7 +857,10 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
       HReg dst = newVRegI(env);
       AMD64AMode* amode = iselIntExpr_AMode ( env, e->Iex.Load.addr );
 
+      /* We can't handle big-endian loads, nor load-linked. */
       if (e->Iex.Load.end != Iend_LE)
+         goto irreducible;
+      if (e->Iex.Load.isLL)
          goto irreducible;
 
       if (ty == Ity_I64) {
@@ -1959,7 +1962,8 @@ static AMD64RMI* iselIntExpr_RMI_wrk ( ISelEnv* env, IRExpr* e )
    }
 
    /* special case: 64-bit load from memory */
-   if (e->tag == Iex_Load && ty == Ity_I64 && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && ty == Ity_I64
+       && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       AMD64AMode* am = iselIntExpr_AMode(env, e->Iex.Load.addr);
       return AMD64RMI_Mem(am);
    }
@@ -2738,7 +2742,7 @@ static HReg iselFltExpr_wrk ( ISelEnv* env, IRExpr* e )
       return lookupIRTemp(env, e->Iex.RdTmp.tmp);
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       AMD64AMode* am;
       HReg res = newVRegV(env);
       vassert(e->Iex.Load.ty == Ity_F32);
@@ -2862,7 +2866,7 @@ static HReg iselDblExpr_wrk ( ISelEnv* env, IRExpr* e )
       return res;
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       AMD64AMode* am;
       HReg res = newVRegV(env);
       vassert(e->Iex.Load.ty == Ity_F64);
@@ -3167,7 +3171,7 @@ static HReg iselVecExpr_wrk ( ISelEnv* env, IRExpr* e )
       return dst;
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       HReg        dst = newVRegV(env);
       AMD64AMode* am  = iselIntExpr_AMode(env, e->Iex.Load.addr);
       addInstr(env, AMD64Instr_SseLdSt( True/*load*/, 16, dst, am ));
@@ -3589,11 +3593,12 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
 
    /* --------- STORE --------- */
    case Ist_Store: {
-      IRType    tya = typeOfIRExpr(env->type_env, stmt->Ist.Store.addr);
-      IRType    tyd = typeOfIRExpr(env->type_env, stmt->Ist.Store.data);
-      IREndness end = stmt->Ist.Store.end;
+      IRType    tya   = typeOfIRExpr(env->type_env, stmt->Ist.Store.addr);
+      IRType    tyd   = typeOfIRExpr(env->type_env, stmt->Ist.Store.data);
+      IREndness end   = stmt->Ist.Store.end;
+      IRTemp    resSC = stmt->Ist.Store.resSC;
 
-      if (tya != Ity_I64 || end != Iend_LE) 
+      if (tya != Ity_I64 || end != Iend_LE || resSC != IRTemp_INVALID)
          goto stmt_fail;
 
       if (tyd == Ity_I64) {
@@ -3812,9 +3817,6 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
       switch (stmt->Ist.MBE.event) {
          case Imbe_Fence:
             addInstr(env, AMD64Instr_MFence());
-            return;
-         case Imbe_BusLock:
-         case Imbe_BusUnlock:
             return;
          default:
             break;

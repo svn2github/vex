@@ -643,7 +643,8 @@ void ppIRExpr ( IRExpr* e )
       vex_printf( ")" );
       break;
     case Iex_Load:
-      vex_printf( "LD%s:", e->Iex.Load.end==Iend_LE ? "le" : "be" );
+      vex_printf( "LD%s%s:", e->Iex.Load.end==Iend_LE ? "le" : "be",
+                             e->Iex.Load.isLL ? "-LL" : "" );
       ppIRType(e->Iex.Load.ty);
       vex_printf( "(" );
       ppIRExpr(e->Iex.Load.addr);
@@ -765,6 +766,7 @@ void ppIRJumpKind ( IRJumpKind kind )
       case Ijk_NoRedir:      vex_printf("NoRedir"); break;
       case Ijk_SigTRAP:      vex_printf("SigTRAP"); break;
       case Ijk_SigSEGV:      vex_printf("SigSEGV"); break;
+      case Ijk_SigBUS:       vex_printf("SigBUS"); break;
       case Ijk_Sys_syscall:  vex_printf("Sys_syscall"); break;
       case Ijk_Sys_int32:    vex_printf("Sys_int32"); break;
       case Ijk_Sys_int128:   vex_printf("Sys_int128"); break;
@@ -778,12 +780,8 @@ void ppIRJumpKind ( IRJumpKind kind )
 void ppIRMBusEvent ( IRMBusEvent event )
 {
    switch (event) {
-      case Imbe_Fence:             vex_printf("Fence"); break;
-      case Imbe_BusLock:           vex_printf("BusLock"); break;
-      case Imbe_BusUnlock:         vex_printf("BusUnlock"); break;
-      case Imbe_SnoopedStoreBegin: vex_printf("SnoopedStoreBegin"); break;
-      case Imbe_SnoopedStoreEnd:   vex_printf("SnoopedStoreEnd"); break;
-      default:                     vpanic("ppIRMBusEvent");
+      case Imbe_Fence: vex_printf("Fence"); break;
+      default:         vpanic("ppIRMBusEvent");
    }
 }
 
@@ -826,10 +824,16 @@ void ppIRStmt ( IRStmt* s )
          ppIRExpr(s->Ist.WrTmp.data);
          break;
       case Ist_Store:
+         if (s->Ist.Store.resSC != IRTemp_INVALID) {
+            ppIRTemp(s->Ist.Store.resSC);
+            vex_printf( " = SC( " );
+         }
          vex_printf( "ST%s(", s->Ist.Store.end==Iend_LE ? "le" : "be" );
          ppIRExpr(s->Ist.Store.addr);
          vex_printf( ") = ");
          ppIRExpr(s->Ist.Store.data);
+         if (s->Ist.Store.resSC != IRTemp_INVALID)
+            vex_printf( " )" );
          break;
       case Ist_CAS:
          ppIRCAS(s->Ist.CAS.details);
@@ -1052,9 +1056,10 @@ IRExpr* IRExpr_Unop ( IROp op, IRExpr* arg ) {
    e->Iex.Unop.arg = arg;
    return e;
 }
-IRExpr* IRExpr_Load ( IREndness end, IRType ty, IRExpr* addr ) {
+IRExpr* IRExpr_Load ( Bool isLL, IREndness end, IRType ty, IRExpr* addr ) {
    IRExpr* e        = LibVEX_Alloc(sizeof(IRExpr));
    e->tag           = Iex_Load;
+   e->Iex.Load.isLL = isLL;
    e->Iex.Load.end  = end;
    e->Iex.Load.ty   = ty;
    e->Iex.Load.addr = addr;
@@ -1247,12 +1252,14 @@ IRStmt* IRStmt_WrTmp ( IRTemp tmp, IRExpr* data ) {
    s->Ist.WrTmp.data = data;
    return s;
 }
-IRStmt* IRStmt_Store ( IREndness end, IRExpr* addr, IRExpr* data ) {
-   IRStmt* s         = LibVEX_Alloc(sizeof(IRStmt));
-   s->tag            = Ist_Store;
-   s->Ist.Store.end  = end;
-   s->Ist.Store.addr = addr;
-   s->Ist.Store.data = data;
+IRStmt* IRStmt_Store ( IREndness end,
+                       IRTemp resSC, IRExpr* addr, IRExpr* data ) {
+   IRStmt* s          = LibVEX_Alloc(sizeof(IRStmt));
+   s->tag             = Ist_Store;
+   s->Ist.Store.end   = end;
+   s->Ist.Store.resSC = resSC;
+   s->Ist.Store.addr  = addr;
+   s->Ist.Store.data  = data;
    vassert(end == Iend_LE || end == Iend_BE);
    return s;
 }
@@ -1406,7 +1413,8 @@ IRExpr* deepCopyIRExpr ( IRExpr* e )
          return IRExpr_Unop(e->Iex.Unop.op,
                             deepCopyIRExpr(e->Iex.Unop.arg));
       case Iex_Load: 
-         return IRExpr_Load(e->Iex.Load.end,
+         return IRExpr_Load(e->Iex.Load.isLL,
+                            e->Iex.Load.end,
                             e->Iex.Load.ty,
                             deepCopyIRExpr(e->Iex.Load.addr));
       case Iex_Const: 
@@ -1477,6 +1485,7 @@ IRStmt* deepCopyIRStmt ( IRStmt* s )
                              deepCopyIRExpr(s->Ist.WrTmp.data));
       case Ist_Store: 
          return IRStmt_Store(s->Ist.Store.end,
+                             s->Ist.Store.resSC,
                              deepCopyIRExpr(s->Ist.Store.addr),
                              deepCopyIRExpr(s->Ist.Store.data));
       case Ist_CAS:
@@ -2588,6 +2597,9 @@ void tcStmt ( IRSB* bb, IRStmt* stmt, IRType gWordTy )
             sanityCheckFail(bb,stmt,"IRStmt.Store.data: cannot Store :: Ity_I1");
          if (stmt->Ist.Store.end != Iend_LE && stmt->Ist.Store.end != Iend_BE)
             sanityCheckFail(bb,stmt,"Ist.Store.end: bogus endianness");
+         if (stmt->Ist.Store.resSC != IRTemp_INVALID
+             && typeOfIRTemp(tyenv, stmt->Ist.Store.resSC) != Ity_I1)
+            sanityCheckFail(bb,stmt,"Ist.Store.resSC: not :: Ity_I1");
          break;
       case Ist_CAS:
          cas = stmt->Ist.CAS.details;
@@ -2682,8 +2694,7 @@ void tcStmt ( IRSB* bb, IRStmt* stmt, IRType gWordTy )
          break;
       case Ist_MBE:
          switch (stmt->Ist.MBE.event) {
-            case Imbe_Fence: case Imbe_BusLock: case Imbe_BusUnlock:
-            case Imbe_SnoopedStoreBegin: case Imbe_SnoopedStoreEnd:
+            case Imbe_Fence:
                break;
             default: sanityCheckFail(bb,stmt,"IRStmt.MBE.event: unknown");
                break;
@@ -2768,6 +2779,19 @@ void sanityCheckIRSB ( IRSB* bb,          HChar* caller,
          if (def_counts[stmt->Ist.WrTmp.tmp] > 1)
             sanityCheckFail(bb, stmt, 
                "IRStmt.Tmp: destination tmp is assigned more than once");
+         break;
+      case Ist_Store:
+         if (stmt->Ist.Store.resSC != IRTemp_INVALID) {
+            IRTemp resSC = stmt->Ist.Store.resSC;
+            if (resSC < 0 || resSC >= n_temps)
+               sanityCheckFail(bb, stmt, 
+                  "IRStmt.Store.resSC: destination tmp is out of range");
+            def_counts[resSC]++;
+            if (def_counts[resSC] > 1)
+               sanityCheckFail(bb, stmt, 
+                  "IRStmt.Store.resSC: destination tmp "
+                   "is assigned more than once");
+         }
          break;
       case Ist_Dirty:
          if (stmt->Ist.Dirty.details->tmp != IRTemp_INVALID) {

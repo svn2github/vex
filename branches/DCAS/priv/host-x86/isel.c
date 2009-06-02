@@ -760,7 +760,10 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
       HReg dst = newVRegI(env);
       X86AMode* amode = iselIntExpr_AMode ( env, e->Iex.Load.addr );
 
+      /* We can't handle big-endian loads, nor load-linked. */
       if (e->Iex.Load.end != Iend_LE)
+         goto irreducible;
+      if (e->Iex.Load.isLL)
          goto irreducible;
 
       if (ty == Ity_I32) {
@@ -1066,7 +1069,7 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          DECLARE_PATTERN(p_LDle8_then_8Uto32);
          DEFINE_PATTERN(p_LDle8_then_8Uto32,
                         unop(Iop_8Uto32,
-                             IRExpr_Load(Iend_LE,Ity_I8,bind(0))) );
+                             IRExpr_Load(False,Iend_LE,Ity_I8,bind(0))) );
          if (matchIRExpr(&mi,p_LDle8_then_8Uto32,e)) {
             HReg dst = newVRegI(env);
             X86AMode* amode = iselIntExpr_AMode ( env, mi.bindee[0] );
@@ -1080,7 +1083,7 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          DECLARE_PATTERN(p_LDle8_then_8Sto32);
          DEFINE_PATTERN(p_LDle8_then_8Sto32,
                         unop(Iop_8Sto32,
-                             IRExpr_Load(Iend_LE,Ity_I8,bind(0))) );
+                             IRExpr_Load(False,Iend_LE,Ity_I8,bind(0))) );
          if (matchIRExpr(&mi,p_LDle8_then_8Sto32,e)) {
             HReg dst = newVRegI(env);
             X86AMode* amode = iselIntExpr_AMode ( env, mi.bindee[0] );
@@ -1094,7 +1097,7 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          DECLARE_PATTERN(p_LDle16_then_16Uto32);
          DEFINE_PATTERN(p_LDle16_then_16Uto32,
                         unop(Iop_16Uto32,
-                             IRExpr_Load(Iend_LE,Ity_I16,bind(0))) );
+                             IRExpr_Load(False,Iend_LE,Ity_I16,bind(0))) );
          if (matchIRExpr(&mi,p_LDle16_then_16Uto32,e)) {
             HReg dst = newVRegI(env);
             X86AMode* amode = iselIntExpr_AMode ( env, mi.bindee[0] );
@@ -1532,7 +1535,8 @@ static X86RMI* iselIntExpr_RMI_wrk ( ISelEnv* env, IRExpr* e )
    }
 
    /* special case: 32-bit load from memory */
-   if (e->tag == Iex_Load && ty == Ity_I32 && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && ty == Ity_I32 
+       && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       X86AMode* am = iselIntExpr_AMode(env, e->Iex.Load.addr);
       return X86RMI_Mem(am);
    }
@@ -1945,7 +1949,7 @@ static void iselInt64Expr_wrk ( HReg* rHi, HReg* rLo, ISelEnv* env, IRExpr* e )
    }
 
    /* 64-bit load */
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       HReg     tLo, tHi;
       X86AMode *am0, *am4;
       vassert(e->Iex.Load.ty == Ity_I64);
@@ -2733,7 +2737,7 @@ static HReg iselFltExpr_wrk ( ISelEnv* env, IRExpr* e )
       return lookupIRTemp(env, e->Iex.RdTmp.tmp);
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       X86AMode* am;
       HReg res = newVRegF(env);
       vassert(e->Iex.Load.ty == Ity_F32);
@@ -2857,7 +2861,7 @@ static HReg iselDblExpr_wrk ( ISelEnv* env, IRExpr* e )
       return freg;
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       X86AMode* am;
       HReg res = newVRegF(env);
       vassert(e->Iex.Load.ty == Ity_F64);
@@ -3109,7 +3113,7 @@ static HReg iselVecExpr_wrk ( ISelEnv* env, IRExpr* e )
       return dst;
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
       HReg      dst = newVRegV(env);
       X86AMode* am  = iselIntExpr_AMode(env, e->Iex.Load.addr);
       addInstr(env, X86Instr_SseLdSt( True/*load*/, dst, am ));
@@ -3130,7 +3134,7 @@ static HReg iselVecExpr_wrk ( ISelEnv* env, IRExpr* e )
       DECLARE_PATTERN(p_zwiden_load64);
       DEFINE_PATTERN(p_zwiden_load64,
                      unop(Iop_64UtoV128, 
-                          IRExpr_Load(Iend_LE,Ity_I64,bind(0))));
+                          IRExpr_Load(False,Iend_LE,Ity_I64,bind(0))));
       if (matchIRExpr(&mi, p_zwiden_load64, e)) {
          X86AMode* am = iselIntExpr_AMode(env, mi.bindee[0]);
          HReg dst = newVRegV(env);
@@ -3595,11 +3599,12 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
 
    /* --------- STORE --------- */
    case Ist_Store: {
-      IRType    tya = typeOfIRExpr(env->type_env, stmt->Ist.Store.addr);
-      IRType    tyd = typeOfIRExpr(env->type_env, stmt->Ist.Store.data);
-      IREndness end = stmt->Ist.Store.end;
+      IRType    tya   = typeOfIRExpr(env->type_env, stmt->Ist.Store.addr);
+      IRType    tyd   = typeOfIRExpr(env->type_env, stmt->Ist.Store.data);
+      IREndness end   = stmt->Ist.Store.end;
+      IRTemp    resSC = stmt->Ist.Store.resSC;
 
-      if (tya != Ity_I32 || end != Iend_LE) 
+      if (tya != Ity_I32 || end != Iend_LE || resSC != IRTemp_INVALID) 
          goto stmt_fail;
 
       if (tyd == Ity_I32) {
@@ -3849,9 +3854,6 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
       switch (stmt->Ist.MBE.event) {
          case Imbe_Fence:
             addInstr(env, X86Instr_MFence(env->hwcaps));
-            return;
-         case Imbe_BusLock:
-         case Imbe_BusUnlock:
             return;
          default:
             break;

@@ -334,7 +334,8 @@ static IRExpr* flatten_Expr ( IRSB* bb, IRExpr* ex )
       case Iex_Load:
          t1 = newIRTemp(bb->tyenv, ty);
          addStmtToIRSB(bb, IRStmt_WrTmp(t1,
-            IRExpr_Load(ex->Iex.Load.end,
+            IRExpr_Load(ex->Iex.Load.isLL,
+                        ex->Iex.Load.end,
                         ex->Iex.Load.ty, 
                         flatten_Expr(bb, ex->Iex.Load.addr))));
          return IRExpr_RdTmp(t1);
@@ -425,7 +426,8 @@ static void flatten_Stmt ( IRSB* bb, IRStmt* st )
       case Ist_Store:
          e1 = flatten_Expr(bb, st->Ist.Store.addr);
          e2 = flatten_Expr(bb, st->Ist.Store.data);
-         addStmtToIRSB(bb, IRStmt_Store(st->Ist.Store.end, e1,e2));
+         addStmtToIRSB(bb, IRStmt_Store(st->Ist.Store.end,
+                                        st->Ist.Store.resSC, e1,e2));
          break;
       case Ist_CAS:
          cas  = st->Ist.CAS.details;
@@ -1672,6 +1674,7 @@ static IRExpr* subst_Expr ( IRExpr** env, IRExpr* ex )
       case Iex_Load:
          vassert(isIRAtom(ex->Iex.Load.addr));
          return IRExpr_Load(
+                   ex->Iex.Load.isLL,
                    ex->Iex.Load.end,
                    ex->Iex.Load.ty,
                    subst_Expr(env, ex->Iex.Load.addr)
@@ -1760,6 +1763,7 @@ static IRStmt* subst_and_fold_Stmt ( IRExpr** env, IRStmt* st )
          vassert(isIRAtom(st->Ist.Store.data));
          return IRStmt_Store(
                    st->Ist.Store.end,
+                   st->Ist.Store.resSC,
                    fold_Expr(subst_Expr(env, st->Ist.Store.addr)),
                    fold_Expr(subst_Expr(env, st->Ist.Store.data))
                 );
@@ -3288,6 +3292,8 @@ static void deltaIRStmt ( IRStmt* st, Int delta )
          deltaIRExpr(st->Ist.Exit.guard, delta);
          break;
       case Ist_Store:
+         if (st->Ist.Store.resSC != IRTemp_INVALID)
+            st->Ist.Store.resSC += delta;
          deltaIRExpr(st->Ist.Store.addr, delta);
          deltaIRExpr(st->Ist.Store.data, delta);
          break;
@@ -3953,6 +3959,7 @@ static IRExpr* atbSubst_Expr ( ATmpInfo* env, IRExpr* e )
                 );
       case Iex_Load:
          return IRExpr_Load(
+                   e->Iex.Load.isLL,
                    e->Iex.Load.end,
                    e->Iex.Load.ty,
                    atbSubst_Expr(env, e->Iex.Load.addr)
@@ -3989,6 +3996,7 @@ static IRStmt* atbSubst_Stmt ( ATmpInfo* env, IRStmt* st )
       case Ist_Store:
          return IRStmt_Store(
                    st->Ist.Store.end,
+                   st->Ist.Store.resSC,
                    atbSubst_Expr(env, st->Ist.Store.addr),
                    atbSubst_Expr(env, st->Ist.Store.data)
                 );
@@ -4166,13 +4174,23 @@ static IRStmt* atbSubst_Stmt ( ATmpInfo* env, IRStmt* st )
          youngest. */
 
       /* stmtPuts/stmtStores characterise what the stmt under
-         consideration does. */
-      stmtPuts = toBool(st->tag == Ist_Put 
-                        || st->tag == Ist_PutI 
-                        || st->tag == Ist_Dirty);
+         consideration does, or might do (sidely safe @ True). */
+      stmtPuts
+         = toBool( st->tag == Ist_Put
+                   || st->tag == Ist_PutI 
+                   || st->tag == Ist_Dirty );
 
-      stmtStores = toBool(st->tag == Ist_Store
-                          || st->tag == Ist_Dirty);
+      /* be True if this stmt writes memory or might do (==> we don't
+         want to reorder other loads or stores relative to it).  Also,
+         a load-linked falls under this classification, since we
+         really ought to be conservative and not reorder any other
+         memory transactions relative to it. */
+      stmtStores
+         = toBool( st->tag == Ist_Store
+                   || (st->tag == Ist_WrTmp
+                       && st->Ist.WrTmp.data->tag == Iex_Load
+                       && st->Ist.WrTmp.data->Iex.Load.isLL)
+                   || st->tag == Ist_Dirty );
 
       for (k = A_NENV-1; k >= 0; k--) {
          if (env[k].bindee == NULL)
