@@ -815,7 +815,7 @@ static HReg do_sse_NotV128 ( ISelEnv* env, HReg src )
 
    This should handle expressions of 64, 32, 16 and 8-bit type.  All
    results are returned in a 64-bit register.  For 32-, 16- and 8-bit
-   expressions, the upper 32/16/24 bits are arbitrary, so you should
+   expressions, the upper 32/48/56 bits are arbitrary, so you should
    mask or sign extend partial values if necessary.
 */
 
@@ -1631,6 +1631,20 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          case Iop_64to32:
             /* These are no-ops. */
             return iselIntExpr_R(env, e->Iex.Unop.arg);
+
+         case Iop_GetMSBs8x8: {
+            /* Note: the following assumes the helper is of
+               signature 
+                  UInt fn ( ULong ), and is not a regparm fn.
+            */
+            HReg dst = newVRegI(env);
+            HReg arg = iselIntExpr_R(env, e->Iex.Unop.arg);
+            fn = (HWord)h_generic_calc_GetMSBs8x8;
+            addInstr(env, mk_iMOVsd_RR(arg, hregAMD64_RDI()) );
+            addInstr(env, AMD64Instr_Call( Acc_ALWAYS, (ULong)fn, 1 ));
+            addInstr(env, AMD64Instr_MovZLQ(hregAMD64_RAX(), dst));
+            return dst;
+         }
 
          default: 
             break;

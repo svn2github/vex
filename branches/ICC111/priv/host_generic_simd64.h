@@ -132,6 +132,7 @@ extern ULong h_generic_calc_Max8Ux8  ( ULong, ULong );
 extern ULong h_generic_calc_Min16Sx4 ( ULong, ULong );
 extern ULong h_generic_calc_Min8Ux8  ( ULong, ULong );
 
+extern UInt  h_generic_calc_GetMSBs8x8 ( ULong );
 
 #endif /* ndef __VEX_HOST_GENERIC_SIMD64_H */
 

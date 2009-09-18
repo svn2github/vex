@@ -9902,7 +9902,7 @@ DisResult disInstr_AMD64_WRK (
 
    /* ***--- this is an MMX class insn introduced in SSE1 ---*** */
    /* 0F D7 = PMOVMSKB -- extract sign bits from each of 8 lanes in
-      mmx(G), turn them into a byte, and put zero-extend of it in
+      mmx(E), turn them into a byte, and put zero-extend of it in
       ireg(G). */
    if (haveNo66noF2noF3(pfx) && sz == 4 
        && insn[0] == 0x0F && insn[1] == 0xD7) {
@@ -9910,14 +9910,10 @@ DisResult disInstr_AMD64_WRK (
       if (epartIsReg(modrm)) {
          do_MMX_preamble();
          t0 = newTemp(Ity_I64);
-         t1 = newTemp(Ity_I64);
+         t1 = newTemp(Ity_I32);
          assign(t0, getMMXReg(eregLO3ofRM(modrm)));
-         assign(t1, mkIRExprCCall(
-                       Ity_I64, 0/*regparms*/, 
-                       "amd64g_calculate_mmx_pmovmskb",
-                       &amd64g_calculate_mmx_pmovmskb,
-                       mkIRExprVec_1(mkexpr(t0))));
-         putIReg32(gregOfRexRM(pfx,modrm), unop(Iop_64to32,mkexpr(t1)));
+         assign(t1, unop(Iop_8Uto32, unop(Iop_GetMSBs8x8, mkexpr(t0))));
+         putIReg32(gregOfRexRM(pfx,modrm), mkexpr(t1));
          DIP("pmovmskb %s,%s\n", nameMMXReg(eregLO3ofRM(modrm)),
                                  nameIReg32(gregOfRexRM(pfx,modrm)));
          delta += 3;
@@ -11829,13 +11825,13 @@ DisResult disInstr_AMD64_WRK (
          t1 = newTemp(Ity_I64);
          assign(t0, getXMMRegLane64(eregOfRexRM(pfx,modrm), 0));
          assign(t1, getXMMRegLane64(eregOfRexRM(pfx,modrm), 1));
-         t5 = newTemp(Ity_I64);
-         assign(t5, mkIRExprCCall(
-                       Ity_I64, 0/*regparms*/, 
-                       "amd64g_calculate_sse_pmovmskb",
-                       &amd64g_calculate_sse_pmovmskb,
-                       mkIRExprVec_2( mkexpr(t1), mkexpr(t0) )));
-         putIReg32(gregOfRexRM(pfx,modrm), unop(Iop_64to32,mkexpr(t5)));
+         t5 = newTemp(Ity_I32);
+         assign(t5,
+                unop(Iop_16Uto32,
+                     binop(Iop_8HLto16,
+                           unop(Iop_GetMSBs8x8, mkexpr(t1)),
+                           unop(Iop_GetMSBs8x8, mkexpr(t0)))));
+         putIReg32(gregOfRexRM(pfx,modrm), mkexpr(t5));
          DIP("pmovmskb %s,%s\n", nameXMMReg(eregOfRexRM(pfx,modrm)),
                                  nameIReg32(gregOfRexRM(pfx,modrm)));
          delta += 3;
