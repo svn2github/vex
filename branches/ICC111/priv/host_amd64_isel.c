@@ -2274,13 +2274,15 @@ static AMD64CondCode iselCondCode_wrk ( ISelEnv* env, IRExpr* e )
            || e->Iex.Binop.op == Iop_CmpLE64S
            || e->Iex.Binop.op == Iop_CmpLE64U
            || e->Iex.Binop.op == Iop_CasCmpEQ64
-           || e->Iex.Binop.op == Iop_CasCmpNE64)) {
+           || e->Iex.Binop.op == Iop_CasCmpNE64
+           || e->Iex.Binop.op == Iop_ExpCmpNE64)) {
       HReg      r1   = iselIntExpr_R(env, e->Iex.Binop.arg1);
       AMD64RMI* rmi2 = iselIntExpr_RMI(env, e->Iex.Binop.arg2);
       addInstr(env, AMD64Instr_Alu64R(Aalu_CMP,rmi2,r1));
       switch (e->Iex.Binop.op) {
          case Iop_CmpEQ64: case Iop_CasCmpEQ64: return Acc_Z;
-         case Iop_CmpNE64: case Iop_CasCmpNE64: return Acc_NZ;
+         case Iop_CmpNE64:
+         case Iop_CasCmpNE64: case Iop_ExpCmpNE64: return Acc_NZ;
 	 case Iop_CmpLT64S: return Acc_L;
 	 case Iop_CmpLT64U: return Acc_B;
 	 case Iop_CmpLE64S: return Acc_LE;
