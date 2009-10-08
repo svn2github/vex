@@ -7367,7 +7367,7 @@ ULong dis_bs_E_G ( VexAbiInfo* vbi,
       original is zero, and nonzero otherwise */
    assign( src8,
            unop(Iop_1Uto8, 
-                binop(Iop_CmpNE64,
+                binop(Iop_ExpCmpNE64,
                       mkexpr(src64), mkU64(0))) );
 
    /* Flags: Z is 1 iff source value is zero.  All others 
