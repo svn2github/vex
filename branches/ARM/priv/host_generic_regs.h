@@ -92,6 +92,7 @@ typedef UInt HReg;
 
       HRcInt32     32 bits
       HRcInt64     64 bits
+      HRcFlt32     ?? bits
       HRcFlt64     80 bits (on x86 these are spilled by fstpt/fldt)
       HRcVec64     64 bits
       HRcVec128    128 bits
@@ -102,8 +103,9 @@ typedef UInt HReg;
 typedef
    enum { 
       HRcINVALID=1,   /* NOT A VALID REGISTER CLASS */
-      HRcInt32=4,     /* 32-bit int */
-      HRcInt64=5,     /* 64-bit int */
+      HRcInt32=3,     /* 32-bit int */
+      HRcInt64=4,     /* 64-bit int */
+      HRcFlt32=5,     /* 32-bit float */
       HRcFlt64=6,     /* 64-bit float */
       HRcVec64=7,     /* 64-bit SIMD */
       HRcVec128=8     /* 128-bit SIMD */
@@ -265,10 +267,10 @@ HInstrArray* doRegisterAllocation (
    /* Apply a reg-reg mapping to an insn. */
    void (*mapRegs) (HRegRemap*, HInstr*, Bool),
 
-   /* Return an insn to spill/restore a real reg to a spill slot
+   /* Return insn(s) to spill/restore a real reg to a spill slot
       offset.  And optionally a function to do direct reloads. */
-   HInstr* (*genSpill) ( HReg, Int, Bool ),
-   HInstr* (*genReload) ( HReg, Int, Bool ),
+   void    (*genSpill) (  HInstr**, HInstr**, HReg, Int, Bool ),
+   void    (*genReload) ( HInstr**, HInstr**, HReg, Int, Bool ),
    HInstr* (*directReload) ( HInstr*, HReg, Short ),
    Int     guest_sizeB,
 

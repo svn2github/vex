@@ -6546,7 +6546,7 @@ static Bool dis_fp_round ( UInt theInstr )
    case 0x00E: // fctiw (Float Conv to Int, PPC32 p404)
       DIP("fctiw%s fr%u,fr%u\n", flag_rC ? ".":"", frD_addr, frB_addr);
       assign( r_tmp32,
-              binop(Iop_F64toI32, rm, mkexpr(frB)) );
+              binop(Iop_F64toI32S, rm, mkexpr(frB)) );
       assign( frD, unop( Iop_ReinterpI64asF64,
                          unop( Iop_32Uto64, mkexpr(r_tmp32))));
       /* FPRF is undefined after fctiw.  Leave unchanged. */
@@ -6556,7 +6556,7 @@ static Bool dis_fp_round ( UInt theInstr )
    case 0x00F: // fctiwz (Float Conv to Int, Round to Zero, PPC32 p405)
       DIP("fctiwz%s fr%u,fr%u\n", flag_rC ? ".":"", frD_addr, frB_addr);
       assign( r_tmp32, 
-              binop(Iop_F64toI32, mkU32(Irrm_ZERO), mkexpr(frB) ));
+              binop(Iop_F64toI32S, mkU32(Irrm_ZERO), mkexpr(frB) ));
       assign( frD, unop( Iop_ReinterpI64asF64,
                          unop( Iop_32Uto64, mkexpr(r_tmp32))));
       /* FPRF is undefined after fctiwz.  Leave unchanged. */
@@ -6566,7 +6566,7 @@ static Bool dis_fp_round ( UInt theInstr )
    case 0x32E: // fctid (Float Conv to Int DWord, PPC64 p437)
       DIP("fctid%s fr%u,fr%u\n", flag_rC ? ".":"", frD_addr, frB_addr);
       assign( r_tmp64,
-              binop(Iop_F64toI64, rm, mkexpr(frB)) );
+              binop(Iop_F64toI64S, rm, mkexpr(frB)) );
       assign( frD, unop( Iop_ReinterpI64asF64, mkexpr(r_tmp64)) );
       /* FPRF is undefined after fctid.  Leave unchanged. */
       set_FPRF = False;
@@ -6575,7 +6575,7 @@ static Bool dis_fp_round ( UInt theInstr )
    case 0x32F: // fctidz (Float Conv to Int DWord, Round to Zero, PPC64 p437)
       DIP("fctidz%s fr%u,fr%u\n", flag_rC ? ".":"", frD_addr, frB_addr);
       assign( r_tmp64, 
-              binop(Iop_F64toI64, mkU32(Irrm_ZERO), mkexpr(frB)) );
+              binop(Iop_F64toI64S, mkU32(Irrm_ZERO), mkexpr(frB)) );
       assign( frD, unop( Iop_ReinterpI64asF64, mkexpr(r_tmp64)) );
       /* FPRF is undefined after fctidz.  Leave unchanged. */
       set_FPRF = False;
@@ -6585,7 +6585,7 @@ static Bool dis_fp_round ( UInt theInstr )
       DIP("fcfid%s fr%u,fr%u\n", flag_rC ? ".":"", frD_addr, frB_addr);
       assign( r_tmp64, unop( Iop_ReinterpF64asI64, mkexpr(frB)) );
       assign( frD, 
-              binop(Iop_I64toF64, rm, mkexpr(r_tmp64)) );
+              binop(Iop_I64StoF64, rm, mkexpr(r_tmp64)) );
       break;
 
    default:
