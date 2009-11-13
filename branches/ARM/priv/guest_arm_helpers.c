@@ -524,6 +524,17 @@ Bool guest_arm_state_requires_precise_mem_exns ( Int minoff,
       return True;
    }
 
+   /* We appear to need precise updates of R11 in order to get proper
+      stacktraces from non-optimised code. */
+   Int r11_min = offsetof(VexGuestARMState, guest_R11);
+   Int r11_max = r11_min + 4 - 1;
+
+   if (maxoff < r11_min || minoff > r11_max) {
+      /* no overlap with pc */
+   } else {
+      return True;
+   }
+
    return False;
 }
 
