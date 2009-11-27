@@ -262,6 +262,18 @@ static IRExpr* /* :: Ity_I32 */ get_FAKE_roundingmode ( void )
    return mkU32(Irrm_NEAREST);
 }
 
+/* Generate an expression for SRC rotated right by ROT. */
+static IRExpr* genROR32( IRTemp src, Int rot )
+{
+   vassert(rot >= 0 && rot < 32);
+   if (rot == 0)
+      return mkexpr(src);
+   return
+      binop(Iop_Or32,
+            binop(Iop_Shl32, mkexpr(src), mkU8(32 - rot)),
+            binop(Iop_Shr32, mkexpr(src), mkU8(rot)));
+}
+
 
 /*------------------------------------------------------------*/
 /*--- Helpers for accessing guest registers.               ---*/
@@ -4134,13 +4146,80 @@ DisResult disInstr_ARM_WRK (
                           binop(Iop_And32, getIReg(rD), mkU32(0xFFFF)),
                           mkU32(imm16 << 16)),
                     condT, Ijk_Boring);
-            DIP("movt r%u, #0x%04x\n", rD, imm16);
+            DIP("movt%s r%u, #0x%04x\n", nCC(insn_cond), rD, imm16);
             goto decode_success;
          } else {
             putIReg(rD, mkU32(imm16), condT, Ijk_Boring);
-            DIP("movw r%u, #0x%04x\n", rD, imm16);
+            DIP("movw%s r%u, #0x%04x\n", nCC(insn_cond), rD, imm16);
             goto decode_success;
          }
+      }
+      /* fall through */
+   }
+
+   /* ------------------- {u,s}xt{b,h}{,16} ------------------- */
+   if (BITS8(0,1,1,0,1, 0,0,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,0,0))
+       && BITS4(1,1,1,1) == insn_19_16
+       && BITS4(0,1,1,1) == insn_7_4
+       && BITS4(0,0, 0,0) == (insn_11_8 & BITS4(0,0,1,1))) {
+      UInt subopc = insn_27_20 & BITS8(0,0,0,0,0, 1,1,1);
+      if (subopc != BITS4(0,0,0,1) && subopc != BITS4(0,1,0,1)) {
+         Int    rot  = (insn_11_8 >> 2) & 3;
+         UInt   rM   = insn_3_0;
+         UInt   rD   = insn_15_12;
+         IRTemp srcT = newTemp(Ity_I32);
+         IRTemp rotT = newTemp(Ity_I32);
+         IRTemp dstT = newTemp(Ity_I32);
+         HChar* nm   = "???";
+         assign(srcT, getIReg(rM));
+         assign(rotT, genROR32(srcT, 8 * rot)); /* 0, 8, 16 or 24 only */
+         switch (subopc) {
+            case BITS4(0,1,1,0): // UXTB
+               assign(dstT, unop(Iop_8Uto32, unop(Iop_32to8, mkexpr(rotT))));
+               nm = "uxtb";
+               break;
+            case BITS4(0,0,1,0): // SXTB
+               assign(dstT, unop(Iop_8Sto32, unop(Iop_32to8, mkexpr(rotT))));
+               nm = "sxtb";
+               break;
+            case BITS4(0,1,1,1): // UXTH
+               assign(dstT, unop(Iop_16Uto32, unop(Iop_32to16, mkexpr(rotT))));
+               nm = "uxth";
+               break;
+            case BITS4(0,0,1,1): // SXTH
+               assign(dstT, unop(Iop_16Sto32, unop(Iop_32to16, mkexpr(rotT))));
+               nm = "sxth";
+               break;
+            case BITS4(0,1,0,0): // UXTB16
+               assign(dstT, binop(Iop_And32, mkexpr(rotT), mkU32(0x00FF00FF)));
+               nm = "uxtb16";
+               break;
+            case BITS4(0,0,0,0): { // SXTB16
+               IRTemp lo32 = newTemp(Ity_I32);
+               IRTemp hi32 = newTemp(Ity_I32);
+               assign(lo32, binop(Iop_And32, mkexpr(rotT), mkU32(0xFF)));
+               assign(hi32, binop(Iop_Shr32, mkexpr(rotT), mkU8(16)));
+               assign(
+                  dstT,
+                  binop(Iop_Or32,
+                        binop(Iop_And32,
+                              unop(Iop_8Sto32,
+                                   unop(Iop_32to8, mkexpr(lo32))),
+                              mkU32(0xFFFF)),
+                        binop(Iop_Shl32,
+                              unop(Iop_8Sto32,
+                                   unop(Iop_32to8, mkexpr(hi32))),
+                              mkU8(16))
+               ));
+               nm = "uxtb16";
+               break;
+            }
+            default:
+               vassert(0); // guarded by "if" above
+         }
+         putIReg(rD, mkexpr(dstT), condT, Ijk_Boring);
+         DIP("%s%s r%u, r%u, ROR #%u\n", nm, nCC(insn_cond), rD, rM, rot);
+         goto decode_success;
       }
       /* fall through */
    }
