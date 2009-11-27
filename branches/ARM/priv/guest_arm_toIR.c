@@ -227,14 +227,9 @@ static IRExpr* triop ( IROp op, IRExpr* a1, IRExpr* a2, IRExpr* a3 )
    return IRExpr_Triop(op, a1, a2, a3);
 }
 
-static IRExpr* loadLE ( IRType ty, IRExpr* data )
+static IRExpr* loadLE ( IRType ty, IRExpr* addr )
 {
-   return IRExpr_Load(False, Iend_LE, ty, data);
-}
-
-static IRExpr* loadLinkedLE ( IRType ty, IRExpr* data )
-{
-   return IRExpr_Load(True, Iend_LE, ty, data);
+   return IRExpr_Load(Iend_LE, ty, addr);
 }
 
 /* Add a statement to the list held by "irbb". */
@@ -250,7 +245,7 @@ static void assign ( IRTemp dst, IRExpr* e )
 
 static void storeLE ( IRExpr* addr, IRExpr* data )
 {
-   stmt( IRStmt_Store(Iend_LE, IRTemp_INVALID, addr, data) );
+   stmt( IRStmt_Store(Iend_LE, addr, data) );
 }
 
 /* Generate a new temporary of the given type. */
@@ -2922,7 +2917,7 @@ DisResult disInstr_ARM_WRK (
       UInt   rM   = insn_3_0;
       IRTemp tRn  = newTemp(Ity_I32);
       IRTemp tNew = newTemp(Ity_I32);
-      IRTemp tOld = newTemp(Ity_I32);
+      IRTemp tOld = IRTemp_INVALID;
       IRTemp tSC1 = newTemp(Ity_I1);
       UInt   isB  = (insn >> 22) & 1;
 
@@ -2939,19 +2934,24 @@ DisResult disInstr_ARM_WRK (
          assign(tNew, getIReg(rM));
          if (isB) {
             /* swpb */
-            assign(tOld, unop(Iop_8Uto32,
-                              loadLinkedLE(Ity_I8, mkexpr(tRn))));
-            stmt( IRStmt_Store(Iend_LE, tSC1, mkexpr(tRn),
-                               unop(Iop_32to8, mkexpr(tNew))) );
+            tOld = newTemp(Ity_I8);
+            stmt( IRStmt_LLSC(Iend_LE, tOld, mkexpr(tRn),
+                              NULL/*=>isLL*/) );
+            stmt( IRStmt_LLSC(Iend_LE, tSC1, mkexpr(tRn),
+                              unop(Iop_32to8, mkexpr(tNew))) );
          } else {
             /* swp */
-            assign(tOld, loadLinkedLE(Ity_I32, mkexpr(tRn)));
-            stmt( IRStmt_Store(Iend_LE, tSC1, mkexpr(tRn), mkexpr(tNew)) );
+            tOld = newTemp(Ity_I32);
+            stmt( IRStmt_LLSC(Iend_LE, tOld, mkexpr(tRn),
+                              NULL/*=>isLL*/) );
+            stmt( IRStmt_LLSC(Iend_LE, tSC1, mkexpr(tRn),
+                              mkexpr(tNew)) );
          }
          stmt( IRStmt_Exit(unop(Iop_Not1, mkexpr(tSC1)),
-                           /*Ijk_NoRedir*/Ijk_Boring, 
+                           /*Ijk_NoRedir*/Ijk_Boring,
                            IRConst_U32(guest_R15_curr_instr)) );
-         putIReg(rD, mkexpr(tOld), IRTemp_INVALID, Ijk_Boring);
+         putIReg(rD, isB ? unop(Iop_8Uto32, mkexpr(tOld)) : mkexpr(tOld),
+                     IRTemp_INVALID, Ijk_Boring);
          DIP("swp%s%s r%u, r%u, [r%u]\n",
              isB ? "b" : "", nCC(insn_cond), rD, rM, rN);
          goto decode_success;
@@ -4067,14 +4067,16 @@ DisResult disInstr_ARM_WRK (
       if (rT == 15 || rN == 15 || rT == 14 /* || (rT & 1)*/) {
          /* undecodable; fall through */
       } else {
+         IRTemp res;
          /* make unconditional */
          if (condT != IRTemp_INVALID) {
             mk_skip_to_next_if_cond_is_false( condT );
             condT = IRTemp_INVALID;
          }
          /* Ok, now we're unconditional.  Do the load. */
-         putIReg(rT, loadLinkedLE(Ity_I32, getIReg(rN)),
-                     IRTemp_INVALID, Ijk_Boring);
+         res = newTemp(Ity_I32);
+         stmt( IRStmt_LLSC(Iend_LE, res, getIReg(rN), NULL/*this is a load*/) );
+         putIReg(rT, mkexpr(res), IRTemp_INVALID, Ijk_Boring);
          DIP("ldrex%s r%u, [r%u]\n", nCC(insn_cond), rT, rN);
          goto decode_success;
       }
@@ -4101,7 +4103,7 @@ DisResult disInstr_ARM_WRK (
 
          /* Ok, now we're unconditional.  Do the store. */
          resSC1 = newTemp(Ity_I1);
-         stmt( IRStmt_Store(Iend_LE, resSC1, getIReg(rN), getIReg(rT)) );
+         stmt( IRStmt_LLSC(Iend_LE, resSC1, getIReg(rN), getIReg(rT)) );
 
          /* Set rD to 1 on failure, 0 on success.  Currently we have
             resSC1 == 0 on failure, 1 on success. */

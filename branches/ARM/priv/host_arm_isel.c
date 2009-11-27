@@ -1029,41 +1029,24 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
    /* --------- LOAD --------- */
    case Iex_Load: {
       HReg dst  = newVRegI(env);
-      Bool isLL = e->Iex.Load.isLL;
 
       if (e->Iex.Load.end != Iend_LE)
          goto irreducible;
 
-      /* Normal (non-Load-Linked) cases */
-      if (ty == Ity_I32 && !isLL) {
+      if (ty == Ity_I32) {
          ARMAMode1* amode = iselIntExpr_AMode1 ( env, e->Iex.Load.addr );
          addInstr(env, ARMInstr_LdSt32(True/*isLoad*/, dst, amode));
          return dst;
       }
-      if (ty == Ity_I16 && !isLL) {
+      if (ty == Ity_I16) {
          ARMAMode2* amode = iselIntExpr_AMode2 ( env, e->Iex.Load.addr );
          addInstr(env, ARMInstr_LdSt16(True/*isLoad*/, False/*!signedLoad*/,
                                        dst, amode));
          return dst;
       }
-      if (ty == Ity_I8 && !isLL) {
+      if (ty == Ity_I8) {
          ARMAMode1* amode = iselIntExpr_AMode1 ( env, e->Iex.Load.addr );
          addInstr(env, ARMInstr_LdSt8U(True/*isLoad*/, dst, amode));
-         return dst;
-      }
-
-      /* Load-Linked cases */
-      if (isLL && (ty == Ity_I32 || ty == Ity_I8)) {
-         Int  szB   = 0;
-         HReg raddr = iselIntExpr_R ( env, e->Iex.Load.addr );
-         switch (ty) {
-            case Ity_I8:  szB = 1; break;
-            case Ity_I32: szB = 4; break;
-            default:      vassert(0);
-         }
-         addInstr(env, mk_iMOVds_RR(hregARM_R1(), raddr));
-         addInstr(env, ARMInstr_LdrEX(szB));
-         addInstr(env, mk_iMOVds_RR(dst, hregARM_R0()));
          return dst;
       }
 
@@ -1641,7 +1624,7 @@ static void iselInt64Expr_wrk ( HReg* rHi, HReg* rLo, ISelEnv* env, IRExpr* e )
    }
 
    /* 64-bit load */
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
       HReg      tLo, tHi, rA;
       vassert(e->Iex.Load.ty == Ity_I64);
       rA  = iselIntExpr_R(env, e->Iex.Load.addr);
@@ -1879,7 +1862,7 @@ static HReg iselDblExpr_wrk ( ISelEnv* env, IRExpr* e )
       }
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
       ARMAModeV* am;
       HReg res = newVRegD(env);
       vassert(e->Iex.Load.ty == Ity_F64);
@@ -2033,7 +2016,7 @@ static HReg iselFltExpr_wrk ( ISelEnv* env, IRExpr* e )
       return lookupIRTemp(env, e->Iex.RdTmp.tmp);
    }
 
-   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE && !e->Iex.Load.isLL) {
+   if (e->tag == Iex_Load && e->Iex.Load.end == Iend_LE) {
       ARMAModeV* am;
       HReg res = newVRegF(env);
       vassert(e->Iex.Load.ty == Ity_F32);
@@ -2164,32 +2147,30 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
       IRType    tya  = typeOfIRExpr(env->type_env, stmt->Ist.Store.addr);
       IRType    tyd  = typeOfIRExpr(env->type_env, stmt->Ist.Store.data);
       IREndness end  = stmt->Ist.Store.end;
-      Bool      isSC = stmt->Ist.Store.resSC != IRTemp_INVALID;
 
       if (tya != Ity_I32 || end != Iend_LE) 
          goto stmt_fail;
 
-      /* normal (non-Store-Conditional) cases */
-      if (tyd == Ity_I32 && !isSC) {
+      if (tyd == Ity_I32) {
          HReg       rD = iselIntExpr_R(env, stmt->Ist.Store.data);
          ARMAMode1* am = iselIntExpr_AMode1(env, stmt->Ist.Store.addr);
          addInstr(env, ARMInstr_LdSt32(False/*!isLoad*/, rD, am));
          return;
       }
-      if (tyd == Ity_I16 && !isSC) {
+      if (tyd == Ity_I16) {
          HReg       rD = iselIntExpr_R(env, stmt->Ist.Store.data);
          ARMAMode2* am = iselIntExpr_AMode2(env, stmt->Ist.Store.addr);
          addInstr(env, ARMInstr_LdSt16(False/*!isLoad*/,
                                        False/*!isSignedLoad*/, rD, am));
          return;
       }
-      if (tyd == Ity_I8 && !isSC) {
+      if (tyd == Ity_I8) {
          HReg       rD = iselIntExpr_R(env, stmt->Ist.Store.data);
          ARMAMode1* am = iselIntExpr_AMode1(env, stmt->Ist.Store.addr);
          addInstr(env, ARMInstr_LdSt8U(False/*!isLoad*/, rD, am));
          return;
       }
-      if (tyd == Ity_I64 && !isSC) {
+      if (tyd == Ity_I64) {
          HReg rDhi, rDlo, rA;
          iselInt64Expr(&rDhi, &rDlo, env, stmt->Ist.Store.data);
          rA = iselIntExpr_R(env, stmt->Ist.Store.addr);
@@ -2199,40 +2180,16 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
                                        ARMAMode1_RI(rA,0)));
          return;
       }
-      if (tyd == Ity_F64 && !isSC) {
+      if (tyd == Ity_F64) {
          HReg       dD = iselDblExpr(env, stmt->Ist.Store.data);
          ARMAModeV* am = iselIntExpr_AModeV(env, stmt->Ist.Store.addr);
          addInstr(env, ARMInstr_VLdStD(False/*!isLoad*/, dD, am));
          return;
       }
-      if (tyd == Ity_F32 && !isSC) {
+      if (tyd == Ity_F32) {
          HReg       fD = iselFltExpr(env, stmt->Ist.Store.data);
          ARMAModeV* am = iselIntExpr_AModeV(env, stmt->Ist.Store.addr);
          addInstr(env, ARMInstr_VLdStS(False/*!isLoad*/, fD, am));
-         return;
-      }
-
-      /* Store-Conditional cases */
-      if (isSC && (tyd == Ity_I32 || tyd == Ity_I8)) {
-         Int  szB     = 0;
-         HReg r_res   = lookupIRTemp(env, stmt->Ist.Store.resSC);
-         HReg rD      = iselIntExpr_R(env, stmt->Ist.Store.data);
-         HReg rA      = iselIntExpr_R(env, stmt->Ist.Store.addr);
-         ARMRI84* one = ARMRI84_I84(1,0);
-         switch (tyd) {
-            case Ity_I8:  szB = 1; break;
-            case Ity_I32: szB = 4; break;
-            default:      vassert(0);
-         }
-         addInstr(env, mk_iMOVds_RR(hregARM_R1(), rD));
-         addInstr(env, mk_iMOVds_RR(hregARM_R2(), rA));
-         addInstr(env, ARMInstr_StrEX(szB));
-         /* now r0 is 1 if failed, 0 if success.  Change to IR
-            conventions (0 is fail, 1 is success).  Also transfer
-            result to r_res. */
-         addInstr(env, ARMInstr_Alu(ARMalu_XOR, r_res, hregARM_R0(), one));
-         /* And be conservative -- mask off all but the lowest bit */
-         addInstr(env, ARMInstr_Alu(ARMalu_AND, r_res, r_res, one));
          return;
       }
 
@@ -2381,6 +2338,60 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
          return;
       }
 
+      break;
+   }
+
+   /* --------- Load Linked and Store Conditional --------- */
+   case Ist_LLSC: {
+      if (stmt->Ist.LLSC.storedata == NULL) {
+         /* LL */
+         IRTemp res = stmt->Ist.LLSC.result;
+         IRType ty  = typeOfIRTemp(env->type_env, res);
+         if (ty == Ity_I32 || ty == Ity_I8) {
+            Int  szB   = 0;
+            HReg r_dst = lookupIRTemp(env, res);
+            HReg raddr = iselIntExpr_R(env, stmt->Ist.LLSC.addr);
+            switch (ty) {
+               case Ity_I8:  szB = 1; break;
+               case Ity_I32: szB = 4; break;
+               default:      vassert(0);
+            }
+            addInstr(env, mk_iMOVds_RR(hregARM_R1(), raddr));
+            addInstr(env, ARMInstr_LdrEX(szB));
+            addInstr(env, mk_iMOVds_RR(r_dst, hregARM_R0()));
+            return;
+         }
+         /* else fall thru; is unhandled */
+      } else {
+         /* SC */
+         IRTemp res = stmt->Ist.LLSC.result;
+         IRType ty  = typeOfIRTemp(env->type_env, res);
+         IRType tyd = typeOfIRExpr(env->type_env, stmt->Ist.LLSC.storedata);
+         vassert(ty == Ity_I1);
+         if (tyd == Ity_I32 || tyd == Ity_I8) {
+            Int  szB     = 0;
+            HReg r_res   = lookupIRTemp(env, res);
+            HReg rD      = iselIntExpr_R(env, stmt->Ist.LLSC.storedata);
+            HReg rA      = iselIntExpr_R(env, stmt->Ist.LLSC.addr);
+            ARMRI84* one = ARMRI84_I84(1,0);
+            switch (tyd) {
+               case Ity_I8:  szB = 1; break;
+               case Ity_I32: szB = 4; break;
+               default:      vassert(0);
+            }
+            addInstr(env, mk_iMOVds_RR(hregARM_R1(), rD));
+            addInstr(env, mk_iMOVds_RR(hregARM_R2(), rA));
+            addInstr(env, ARMInstr_StrEX(szB));
+            /* now r0 is 1 if failed, 0 if success.  Change to IR
+               conventions (0 is fail, 1 is success).  Also transfer
+               result to r_res. */
+            addInstr(env, ARMInstr_Alu(ARMalu_XOR, r_res, hregARM_R0(), one));
+            /* And be conservative -- mask off all but the lowest bit */
+            addInstr(env, ARMInstr_Alu(ARMalu_AND, r_res, r_res, one));
+            return;
+         }
+         /* else fall thru; is unhandled */
+      }
       break;
    }
 
