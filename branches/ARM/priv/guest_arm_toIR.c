@@ -2712,14 +2712,20 @@ DisResult disInstr_ARM_WRK (
       /* fall through */
    }
 
-   // MLA
-   if (BITS8(0,0,0,0,0,0,1,0) == (insn_27_20 & BITS8(1,1,1,1,1,1,1,0))
+   // MLA, MLS
+   if (BITS8(0,0,0,0,0,0,1,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,0))
        && insn_7_4 == BITS4(1,0,0,1)) {
-      UInt bitS = (insn >> 20) & 1; /* 20:20 */
+      UInt bitS  = (insn >> 20) & 1; /* 20:20 */
+      UInt isMLS = (insn >> 22) & 1; /* 22:22 */
       UInt rD = insn_19_16;
       UInt rN = insn_15_12;
       UInt rS = insn_11_8;
       UInt rM = insn_3_0;
+      if (bitS == 1 && isMLS == 1) {
+         /* This isn't allowed (MLS that sets flags).  don't decode;
+            fall through */
+      }
+      else
       if (rD == 15 || rM == 15 || rS == 15 || rN == 15) {
          /* Unpredictable; don't decode; fall through */
       } else {
@@ -2732,10 +2738,11 @@ DisResult disInstr_ARM_WRK (
          assign( argL, getIReg(rM));
          assign( argR, getIReg(rS));
          assign( argP, getIReg(rN));
-         assign( res, binop(Iop_Add32,
-                            binop(Iop_Mul32, mkexpr(argL), mkexpr(argR)),
-                            mkexpr(argP)) );
+         assign( res, binop(isMLS ? Iop_Sub32 : Iop_Add32,
+                            mkexpr(argP),
+                            binop(Iop_Mul32, mkexpr(argL), mkexpr(argR)) ));
          if (bitS) {
+            vassert(!isMLS); // guaranteed above
             oldC = newTemp(Ity_I32);
             assign(oldC, mk_armg_calculate_flag_c());
             oldV = newTemp(Ity_I32);
@@ -2750,8 +2757,8 @@ DisResult disInstr_ARM_WRK (
                                 mkexpr(oldV)) );
             setFlags_D1_D3( ARMG_CC_OP_MUL, res, pair, condT );
          }
-         DIP("mla%c%s r%u, r%u, r%u, r%u\n",
-             bitS ? 's' : ' ', nCC(insn_cond), rD, rM, rS, rN);
+         DIP("ml%c%c%s r%u, r%u, r%u, r%u\n",
+             isMLS ? 's' : 'a', bitS ? 's' : ' ', nCC(insn_cond), rD, rM, rS, rN);
          goto decode_success;
       }
       /* fall through */
