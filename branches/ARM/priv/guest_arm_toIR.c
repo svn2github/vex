@@ -2679,7 +2679,7 @@ DisResult disInstr_ARM_WRK (
       UInt rD = insn_19_16;
       UInt rS = insn_11_8;
       UInt rM = insn_3_0;
-      if (rD == 15 || rM == 15 || rS == 15 || rD == rM) {
+      if (rD == 15 || rM == 15 || rS == 15) {
          /* Unpredictable; don't decode; fall through */
       } else {
          IRTemp argL = newTemp(Ity_I32);
@@ -2720,7 +2720,7 @@ DisResult disInstr_ARM_WRK (
       UInt rN = insn_15_12;
       UInt rS = insn_11_8;
       UInt rM = insn_3_0;
-      if (rD == 15 || rM == 15 || rS == 15 || rN == 15 || rD == rM) {
+      if (rD == 15 || rM == 15 || rS == 15 || rN == 15) {
          /* Unpredictable; don't decode; fall through */
       } else {
          IRTemp argL = newTemp(Ity_I32);
@@ -2766,8 +2766,7 @@ DisResult disInstr_ARM_WRK (
       UInt rS   = insn_11_8;
       UInt rM   = insn_3_0;
       UInt isS  = (insn_27_20 >> 2) & 1; /* 22:22 */
-      if (rDhi == 15 || rDlo == 15 || rM == 15 || rS == 15
-          || rDhi == rDlo || rDhi == rM || rDlo == rM)  {
+      if (rDhi == 15 || rDlo == 15 || rM == 15 || rS == 15 || rDhi == rDlo)  {
          /* Unpredictable; don't decode; fall through */
       } else {
          IRTemp argL  = newTemp(Ity_I32);
@@ -2816,8 +2815,7 @@ DisResult disInstr_ARM_WRK (
       UInt rS   = insn_11_8;
       UInt rM   = insn_3_0;
       UInt isS  = (insn_27_20 >> 2) & 1; /* 22:22 */
-      if (rDhi == 15 || rDlo == 15 || rM == 15 || rS == 15
-          || rDhi == rDlo || rDhi == rM || rDlo == rM)  {
+      if (rDhi == 15 || rDlo == 15 || rM == 15 || rS == 15 || rDhi == rDlo)  {
          /* Unpredictable; don't decode; fall through */
       } else {
          IRTemp argL  = newTemp(Ity_I32);
