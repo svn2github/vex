@@ -4229,6 +4229,50 @@ DisResult disInstr_ARM_WRK (
       /* fall through */
    }
 
+   /* ------------------- bfi, bfc ------------------- */
+   if (BITS8(0,1,1,1,1,1,0, 0) == (insn_27_20 & BITS8(1,1,1,1,1,1,1,0))
+       && BITS4(0, 0,0,1) == (insn_7_4 & BITS4(0,1,1,1))) {
+      UInt rD  = insn_15_12;
+      UInt rN  = insn_3_0;
+      UInt msb = (insn >> 16) & 0x1F; /* 20:16 */
+      UInt lsb = (insn >> 7) & 0x1F;  /* 11:7 */
+      if (rD == 15 || msb < lsb) {
+         /* undecodable; fall through */
+      } else {
+         IRTemp src    = newTemp(Ity_I32);
+         IRTemp olddst = newTemp(Ity_I32);
+         IRTemp newdst = newTemp(Ity_I32);
+         UInt   mask = 1 << (msb - lsb);
+         mask = (mask - 1) + mask;
+         vassert(mask != 0); // guaranteed by "msb < lsb" check above
+         mask <<= lsb;
+
+         assign(src, rN == 15 ? mkU32(0) : getIReg(rN));
+         assign(olddst, getIReg(rD));
+         assign(newdst,
+                binop(Iop_Or32,
+                   binop(Iop_And32,
+                         binop(Iop_Shl32, mkexpr(src), mkU8(lsb)), 
+                         mkU32(mask)),
+                   binop(Iop_And32,
+                         mkexpr(olddst),
+                         mkU32(~mask)))
+               );
+
+         putIReg(rD, mkexpr(newdst), condT, Ijk_Boring);
+
+         if (rN == 15) {
+            DIP("bfc%s r%u, #%u, #%u\n",
+                nCC(insn_cond), rD, lsb, msb-lsb+1);
+         } else {
+            DIP("bfi%s r%u, r%u, #%u, #%u\n",
+                nCC(insn_cond), rD, rN, lsb, msb-lsb+1);
+         }
+         goto decode_success;
+      }
+      /* fall through */
+   }
+
    /* ----------------------------------------------------------- */
    /* -- Undecodable                                           -- */
    /* ----------------------------------------------------------- */
