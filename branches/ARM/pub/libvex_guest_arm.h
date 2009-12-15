@@ -50,10 +50,9 @@
 /*--- Vex's representation of the ARM CPU state.              ---*/
 /*---------------------------------------------------------------*/
 
-/* R13 traditionally used as the stack pointer ? */
-
 typedef
    struct {
+      /* 0 */
       UInt guest_R0;
       UInt guest_R1;
       UInt guest_R2;
@@ -73,16 +72,14 @@ typedef
 
       /* 4-word thunk used to calculate N(sign) Z(zero) C(carry,
          unsigned overflow) and V(signed overflow) flags. */
-
       /* 64 */
       UInt guest_CC_OP;
       UInt guest_CC_DEP1;
       UInt guest_CC_DEP2;
-      UInt guest_CC_DEP3;
+      UInt guest_CC_NDEP;
 
       /* Various pseudo-regs mandated by Vex or Valgrind. */
       /* Emulation warnings */
-      /* 80 */
       UInt guest_EMWARN;
 
       /* For clflush: record start and length of area to invalidate */
@@ -99,12 +96,13 @@ typedef
 
       /* Needed for Darwin (but mandated for all guest architectures):
          program counter at the last syscall insn (int 0x80/81/82,
-         sysenter, syscall).  Used when backing up to restart a
+         sysenter, syscall, svc).  Used when backing up to restart a
          syscall that has been interrupted by a signal. */
       /* 96 */
       UInt guest_IP_AT_SYSCALL;
 
       /* VFP state.  D0 .. D15 must be 8-aligned. */
+      /* 104 -- I guess there's 4 bytes of padding just prior to this? */
       ULong guest_D0;
       ULong guest_D1;
       ULong guest_D2;

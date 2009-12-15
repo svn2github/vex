@@ -418,7 +418,7 @@ void LibVEX_GuestARM_put_flags ( UInt flags_native,
    vex_state->guest_CC_OP   = ARMG_CC_OP_COPY;
    vex_state->guest_CC_DEP1 = flags_native;
    vex_state->guest_CC_DEP2 = 0;
-   vex_state->guest_CC_DEP3 = 0;
+   vex_state->guest_CC_NDEP = 0;
 }
 #endif
 
@@ -430,7 +430,7 @@ UInt LibVEX_GuestARM_get_cpsr ( /*IN*/VexGuestARMState* vex_state )
               vex_state->guest_CC_OP,
               vex_state->guest_CC_DEP1,
               vex_state->guest_CC_DEP2,
-              vex_state->guest_CC_DEP3
+              vex_state->guest_CC_NDEP
            );
    return nzcv;
 }
@@ -458,7 +458,7 @@ void LibVEX_GuestARM_initialise ( /*OUT*/VexGuestARMState* vex_state )
    vex_state->guest_CC_OP   = ARMG_CC_OP_COPY;
    vex_state->guest_CC_DEP1 = 0;
    vex_state->guest_CC_DEP2 = 0;
-   vex_state->guest_CC_DEP3 = 0;
+   vex_state->guest_CC_NDEP = 0;
 
    vex_state->guest_EMWARN  = 0;
    vex_state->guest_TISTART = 0;
@@ -560,19 +560,20 @@ VexGuestLayout
 
           /* Describe any sections to be regarded by Memcheck as
              'always-defined'. */
-          .n_alwaysDefd = 7,
+          .n_alwaysDefd = 8,
 
           /* flags thunk: OP is always defd, whereas DEP1 and DEP2
              have to be tracked.  See detailed comment in gdefs.h on
              meaning of thunk fields. */
           .alwaysDefd
-             = { /* */ ALWAYSDEFD(guest_R15),
-                 /* */ ALWAYSDEFD(guest_CC_OP),
-                 /* */ ALWAYSDEFD(guest_EMWARN),
-                 /* */ ALWAYSDEFD(guest_TISTART),
-                 /* */ ALWAYSDEFD(guest_TILEN),
-                 /* */ ALWAYSDEFD(guest_NRADDR),
-                 /* */ ALWAYSDEFD(guest_IP_AT_SYSCALL)
+             = { /* 0 */ ALWAYSDEFD(guest_R15),
+                 /* 1 */ ALWAYSDEFD(guest_CC_OP),
+                 /* 2 */ ALWAYSDEFD(guest_CC_NDEP),
+                 /* 3 */ ALWAYSDEFD(guest_EMWARN),
+                 /* 4 */ ALWAYSDEFD(guest_TISTART),
+                 /* 5 */ ALWAYSDEFD(guest_TILEN),
+                 /* 6 */ ALWAYSDEFD(guest_NRADDR),
+                 /* 7 */ ALWAYSDEFD(guest_IP_AT_SYSCALL)
                }
         };
 

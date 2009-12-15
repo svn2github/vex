@@ -299,7 +299,7 @@ static IRExpr* genROR32( IRTemp src, Int rot )
 #define OFFB_CC_OP    offsetof(VexGuestARMState,guest_CC_OP)
 #define OFFB_CC_DEP1  offsetof(VexGuestARMState,guest_CC_DEP1)
 #define OFFB_CC_DEP2  offsetof(VexGuestARMState,guest_CC_DEP2)
-#define OFFB_CC_DEP3  offsetof(VexGuestARMState,guest_CC_DEP3)
+#define OFFB_CC_NDEP  offsetof(VexGuestARMState,guest_CC_NDEP)
 #define OFFB_NRADDR   offsetof(VexGuestARMState,guest_NRADDR)
 
 #define OFFB_D0       offsetof(VexGuestARMState,guest_D0)
@@ -653,7 +653,7 @@ static HChar* nCC ( ARMCondcode cond ) {
 
 
 /* Build IR to calculate some particular condition from stored
-   CC_OP/CC_DEP1/CC_DEP2/CC_DEP3.  Returns an expression of type
+   CC_OP/CC_DEP1/CC_DEP2/CC_NDEP.  Returns an expression of type
    Ity_I32, suitable for narrowing.  Although the return type is
    Ity_I32, the returned value is either 0 or 1.
 */
@@ -665,10 +665,11 @@ static IRExpr* mk_armg_calculate_condition ( ARMCondcode cond )
    vassert(cond >= 0 && cond <= 15);
    IRExpr** args
       = mkIRExprVec_4(
-           binop(Iop_Or32, IRExpr_Get(OFFB_CC_OP,   Ity_I32), mkU32(cond << 4)),
+           binop(Iop_Or32, IRExpr_Get(OFFB_CC_OP, Ity_I32),
+                           mkU32(cond << 4)),
            IRExpr_Get(OFFB_CC_DEP1, Ity_I32),
            IRExpr_Get(OFFB_CC_DEP2, Ity_I32),
-           IRExpr_Get(OFFB_CC_DEP3, Ity_I32)
+           IRExpr_Get(OFFB_CC_NDEP, Ity_I32)
         );
    IRExpr* call
       = mkIRExprCCall(
@@ -678,15 +679,15 @@ static IRExpr* mk_armg_calculate_condition ( ARMCondcode cond )
            args
         );
 
-   /* Exclude the requested condition and OP from definedness
+   /* Exclude the requested condition, OP and NDEP from definedness
       checking.  We're only interested in DEP1 and DEP2. */
-   call->Iex.CCall.cee->mcx_mask = (1<<0) | (1<<1);
+   call->Iex.CCall.cee->mcx_mask = (1<<0) | (1<<3);
    return call;
 }
 
 
 /* Build IR to calculate just the carry flag from stored
-   CC_OP/CC_DEP1/CC_DEP2/CC_DEP3.  Returns an expression ::
+   CC_OP/CC_DEP1/CC_DEP2/CC_NDEP.  Returns an expression ::
    Ity_I32. */
 static IRExpr* mk_armg_calculate_flag_c ( void )
 {
@@ -694,7 +695,7 @@ static IRExpr* mk_armg_calculate_flag_c ( void )
       = mkIRExprVec_4( IRExpr_Get(OFFB_CC_OP,   Ity_I32),
                        IRExpr_Get(OFFB_CC_DEP1, Ity_I32),
                        IRExpr_Get(OFFB_CC_DEP2, Ity_I32),
-                       IRExpr_Get(OFFB_CC_DEP3, Ity_I32) );
+                       IRExpr_Get(OFFB_CC_NDEP, Ity_I32) );
    IRExpr* call
       = mkIRExprCCall(
            Ity_I32,
@@ -702,15 +703,15 @@ static IRExpr* mk_armg_calculate_flag_c ( void )
            "armg_calculate_flag_c", &armg_calculate_flag_c,
            args
         );
-   /* Exclude OP from definedness checking.  We're only
-      interested in DEP1/2/3. */
-   call->Iex.CCall.cee->mcx_mask = 1;
+   /* Exclude OP and NDEP from definedness checking.  We're only
+      interested in DEP1 and DEP2. */
+   call->Iex.CCall.cee->mcx_mask = (1<<0) | (1<<3);
    return call;
 }
 
 
 /* Build IR to calculate just the overflow flag from stored
-   CC_OP/CC_DEP1/CC_DEP2/CC_DEP3.  Returns an expression ::
+   CC_OP/CC_DEP1/CC_DEP2/CC_NDEP.  Returns an expression ::
    Ity_I32. */
 static IRExpr* mk_armg_calculate_flag_v ( void )
 {
@@ -718,7 +719,7 @@ static IRExpr* mk_armg_calculate_flag_v ( void )
       = mkIRExprVec_4( IRExpr_Get(OFFB_CC_OP,   Ity_I32),
                        IRExpr_Get(OFFB_CC_DEP1, Ity_I32),
                        IRExpr_Get(OFFB_CC_DEP2, Ity_I32),
-                       IRExpr_Get(OFFB_CC_DEP3, Ity_I32) );
+                       IRExpr_Get(OFFB_CC_NDEP, Ity_I32) );
    IRExpr* call
       = mkIRExprCCall(
            Ity_I32,
@@ -726,9 +727,9 @@ static IRExpr* mk_armg_calculate_flag_v ( void )
            "armg_calculate_flag_v", &armg_calculate_flag_v,
            args
         );
-   /* Exclude OP from definedness checking.  We're only
-      interested in DEP1/2/3. */
-   call->Iex.CCall.cee->mcx_mask = 1;
+   /* Exclude OP and NDEP from definedness checking.  We're only
+      interested in DEP1 and DEP2. */
+   call->Iex.CCall.cee->mcx_mask = (1<<0) | (1<<3);
    return call;
 }
 
@@ -741,7 +742,7 @@ static IRExpr* mk_armg_calculate_flags_nzcv ( void )
       = mkIRExprVec_4( IRExpr_Get(OFFB_CC_OP,   Ity_I32),
                        IRExpr_Get(OFFB_CC_DEP1, Ity_I32),
                        IRExpr_Get(OFFB_CC_DEP2, Ity_I32),
-                       IRExpr_Get(OFFB_CC_DEP3, Ity_I32) );
+                       IRExpr_Get(OFFB_CC_NDEP, Ity_I32) );
    IRExpr* call
       = mkIRExprCCall(
            Ity_I32,
@@ -749,9 +750,9 @@ static IRExpr* mk_armg_calculate_flags_nzcv ( void )
            "armg_calculate_flags_nzcv", &armg_calculate_flags_nzcv,
            args
         );
-   /* Exclude OP from definedness checking.  We're only
-      interested in DEP1/2/3. */
-   call->Iex.CCall.cee->mcx_mask = 1;
+   /* Exclude OP and NDEP from definedness checking.  We're only
+      interested in DEP1 and DEP2. */
+   call->Iex.CCall.cee->mcx_mask = (1<<0) | (1<<3);
    return call;
 }
 
@@ -760,21 +761,21 @@ static IRExpr* mk_armg_calculate_flags_nzcv ( void )
    guard is IRTemp_INVALID then it's unconditional, else it holds a
    condition :: Ity_I32. */
 static
-void setFlags_D1_D2_D3 ( UInt cc_op, IRTemp t_dep1,
-                         IRTemp t_dep2, IRTemp t_dep3,
+void setFlags_D1_D2_ND ( UInt cc_op, IRTemp t_dep1,
+                         IRTemp t_dep2, IRTemp t_ndep,
                          IRTemp guardT /* :: Ity_I32, 0 or 1 */ )
 {
    IRTemp c8;
    vassert(typeOfIRTemp(irsb->tyenv, t_dep1 == Ity_I32));
    vassert(typeOfIRTemp(irsb->tyenv, t_dep2 == Ity_I32));
-   vassert(typeOfIRTemp(irsb->tyenv, t_dep3 == Ity_I32));
+   vassert(typeOfIRTemp(irsb->tyenv, t_ndep == Ity_I32));
    vassert(cc_op >= ARMG_CC_OP_COPY && cc_op < ARMG_CC_OP_NUMBER);
    if (guardT == IRTemp_INVALID) {
       /* unconditional */
       stmt( IRStmt_Put( OFFB_CC_OP,   mkU32(cc_op) ));
       stmt( IRStmt_Put( OFFB_CC_DEP1, mkexpr(t_dep1) ));
       stmt( IRStmt_Put( OFFB_CC_DEP2, mkexpr(t_dep2) ));
-      stmt( IRStmt_Put( OFFB_CC_DEP3, mkexpr(t_dep3) ));
+      stmt( IRStmt_Put( OFFB_CC_NDEP, mkexpr(t_ndep) ));
    } else {
       /* conditional */
       c8 = newTemp(Ity_I8);
@@ -795,15 +796,15 @@ void setFlags_D1_D2_D3 ( UInt cc_op, IRTemp t_dep1,
                              IRExpr_Get(OFFB_CC_DEP2, Ity_I32),
                              mkexpr(t_dep2) )));
       stmt( IRStmt_Put(
-               OFFB_CC_DEP3,
+               OFFB_CC_NDEP,
                IRExpr_Mux0X( mkexpr(c8),
-                             IRExpr_Get(OFFB_CC_DEP3, Ity_I32),
-                             mkexpr(t_dep3) )));
+                             IRExpr_Get(OFFB_CC_NDEP, Ity_I32),
+                             mkexpr(t_ndep) )));
    }
 }
 
 
-/* Minor variant of the above that sets DEP3 to zero (if it
+/* Minor variant of the above that sets NDEP to zero (if it
    sets it at all) */
 static void setFlags_D1_D2 ( UInt cc_op, IRTemp t_dep1,
                              IRTemp t_dep2,
@@ -811,30 +812,30 @@ static void setFlags_D1_D2 ( UInt cc_op, IRTemp t_dep1,
 {
    IRTemp z32 = newTemp(Ity_I32);
    assign( z32, mkU32(0) );
-   setFlags_D1_D2_D3( cc_op, t_dep1, t_dep2, z32, guardT );
+   setFlags_D1_D2_ND( cc_op, t_dep1, t_dep2, z32, guardT );
 }
 
 
 /* Minor variant of the above that sets DEP2 to zero (if it
    sets it at all) */
-static void setFlags_D1_D3 ( UInt cc_op, IRTemp t_dep1,
-                             IRTemp t_dep3,
+static void setFlags_D1_ND ( UInt cc_op, IRTemp t_dep1,
+                             IRTemp t_ndep,
                              IRTemp guardT /* :: Ity_I32, 0 or 1 */ )
 {
    IRTemp z32 = newTemp(Ity_I32);
    assign( z32, mkU32(0) );
-   setFlags_D1_D2_D3( cc_op, t_dep1, z32, t_dep3, guardT );
+   setFlags_D1_D2_ND( cc_op, t_dep1, z32, t_ndep, guardT );
 }
 
 
-/* Minor variant of the above that sets DEP2 and DEP3 to zero (if it
+/* Minor variant of the above that sets DEP2 and NDEP to zero (if it
    sets them at all) */
 static void setFlags_D1 ( UInt cc_op, IRTemp t_dep1,
                           IRTemp guardT /* :: Ity_I32, 0 or 1 */ )
 {
    IRTemp z32 = newTemp(Ity_I32);
    assign( z32, mkU32(0) );
-   setFlags_D1_D2_D3( cc_op, t_dep1, z32, z32, guardT );
+   setFlags_D1_D2_ND( cc_op, t_dep1, z32, z32, guardT );
 }
 
 
@@ -1309,7 +1310,7 @@ static Bool mk_shifter_operand ( UInt insn_25, UInt insn_11_0,
                               unop(Iop_32to8,
                                    binop(Iop_Sub32, mkU32(32), mkexpr(amt5T))
                               )
-                              )
+                        )
                   )
                )
             );
@@ -1787,7 +1788,7 @@ DisResult disInstr_ARM_WRK (
                   case Iop_Or32:
                   case Iop_Xor32:
                      // oldV has been read just above
-                     setFlags_D1_D2_D3( ARMG_CC_OP_LOGIC,
+                     setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC,
                                         res, shco, oldV, condT );
                      break;
                   default:
@@ -1825,7 +1826,7 @@ DisResult disInstr_ARM_WRK (
             putIReg( rD, mkexpr(res), condT, Ijk_Boring );
             /* Update the flags thunk if necessary */
             if (bitS) {
-               setFlags_D1_D2_D3( ARMG_CC_OP_LOGIC, 
+               setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, 
                                   res, shco, oldV, condT );
             }
             DIP("%s%s%s r%u, %s\n",
@@ -1881,7 +1882,7 @@ DisResult disInstr_ARM_WRK (
                                mkexpr(rNt), mkexpr(shop)) );
             oldV = newTemp(Ity_I32);
             assign( oldV, mk_armg_calculate_flag_v() );
-            setFlags_D1_D2_D3( ARMG_CC_OP_LOGIC,
+            setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC,
                                res, shco, oldV, condT );
             DIP("%s%s r%u, %s\n",
                 isTEQ ? "teq" : "tst",
@@ -1944,15 +1945,15 @@ DisResult disInstr_ARM_WRK (
                vassert(shco != IRTemp_INVALID);
                switch (insn_24_21) {
                   case BITS4(0,1,0,1): /* ADC */
-                     setFlags_D1_D2_D3( ARMG_CC_OP_ADC,
+                     setFlags_D1_D2_ND( ARMG_CC_OP_ADC,
                                         rNt, shop, oldC, condT );
                      break;
                   case BITS4(0,1,1,0): /* SBC */
-                     setFlags_D1_D2_D3( ARMG_CC_OP_SBB,
+                     setFlags_D1_D2_ND( ARMG_CC_OP_SBB,
                                         rNt, shop, oldC, condT );
                      break;
                   case BITS4(0,1,1,1): /* RSC */
-                     setFlags_D1_D2_D3( ARMG_CC_OP_SBB,
+                     setFlags_D1_D2_ND( ARMG_CC_OP_SBB,
                                         shop, rNt, oldC, condT );
                      break;
                   default:
@@ -2703,7 +2704,7 @@ DisResult disInstr_ARM_WRK (
             assign( pair, binop(Iop_Or32,
                                 binop(Iop_Shl32, mkexpr(oldC), mkU8(1)),
                                 mkexpr(oldV)) );
-            setFlags_D1_D3( ARMG_CC_OP_MUL, res, pair, condT );
+            setFlags_D1_ND( ARMG_CC_OP_MUL, res, pair, condT );
          }
          DIP("mul%c%s r%u, r%u, r%u\n",
              bitS ? 's' : ' ', nCC(insn_cond), rD, rM, rS);
@@ -2755,7 +2756,7 @@ DisResult disInstr_ARM_WRK (
             assign( pair, binop(Iop_Or32,
                                 binop(Iop_Shl32, mkexpr(oldC), mkU8(1)),
                                 mkexpr(oldV)) );
-            setFlags_D1_D3( ARMG_CC_OP_MUL, res, pair, condT );
+            setFlags_D1_ND( ARMG_CC_OP_MUL, res, pair, condT );
          }
          DIP("ml%c%c%s r%u, r%u, r%u, r%u\n",
              isMLS ? 's' : 'a', bitS ? 's' : ' ', nCC(insn_cond), rD, rM, rS, rN);
@@ -2803,7 +2804,7 @@ DisResult disInstr_ARM_WRK (
             assign( pair, binop(Iop_Or32,
                                 binop(Iop_Shl32, mkexpr(oldC), mkU8(1)),
                                 mkexpr(oldV)) );
-            setFlags_D1_D2_D3( ARMG_CC_OP_MULL, resLo, resHi, pair, condT );
+            setFlags_D1_D2_ND( ARMG_CC_OP_MULL, resLo, resHi, pair, condT );
          }
          DIP("%cmull%c%s r%u, r%u, r%u, r%u\n",
              isS ? 's' : 'u', bitS ? 's' : ' ',
@@ -2856,7 +2857,7 @@ DisResult disInstr_ARM_WRK (
             assign( pair, binop(Iop_Or32,
                                 binop(Iop_Shl32, mkexpr(oldC), mkU8(1)),
                                 mkexpr(oldV)) );
-            setFlags_D1_D2_D3( ARMG_CC_OP_MULL, resLo, resHi, pair, condT );
+            setFlags_D1_D2_ND( ARMG_CC_OP_MULL, resLo, resHi, pair, condT );
          }
          DIP("%cmlal%c%s r%u, r%u, r%u, r%u\n",
              isS ? 's' : 'u', bitS ? 's' : ' ', nCC(insn_cond),
