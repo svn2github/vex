@@ -184,6 +184,9 @@ static UInt ROR32 ( UInt x, UInt sh ) {
 #define BITS2(_b1,_b0) \
    (((_b1) << 1) | (_b0))
 
+#define BITS3(_b2,_b1,_b0)                      \
+  (((_b2) << 2) | ((_b1) << 1) | (_b0))
+
 #define BITS4(_b3,_b2,_b1,_b0) \
    (((_b3) << 3) | ((_b2) << 2) | ((_b1) << 1) | (_b0))
 
@@ -1550,7 +1553,7 @@ DisResult disInstr_ARM_WRK (
    UInt      insn_cond, insn_27_20, insn_24_21, insn_11_0, insn_3_0;
    UInt      insn_25, insn_7, insn_4, insn_27_24, insn_21, summary;
    UInt      insn_11_4, insn_19_12, insn_19_16, insn_15_12;
-   UInt      insn_11_8, insn_7_4, insn_22_21;
+   UInt      insn_11_8, insn_7_4, insn_22_21, insn_22_20;
    HChar     dis_buf[128];  // big enough to hold LDMIA etc text
 
    /* What insn variants are we supporting today? */
@@ -1593,6 +1596,7 @@ DisResult disInstr_ARM_WRK (
    insn_4     = (insn >> 4)  & 1;
    insn_27_24 = (insn >> 24) & 0xF;
    insn_22_21 = (insn >> 21) & 3;
+   insn_22_20 = (insn >> 20) & 7;
    insn_21    = (insn >> 21) & 1;
    insn_11_4  = (insn >> 4)  & 0xFF;
    insn_19_12 = (insn >> 12) & 0xFF;
@@ -4310,6 +4314,225 @@ DisResult disInstr_ARM_WRK (
       }
       /* fall through */
    }
+
+   /* ------------------- smul{b,t}{b,t} ------------- */
+   if (BITS8(0,0,0,1,0,1,1,0) == insn_27_20
+       && BITS4(0,0,0,0) == insn_15_12
+       && BITS4(1,0,0,0) == (insn_7_4 & BITS4(1,0,0,1))) {
+      UInt rD  = insn_19_16;
+      UInt rM  = insn_11_8;
+      UInt rN  = insn_3_0;
+      UInt bM = (insn >> 6) & 1;
+      UInt bN = (insn >> 5) & 1;
+      if (bN == 0 && bM == 1) goto decode_failure; //ATC
+      if (bN == 1 && bM == 0) goto decode_failure; //ATC
+      if (bN == 1 && bM == 1) goto decode_failure; //ATC
+      if (rD == 15 || rN == 15 || rM == 15) {
+         /* undecodable; fall through */
+      } else {
+         IRTemp srcL = newTemp(Ity_I32);
+         IRTemp srcR = newTemp(Ity_I32);
+         IRTemp res  = newTemp(Ity_I32);
+
+         /* Extract and sign extend the two 16-bit operands */
+         assign(srcL, binop(Iop_Sar32,
+                            binop(Iop_Shl32, getIReg(rN),
+                                             mkU8(bN ? 0 : 16)),
+                            mkU8(16)));
+         assign(srcR, binop(Iop_Sar32,
+                            binop(Iop_Shl32, getIReg(rM),
+                                             mkU8(bM ? 0 : 16)),
+                            mkU8(16)));
+
+         assign(res, binop(Iop_Mul32, mkexpr(srcL), mkexpr(srcR)));
+         putIReg(rD, mkexpr(res), condT, Ijk_Boring);
+
+         DIP("smul%c%c%s r%u, r%u, r%u\n",
+             bN ? 't' : 'b', bM ? 't' : 'b', nCC(insn_cond), rD, rN, rM);
+         goto decode_success;
+      }
+      /* fall through */
+   }
+
+   /* --------------------- Load/store doubleword ------------- */
+   // LDRD STRD
+   /*                 31   27   23   19 15 11   7    3     # highest bit
+                        28   24   20 16 12    8    4    0
+      A5-36   1 | 16  cond 0001 U100 Rn Rd im4h 11S1 im4l
+      A5-38   1 | 32  cond 0001 U000 Rn Rd 0000 11S1 Rm
+      A5-40   2 | 16  cond 0001 U110 Rn Rd im4h 11S1 im4l
+      A5-42   2 | 32  cond 0001 U010 Rn Rd 0000 11S1 Rm
+      A5-44   3 | 16  cond 0000 U100 Rn Rd im4h 11S1 im4l
+      A5-46   3 | 32  cond 0000 U000 Rn Rd 0000 11S1 Rm
+   */
+   /* case coding:
+             1   at-ea               (access at ea)
+             2   at-ea-then-upd      (access at ea, then Rn = ea)
+             3   at-Rn-then-upd      (access at Rn, then Rn = ea)
+      ea coding
+             16  Rn +/- imm8
+             32  Rn +/- Rm
+   */
+   /* Quickly skip over all of this for hopefully most instructions */
+   if ((insn_27_24 & BITS4(1,1,1,0)) != BITS4(0,0,0,0))
+      goto after_load_store_doubleword;
+
+   /* Check the "11S1" thing. */
+   if ((insn_7_4 & BITS4(1,1,0,1)) != BITS4(1,1,0,1))
+      goto after_load_store_doubleword;
+
+   summary = 0;
+
+   /**/ if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(1,0,0)) {
+      summary = 1 | 16;
+   }
+   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(0,0,0)) {
+      summary = 1 | 32;
+   }
+   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(1,1,0)) {
+      summary = 2 | 16;
+   }
+   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(0,1,0)) {
+      summary = 2 | 32;
+      goto decode_failure; //ATC
+   }
+   else if (insn_27_24 == BITS4(0,0,0,0) && insn_22_20 == BITS3(1,0,0)) {
+      summary = 3 | 16;
+      goto decode_failure; //ATC
+   }
+   else if (insn_27_24 == BITS4(0,0,0,0) && insn_22_20 == BITS3(0,0,0)) {
+      summary = 3 | 32;
+      goto decode_failure; //ATC
+   }
+   else goto after_load_store_doubleword;
+
+   { UInt rN   = (insn >> 16) & 0xF; /* 19:16 */
+     UInt rD   = (insn >> 12) & 0xF; /* 15:12 */
+     UInt rM   = (insn >> 0)  & 0xF; /*  3:0  */
+     UInt bU   = (insn >> 23) & 1;   /* 23 U=1 offset+, U=0 offset- */
+     UInt bS   = (insn >> 5) & 1;    /* S=1 store, S=0 load */
+     UInt imm8 = ((insn >> 4) & 0xF0) | (insn & 0xF); /* 11:8, 3:0 */
+
+     /* Require rD to be an even numbered register */
+     if ((rD & 1) != 0)
+        goto after_load_store_doubleword;
+
+     /* Require 11:8 == 0 for Rn +/- Rm cases */
+     if ((summary & 32) != 0 && (imm8 & 0xF0) != 0)
+        goto after_load_store_doubleword;
+
+     /* Skip some invalid cases, which would lead to two competing
+        updates to the same register, or which are otherwise
+        disallowed by the spec. */
+     switch (summary) {
+        case 1 | 16:
+           break;
+        case 1 | 32: 
+           if (rM == 15) goto after_load_store_doubleword;
+           break;
+        case 2 | 16: case 3 | 16:
+           if (rN == 15) goto after_load_store_doubleword;
+           if (bS == 0 && (rN == rD || rN == rD+1))
+              goto after_load_store_doubleword;
+           break;
+        case 2 | 32: case 3 | 32:
+           if (rM == 15) goto after_load_store_doubleword;
+           if (rN == 15) goto after_load_store_doubleword;
+           if (rN == rM) goto after_load_store_doubleword;
+           if (bS == 0 && (rN == rD || rN == rD+1))
+              goto after_load_store_doubleword;
+           break;
+        default:
+           vassert(0);
+     }
+
+     /* Now, we can't do a conditional load or store, since that very
+        likely will generate an exception.  So we have to take a side
+        exit at this point if the condition is false. */
+     if (condT != IRTemp_INVALID) {
+        mk_skip_to_next_if_cond_is_false( condT );
+        condT = IRTemp_INVALID;
+     }
+     /* Ok, now we're unconditional.  Do the load or store. */
+
+     /* compute the effective address.  Bind it to a tmp since we
+        may need to use it twice. */
+     IRExpr* eaE = NULL;
+     switch (summary & 0xF0) {
+        case 16:
+           eaE = mk_EA_reg_plusminus_imm8( rN, bU, imm8, dis_buf );
+           break;
+        case 32:
+           eaE = mk_EA_reg_plusminus_reg( rN, bU, rM, dis_buf );
+           break;
+     }
+     vassert(eaE);
+     IRTemp eaT = newTemp(Ity_I32);
+     assign(eaT, eaE);
+
+     /* get the old Rn value */
+     IRTemp rnT = newTemp(Ity_I32);
+     assign(rnT, getIReg(rN));
+
+     /* decide on the transfer address */
+     IRTemp taT = IRTemp_INVALID;
+     switch (summary & 0x0F) {
+        case 1: case 2: taT = eaT; break;
+        case 3:         taT = rnT; break;
+     }
+     vassert(taT != IRTemp_INVALID);
+
+     /* XXX deal with alignment constraints */
+     /* XXX: but the A8 doesn't seem to trap for misaligned loads, so,
+        ignore alignment issues for the time being. */
+
+     /* doubleword store  S 1
+        doubleword load   S 0
+     */
+     HChar* name = NULL;
+     /* generate the transfers */
+     if (bS == 1) { // doubleword store
+        storeLE( binop(Iop_Add32, mkexpr(taT), mkU32(0)), getIReg(rD+0) );
+        storeLE( binop(Iop_Add32, mkexpr(taT), mkU32(4)), getIReg(rD+1) );
+        name = "strd";
+     } else { // doubleword load
+        putIReg( rD+0,
+                 loadLE(Ity_I32, binop(Iop_Add32, mkexpr(taT), mkU32(0))),
+                 IRTemp_INVALID, Ijk_Boring );
+        putIReg( rD+1,
+                 loadLE(Ity_I32, binop(Iop_Add32, mkexpr(taT), mkU32(4))),
+                 IRTemp_INVALID, Ijk_Boring );
+        name = "ldrd";
+     }
+
+     /* Update Rn if necessary. */
+     switch (summary & 0x0F) {
+        case 2: case 3:
+           // should be assured by logic above:
+           if (bS == 0) {
+              vassert(rD+0 != rN); /* since we just wrote rD+0 */
+              vassert(rD+1 != rN); /* since we just wrote rD+1 */
+           }
+           putIReg( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
+           break;
+     }
+
+     switch (summary & 0x0F) {
+        case 1:  DIP("%s%s r%u, %s\n", name, nCC(insn_cond), rD, dis_buf);
+                 break;
+        case 2:  DIP("%s%s r%u, %s! (at-EA-then-Rn=EA)\n",
+                     name, nCC(insn_cond), rD, dis_buf);
+                 break;
+        case 3:  DIP("%s%s r%u, %s! (at-Rn-then-Rn=EA)\n",
+                     name, nCC(insn_cond), rD, dis_buf);
+                 break;
+        default: vassert(0);
+     }
+
+     goto decode_success;
+   }
+
+  after_load_store_doubleword:
 
    /* ----------------------------------------------------------- */
    /* -- Undecodable                                           -- */
