@@ -4548,18 +4548,45 @@ DisResult disInstr_ARM_WRK (
          IRTemp srcL = newTemp(Ity_I32);
          IRTemp srcR = newTemp(Ity_I32);
          IRTemp res  = newTemp(Ity_I32);
-
          assign(srcR, getIReg(rM));
          assign(srcL, getIReg(rN));
          assign(res,  binop(Iop_Add32,
                             mkexpr(srcL),
-                            binop(Iop_And32,
-                                  genROR32(srcR, 8 * rot),
-                                  mkU32(0xFF))));
+                            unop(Iop_8Sto32,
+                                 unop(Iop_32to8, 
+                                      genROR32(srcR, 8 * rot)))));
+         putIReg(rD, mkexpr(res), condT, Ijk_Boring);
+         DIP("sxtab%s r%u, r%u, r%u, ror #%u\n",
+             nCC(insn_cond), rD, rN, rM, rot);
+         goto decode_success;
+      }
+      /* fall through */
+   }
 
+   /* ------------------- uxtah ------------- */
+   if (BITS8(0,1,1,0,1,1,1,1) == insn_27_20
+       && BITS4(0,0,0,0) == (insn_11_8 & BITS4(0,0,1,1))
+       && BITS4(0,1,1,1) == insn_7_4) {
+      UInt rN  = insn_19_16;
+      UInt rD  = insn_15_12;
+      UInt rM  = insn_3_0;
+      UInt rot = (insn >> 10) & 3;
+      if (rN == 15/*it's UXTH*/ || rD == 15 || rM == 15) {
+         /* undecodable; fall through */
+      } else {
+         IRTemp srcL = newTemp(Ity_I32);
+         IRTemp srcR = newTemp(Ity_I32);
+         IRTemp res  = newTemp(Ity_I32);
+         assign(srcR, getIReg(rM));
+         assign(srcL, getIReg(rN));
+         assign(res,  binop(Iop_Add32,
+                            mkexpr(srcL),
+                            unop(Iop_16Uto32,
+                                 unop(Iop_32to16, 
+                                      genROR32(srcR, 8 * rot)))));
          putIReg(rD, mkexpr(res), condT, Ijk_Boring);
 
-         DIP("sxtab%s r%u, r%u, r%u, ror #%u\n",
+         DIP("uxtah%s r%u, r%u, r%u, ror #%u\n",
              nCC(insn_cond), rD, rN, rM, rot);
          goto decode_success;
       }
