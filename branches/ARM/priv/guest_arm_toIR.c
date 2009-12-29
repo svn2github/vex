@@ -149,18 +149,6 @@ static IRTemp r15kind;
 /*--- arm insn stream.                                     ---*/
 /*------------------------------------------------------------*/
 
-/* Do a big-endian load of a 32-bit word, regardless of the endianness
-   of the underlying host. */
-static UInt getUIntBigEndianly ( UChar* p )
-{
-   UInt w = 0;
-   w = (w << 8) | p[0];
-   w = (w << 8) | p[1];
-   w = (w << 8) | p[2];
-   w = (w << 8) | p[3];
-   return w;
-}
-
 /* Do a little-endian load of a 32-bit word, regardless of the
    endianness of the underlying host. */
 static UInt getUIntLittleEndianly ( UChar* p )
@@ -1545,15 +1533,18 @@ DisResult disInstr_ARM_WRK (
              VexAbiInfo*  abiinfo
           )
 {
+   // A macro to fish bits out of 'insn'.
+#  define INSN(_bMax,_bMin) \
+      ((insn >> (_bMin)) & ((1 << ((_bMax) - (_bMin) + 1)) - 1))
+#  define INSN_COND \
+      INSN(31,28)
+
    DisResult dres;
    UInt      insn;
    //Bool      allow_VFP = False;
    //UInt      hwcaps = archinfo->hwcaps;
    IRTemp    condT; /* :: Ity_I32 */
-   UInt      insn_cond, insn_27_20, insn_24_21, insn_11_0, insn_3_0;
-   UInt      insn_25, insn_7, insn_4, insn_27_24, insn_21, summary;
-   UInt      insn_11_4, insn_19_12, insn_19_16, insn_15_12;
-   UInt      insn_11_8, insn_7_4, insn_22_21, insn_22_20;
+   UInt      summary;
    HChar     dis_buf[128];  // big enough to hold LDMIA etc text
 
    /* What insn variants are we supporting today? */
@@ -1585,25 +1576,6 @@ DisResult disInstr_ARM_WRK (
       vassert(0 == (guest_R15_curr_instr & 3));
       llPutIReg( 15, mkU32(guest_R15_curr_instr) );
    }
-
-   insn_cond  = (insn >> 28) & 0xF;
-   insn_27_20 = (insn >> 20) & 0xFF;
-   insn_24_21 = (insn >> 21) & 0xF;
-   insn_11_0  = (insn >> 0)  & 0xFFF;
-   insn_3_0   = (insn >> 0)  & 0xF;
-   insn_25    = (insn >> 25) & 1;
-   insn_7     = (insn >> 7)  & 1;
-   insn_4     = (insn >> 4)  & 1;
-   insn_27_24 = (insn >> 24) & 0xF;
-   insn_22_21 = (insn >> 21) & 3;
-   insn_22_20 = (insn >> 20) & 7;
-   insn_21    = (insn >> 21) & 1;
-   insn_11_4  = (insn >> 4)  & 0xFF;
-   insn_19_12 = (insn >> 12) & 0xFF;
-   insn_19_16 = (insn >> 16) & 0xF;
-   insn_15_12 = (insn >> 12) & 0xF;
-   insn_11_8  = (insn >> 8) & 0xF;
-   insn_7_4   = (insn >> 4) & 0xF;
 
    /* ----------------------------------------------------------- */
 
@@ -1675,7 +1647,7 @@ DisResult disInstr_ARM_WRK (
       whether they must generate a side exit before the instruction.
       condT :: Ity_I32 and is always either zero or one. */
    condT = IRTemp_INVALID;
-   switch ( (ARMCondcode)insn_cond ) {
+   switch ( (ARMCondcode)INSN_COND ) {
       case ARMCondNV: // Illegal instruction prior to v5 (see ARM ARM A3-5)
          goto decode_failure;
       case ARMCondAL: // Always executed
@@ -1685,7 +1657,7 @@ DisResult disInstr_ARM_WRK (
       case ARMCondHI: case ARMCondLS: case ARMCondGE: case ARMCondLT:
       case ARMCondGT: case ARMCondLE:
          condT = newTemp(Ity_I32);
-         assign( condT, mk_armg_calculate_condition( insn_cond ));
+         assign( condT, mk_armg_calculate_condition( INSN_COND ));
          break;
    }
 
@@ -1695,8 +1667,8 @@ DisResult disInstr_ARM_WRK (
 
    /* ---------------- Data processing ops ------------------- */
 
-   if (0 == (insn_27_20 & BITS8(1,1,0,0,0,0,0,0))
-       && !(insn_25 == 0 && insn_7 == 1 && insn_4 == 1)) {
+   if (0 == (INSN(27,20) & BITS8(1,1,0,0,0,0,0,0))
+       && !(INSN(25,25) == 0 && INSN(7,7) == 1 && INSN(4,4) == 1)) {
       IRTemp  shop = IRTemp_INVALID; /* shifter operand */
       IRTemp  shco = IRTemp_INVALID; /* shifter carry out */
       UInt    rD   = (insn >> 12) & 0xF; /* 15:12 */
@@ -1710,7 +1682,7 @@ DisResult disInstr_ARM_WRK (
       IROp    op   = Iop_INVALID;
       Bool    ok;
 
-      switch (insn_24_21) {
+      switch (INSN(24,21)) {
 
          /* --------- ADD, SUB, AND, OR --------- */
          case BITS4(0,1,0,0): /* ADD:  Rd = Rn + shifter_operand */
@@ -1730,7 +1702,7 @@ DisResult disInstr_ARM_WRK (
          rd_eq_rn_op_SO: {
             Bool isRSB = False;
             Bool isBIC = False;
-            switch (insn_24_21) {
+            switch (INSN(24,21)) {
                case BITS4(0,0,1,1):
                   vassert(op == Iop_Sub32); isRSB = True; break;
                case BITS4(1,1,1,0):
@@ -1741,7 +1713,7 @@ DisResult disInstr_ARM_WRK (
             rNt = newTemp(Ity_I32);
             assign(rNt, getIReg(rN));
             ok = mk_shifter_operand(
-                    insn_25, insn_11_0, 
+                    INSN(25,25), INSN(11,0), 
                     &shop, bitS ? &shco : NULL, dis_buf
                  );
             if (!ok)
@@ -1800,18 +1772,18 @@ DisResult disInstr_ARM_WRK (
                }
             }
             DIP("%s%s%s r%u, r%u, %s\n",
-                name, nCC(insn_cond), bitS ? "s" : "", rD, rN, dis_buf );
+                name, nCC(INSN_COND), bitS ? "s" : "", rD, rN, dis_buf );
             goto decode_success;
          }
 
          /* --------- MOV, MVN --------- */
          case BITS4(1,1,0,1):   /* MOV: Rd = shifter_operand */
          case BITS4(1,1,1,1): { /* MVN: Rd = not(shifter_operand) */
-            Bool isMVN = insn_24_21 == BITS4(1,1,1,1);
+            Bool isMVN = INSN(24,21) == BITS4(1,1,1,1);
             if (rN != 0)
                break; /* rN must be zero */
             ok = mk_shifter_operand(
-                    insn_25, insn_11_0, 
+                    INSN(25,25), INSN(11,0), 
                     &shop, bitS ? &shco : NULL, dis_buf
                  );
             if (!ok)
@@ -1835,14 +1807,14 @@ DisResult disInstr_ARM_WRK (
             }
             DIP("%s%s%s r%u, %s\n",
                 isMVN ? "mvn" : "mov",
-                nCC(insn_cond), bitS ? "s" : "", rD, dis_buf );
+                nCC(INSN_COND), bitS ? "s" : "", rD, dis_buf );
             goto decode_success;
          }
 
          /* --------- CMP --------- */
          case BITS4(1,0,1,0):   /* CMP:  (void) Rn - shifter_operand */
          case BITS4(1,0,1,1): { /* CMN:  (void) Rn + shifter_operand */
-            Bool isCMN = insn_24_21 == BITS4(1,0,1,1);
+            Bool isCMN = INSN(24,21) == BITS4(1,0,1,1);
             if (rD != 0)
                break; /* rD must be zero */
             if (bitS == 0)
@@ -1850,7 +1822,7 @@ DisResult disInstr_ARM_WRK (
             rNt = newTemp(Ity_I32);
             assign(rNt, getIReg(rN));
             ok = mk_shifter_operand(
-                    insn_25, insn_11_0, 
+                    INSN(25,25), INSN(11,0), 
                     &shop, NULL, dis_buf
                  );
             if (!ok)
@@ -1860,14 +1832,14 @@ DisResult disInstr_ARM_WRK (
                             rNt, shop, condT );
             DIP("%s%s r%u, %s\n",
                 isCMN ? "cmn" : "cmp",
-                nCC(insn_cond), rN, dis_buf );
+                nCC(INSN_COND), rN, dis_buf );
             goto decode_success;
          }
 
          /* --------- TST --------- */
          case BITS4(1,0,0,0):   /* TST:  (void) Rn & shifter_operand */
          case BITS4(1,0,0,1): { /* TEQ:  (void) Rn ^ shifter_operand */
-            Bool isTEQ = insn_24_21 == BITS4(1,0,0,1);
+            Bool isTEQ = INSN(24,21) == BITS4(1,0,0,1);
             if (rD != 0)
                break; /* rD must be zero */
             if (bitS == 0)
@@ -1875,7 +1847,7 @@ DisResult disInstr_ARM_WRK (
             rNt = newTemp(Ity_I32);
             assign(rNt, getIReg(rN));
             ok = mk_shifter_operand(
-                    insn_25, insn_11_0, 
+                    INSN(25,25), INSN(11,0), 
                     &shop, &shco, dis_buf
                  );
             if (!ok)
@@ -1890,7 +1862,7 @@ DisResult disInstr_ARM_WRK (
                                res, shco, oldV, condT );
             DIP("%s%s r%u, %s\n",
                 isTEQ ? "teq" : "tst",
-                nCC(insn_cond), rN, dis_buf );
+                nCC(INSN_COND), rN, dis_buf );
             goto decode_success;
          }
 
@@ -1905,7 +1877,7 @@ DisResult disInstr_ARM_WRK (
             rNt = newTemp(Ity_I32);
             assign(rNt, getIReg(rN));
             ok = mk_shifter_operand(
-                    insn_25, insn_11_0, 
+                    INSN(25,25), INSN(11,0), 
                     &shop, bitS ? &shco : NULL, dis_buf
                  );
             if (!ok)
@@ -1914,7 +1886,7 @@ DisResult disInstr_ARM_WRK (
             assign( oldC, mk_armg_calculate_flag_c() );
             res = newTemp(Ity_I32);
             // compute the main result
-            switch (insn_24_21) {
+            switch (INSN(24,21)) {
                case BITS4(0,1,0,1): /* ADC */
                   assign(res,
                          binop(Iop_Add32,
@@ -1947,7 +1919,7 @@ DisResult disInstr_ARM_WRK (
             /* Update the flags thunk if necessary */
             if (bitS) {
                vassert(shco != IRTemp_INVALID);
-               switch (insn_24_21) {
+               switch (INSN(24,21)) {
                   case BITS4(0,1,0,1): /* ADC */
                      setFlags_D1_D2_ND( ARMG_CC_OP_ADC,
                                         rNt, shop, oldC, condT );
@@ -1965,7 +1937,7 @@ DisResult disInstr_ARM_WRK (
                }
             }
             DIP("%s%s%s r%u, r%u, %s\n",
-                name, nCC(insn_cond), bitS ? "s" : "", rD, rN, dis_buf );
+                name, nCC(INSN_COND), bitS ? "s" : "", rD, rN, dis_buf );
             goto decode_success;
          }
 
@@ -1973,7 +1945,7 @@ DisResult disInstr_ARM_WRK (
          default:
             break;
       }
-   } /* if (0 == (insn_27_20 & BITS8(1,1,0,0,0,0,0,0)) */
+   } /* if (0 == (INSN(27,20) & BITS8(1,1,0,0,0,0,0,0)) */
 
    /* --------------------- Load/store (ubyte & word) -------- */
    // LDR STR LDRB STRB
@@ -1995,27 +1967,30 @@ DisResult disInstr_ARM_WRK (
              32  Rn +/- Rm sh2 imm5
    */
    /* Quickly skip over all of this for hopefully most instructions */
-   if ((insn_27_24 & BITS4(1,1,0,0)) != BITS4(0,1,0,0))
+   if ((INSN(27,24) & BITS4(1,1,0,0)) != BITS4(0,1,0,0))
       goto after_load_store_ubyte_or_word;
 
    summary = 0;
    
-   /**/ if (insn_27_24 == BITS4(0,1,0,1) && insn_21 == 0) {
+   /**/ if (INSN(27,24) == BITS4(0,1,0,1) && INSN(21,21) == 0) {
       summary = 1 | 16;
    }
-   else if (insn_27_24 == BITS4(0,1,1,1) && insn_21 == 0 && insn_4 == 0) {
+   else if (INSN(27,24) == BITS4(0,1,1,1) && INSN(21,21) == 0
+                                          && INSN(4,4) == 0) {
       summary = 1 | 32;
    }
-   else if (insn_27_24 == BITS4(0,1,0,1) && insn_21 == 1) {
+   else if (INSN(27,24) == BITS4(0,1,0,1) && INSN(21,21) == 1) {
       summary = 2 | 16;
    }
-   else if (insn_27_24 == BITS4(0,1,1,1) && insn_21 == 1 && insn_4 == 0) {
+   else if (INSN(27,24) == BITS4(0,1,1,1) && INSN(21,21) == 1
+                                          && INSN(4,4) == 0) {
       summary = 2 | 32;
    }
-   else if (insn_27_24 == BITS4(0,1,0,0) && insn_21 == 0) {
+   else if (INSN(27,24) == BITS4(0,1,0,0) && INSN(21,21) == 0) {
       summary = 3 | 16;
    }
-   else if (insn_27_24 == BITS4(0,1,1,0) && insn_21 == 0 && insn_4 == 0) {
+   else if (INSN(27,24) == BITS4(0,1,1,0) && INSN(21,21) == 0
+                                          && INSN(4,4) == 0) {
       summary = 3 | 32;
    }
    else goto after_load_store_ubyte_or_word;
@@ -2147,15 +2122,15 @@ DisResult disInstr_ARM_WRK (
      switch (summary & 0x0F) {
         case 1:  DIP("%sr%s%s r%u, %s\n",
                      bL == 0 ? "st" : "ld",
-                     bB == 0 ? "" : "b", nCC(insn_cond), rD, dis_buf);
+                     bB == 0 ? "" : "b", nCC(INSN_COND), rD, dis_buf);
                  break;
         case 2:  DIP("%sr%s%s r%u, %s! (at-EA-then-Rn=EA)\n",
                      bL == 0 ? "st" : "ld",
-                     bB == 0 ? "" : "b", nCC(insn_cond), rD, dis_buf);
+                     bB == 0 ? "" : "b", nCC(INSN_COND), rD, dis_buf);
                  break;
         case 3:  DIP("%sr%s%s r%u, %s! (at-Rn-then-Rn=EA)\n",
                      bL == 0 ? "st" : "ld",
-                     bB == 0 ? "" : "b", nCC(insn_cond), rD, dis_buf);
+                     bB == 0 ? "" : "b", nCC(INSN_COND), rD, dis_buf);
                  break;
         default: vassert(0);
      }
@@ -2203,31 +2178,31 @@ DisResult disInstr_ARM_WRK (
              32  Rn +/- Rm
    */
    /* Quickly skip over all of this for hopefully most instructions */
-   if ((insn_27_24 & BITS4(1,1,1,0)) != BITS4(0,0,0,0))
+   if ((INSN(27,24) & BITS4(1,1,1,0)) != BITS4(0,0,0,0))
       goto after_load_store_sbyte_or_hword;
 
    /* Check the "1SH1" thing. */
-   if ((insn_7_4 & BITS4(1,0,0,1)) != BITS4(1,0,0,1))
+   if ((INSN(7,4) & BITS4(1,0,0,1)) != BITS4(1,0,0,1))
       goto after_load_store_sbyte_or_hword;
 
    summary = 0;
 
-   /**/ if (insn_27_24 == BITS4(0,0,0,1) && insn_22_21 == BITS2(1,0)) {
+   /**/ if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,21) == BITS2(1,0)) {
       summary = 1 | 16;
    }
-   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_21 == BITS2(0,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,21) == BITS2(0,0)) {
       summary = 1 | 32;
    }
-   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_21 == BITS2(1,1)) {
+   else if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,21) == BITS2(1,1)) {
       summary = 2 | 16;
    }
-   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_21 == BITS2(0,1)) {
+   else if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,21) == BITS2(0,1)) {
       summary = 2 | 32;
    }
-   else if (insn_27_24 == BITS4(0,0,0,0) && insn_22_21 == BITS2(1,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,0) && INSN(22,21) == BITS2(1,0)) {
       summary = 3 | 16;
    }
-   else if (insn_27_24 == BITS4(0,0,0,0) && insn_22_21 == BITS2(0,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,0) && INSN(22,21) == BITS2(0,0)) {
       summary = 3 | 32;
    }
    else goto after_load_store_sbyte_or_hword;
@@ -2352,13 +2327,13 @@ DisResult disInstr_ARM_WRK (
      }
 
      switch (summary & 0x0F) {
-        case 1:  DIP("%s%s r%u, %s\n", name, nCC(insn_cond), rD, dis_buf);
+        case 1:  DIP("%s%s r%u, %s\n", name, nCC(INSN_COND), rD, dis_buf);
                  break;
         case 2:  DIP("%s%s r%u, %s! (at-EA-then-Rn=EA)\n",
-                     name, nCC(insn_cond), rD, dis_buf);
+                     name, nCC(INSN_COND), rD, dis_buf);
                  break;
         case 3:  DIP("%s%s r%u, %s! (at-Rn-then-Rn=EA)\n",
-                     name, nCC(insn_cond), rD, dis_buf);
+                     name, nCC(INSN_COND), rD, dis_buf);
                  break;
         default: vassert(0);
      }
@@ -2387,7 +2362,7 @@ DisResult disInstr_ARM_WRK (
    // LD/STMIA LD/STMIB LD/STMDA LD/STMDB
    // Remarkably complex and difficult to get right
    // match 27:20 as 100XX0WL
-   if (BITS8(1,0,0,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,0,0,1,0,0))) {
+   if (BITS8(1,0,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,1,0,0))) {
       // A5-50 LD/STMIA  cond 1000 10WL Rn RegList
       // A5-51 LD/STMIB  cond 1001 10WL Rn RegList
       // A5-53 LD/STMDA  cond 1000 00WL Rn RegList
@@ -2572,7 +2547,7 @@ DisResult disInstr_ARM_WRK (
       //}
       DIP("%sm%c%c%s r%u%s, {0x%04x}\n",
           bL == 1 ? "ld" : "st", bINC ? 'i' : 'd', bBEFORE ? 'b' : 'a',
-          nCC(insn_cond),
+          nCC(INSN_COND),
           rN, bW ? "!" : "", regList);
 
       goto decode_success;
@@ -2583,7 +2558,7 @@ DisResult disInstr_ARM_WRK (
    /* --------------------- Control flow --------------------- */
    // B, BL (Branch, or Branch-and-Link, to immediate offset)
    //
-   if (BITS8(1,0,1,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,0,0,0,0,0))) {
+   if (BITS8(1,0,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))) {
       UInt link   = (insn >> 24) & 1;
       UInt uimm24 = insn & ((1<<24)-1);
       Int  simm24 = (Int)uimm24;
@@ -2613,20 +2588,20 @@ DisResult disInstr_ARM_WRK (
          irsb->next     = mkU32(guest_R15_curr_instr + 4);
          irsb->jumpkind = jk;
          dres.whatNext  = Dis_StopHere;
-         DIP("b%s%s 0x%x\n", link ? "l" : "", nCC(insn_cond), dst);
+         DIP("b%s%s 0x%x\n", link ? "l" : "", nCC(INSN_COND), dst);
       }
       goto decode_success;
    }
 
    // BX, BLX (Branch, or Branch-and-Link, to a register)
    //
-   if (insn_27_20 == BITS8(0,0,0,1,0,0,1,0)
-       && insn_19_12 == BITS8(1,1,1,1,1,1,1,1)
-       && (insn_11_4 == BITS8(1,1,1,1,0,0,1,1)
-           || insn_11_4 == BITS8(1,1,1,1,0,0,0,1))) {
+   if (INSN(27,20) == BITS8(0,0,0,1,0,0,1,0)
+       && INSN(19,12) == BITS8(1,1,1,1,1,1,1,1)
+       && (INSN(11,4) == BITS8(1,1,1,1,0,0,1,1)
+           || INSN(11,4) == BITS8(1,1,1,1,0,0,0,1))) {
       IRExpr* dst;
-      UInt    link = (insn_11_4 >> 1) & 1;
-      UInt    rM   = insn_3_0;
+      UInt    link = (INSN(11,4) >> 1) & 1;
+      UInt    rM   = INSN(3,0);
       // we don't decode the case (link && rM == 15), as that's
       // Unpredictable.
       if (!(link && rM == 15)) {
@@ -2647,7 +2622,7 @@ DisResult disInstr_ARM_WRK (
          if (condT == IRTemp_INVALID) {
             DIP("b%sx r%u\n", link ? "l" : "", rM);
          } else {
-            DIP("b%sx%s r%u\n", link ? "l" : "", nCC(insn_cond), rM);
+            DIP("b%sx%s r%u\n", link ? "l" : "", nCC(INSN_COND), rM);
          }
          goto decode_success;
       }
@@ -2656,11 +2631,11 @@ DisResult disInstr_ARM_WRK (
 
    /* --------------------- Clz --------------------- */
    // CLZ
-   if (insn_27_20 == BITS8(0,0,0,1,0,1,1,0)
-       && insn_19_16 == BITS4(1,1,1,1)
-       && insn_11_4 == BITS8(1,1,1,1,0,0,0,1)) {
-      UInt rD = insn_15_12;
-      UInt rM = insn_3_0;
+   if (INSN(27,20) == BITS8(0,0,0,1,0,1,1,0)
+       && INSN(19,16) == BITS4(1,1,1,1)
+       && INSN(11,4) == BITS8(1,1,1,1,0,0,0,1)) {
+      UInt rD = INSN(15,12);
+      UInt rM = INSN(3,0);
       IRTemp arg = newTemp(Ity_I32);
       IRTemp res = newTemp(Ity_I32);
       assign(arg, getIReg(rM));
@@ -2671,19 +2646,19 @@ DisResult disInstr_ARM_WRK (
                      mkU32(32)
             ));
       putIReg(rD, mkexpr(res), condT, Ijk_Boring);
-      DIP("clz%s r%u, r%u\n", nCC(insn_cond), rD, rM);
+      DIP("clz%s r%u, r%u\n", nCC(INSN_COND), rD, rM);
       goto decode_success;
    }
 
    /* --------------------- Mul etc --------------------- */
    // MUL
-   if (BITS8(0,0,0,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,1,1,1,0))
-       && insn_15_12 == BITS4(0,0,0,0)
-       && insn_7_4 == BITS4(1,0,0,1)) {
+   if (BITS8(0,0,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,0))
+       && INSN(15,12) == BITS4(0,0,0,0)
+       && INSN(7,4) == BITS4(1,0,0,1)) {
       UInt bitS = (insn >> 20) & 1; /* 20:20 */
-      UInt rD = insn_19_16;
-      UInt rS = insn_11_8;
-      UInt rM = insn_3_0;
+      UInt rD = INSN(19,16);
+      UInt rS = INSN(11,8);
+      UInt rM = INSN(3,0);
       if (rD == 15 || rM == 15 || rS == 15) {
          /* Unpredictable; don't decode; fall through */
       } else {
@@ -2711,21 +2686,21 @@ DisResult disInstr_ARM_WRK (
             setFlags_D1_ND( ARMG_CC_OP_MUL, res, pair, condT );
          }
          DIP("mul%c%s r%u, r%u, r%u\n",
-             bitS ? 's' : ' ', nCC(insn_cond), rD, rM, rS);
+             bitS ? 's' : ' ', nCC(INSN_COND), rD, rM, rS);
          goto decode_success;
       }
       /* fall through */
    }
 
    // MLA, MLS
-   if (BITS8(0,0,0,0,0,0,1,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,0))
-       && insn_7_4 == BITS4(1,0,0,1)) {
+   if (BITS8(0,0,0,0,0,0,1,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,0))
+       && INSN(7,4) == BITS4(1,0,0,1)) {
       UInt bitS  = (insn >> 20) & 1; /* 20:20 */
       UInt isMLS = (insn >> 22) & 1; /* 22:22 */
-      UInt rD = insn_19_16;
-      UInt rN = insn_15_12;
-      UInt rS = insn_11_8;
-      UInt rM = insn_3_0;
+      UInt rD = INSN(19,16);
+      UInt rN = INSN(15,12);
+      UInt rS = INSN(11,8);
+      UInt rM = INSN(3,0);
       if (bitS == 1 && isMLS == 1) {
          /* This isn't allowed (MLS that sets flags).  don't decode;
             fall through */
@@ -2763,21 +2738,21 @@ DisResult disInstr_ARM_WRK (
             setFlags_D1_ND( ARMG_CC_OP_MUL, res, pair, condT );
          }
          DIP("ml%c%c%s r%u, r%u, r%u, r%u\n",
-             isMLS ? 's' : 'a', bitS ? 's' : ' ', nCC(insn_cond), rD, rM, rS, rN);
+             isMLS ? 's' : 'a', bitS ? 's' : ' ', nCC(INSN_COND), rD, rM, rS, rN);
          goto decode_success;
       }
       /* fall through */
    }
 
    // SMULL, UMULL
-   if (BITS8(0,0,0,0,1,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,0))
-       && insn_7_4 == BITS4(1,0,0,1)) {
+   if (BITS8(0,0,0,0,1,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,0))
+       && INSN(7,4) == BITS4(1,0,0,1)) {
       UInt bitS = (insn >> 20) & 1; /* 20:20 */
-      UInt rDhi = insn_19_16;
-      UInt rDlo = insn_15_12;
-      UInt rS   = insn_11_8;
-      UInt rM   = insn_3_0;
-      UInt isS  = (insn_27_20 >> 2) & 1; /* 22:22 */
+      UInt rDhi = INSN(19,16);
+      UInt rDlo = INSN(15,12);
+      UInt rS   = INSN(11,8);
+      UInt rM   = INSN(3,0);
+      UInt isS  = (INSN(27,20) >> 2) & 1; /* 22:22 */
       if (rDhi == 15 || rDlo == 15 || rM == 15 || rS == 15 || rDhi == rDlo)  {
          /* Unpredictable; don't decode; fall through */
       } else {
@@ -2812,21 +2787,21 @@ DisResult disInstr_ARM_WRK (
          }
          DIP("%cmull%c%s r%u, r%u, r%u, r%u\n",
              isS ? 's' : 'u', bitS ? 's' : ' ',
-             nCC(insn_cond), rDlo, rDhi, rM, rS);
+             nCC(INSN_COND), rDlo, rDhi, rM, rS);
          goto decode_success;
       }
       /* fall through */
    }
 
    // SMLAL, UMLAL
-   if (BITS8(0,0,0,0,1,0,1,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,0))
-       && insn_7_4 == BITS4(1,0,0,1)) {
+   if (BITS8(0,0,0,0,1,0,1,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,0))
+       && INSN(7,4) == BITS4(1,0,0,1)) {
       UInt bitS = (insn >> 20) & 1; /* 20:20 */
-      UInt rDhi = insn_19_16;
-      UInt rDlo = insn_15_12;
-      UInt rS   = insn_11_8;
-      UInt rM   = insn_3_0;
-      UInt isS  = (insn_27_20 >> 2) & 1; /* 22:22 */
+      UInt rDhi = INSN(19,16);
+      UInt rDlo = INSN(15,12);
+      UInt rS   = INSN(11,8);
+      UInt rM   = INSN(3,0);
+      UInt isS  = (INSN(27,20) >> 2) & 1; /* 22:22 */
       if (rDhi == 15 || rDlo == 15 || rM == 15 || rS == 15 || rDhi == rDlo)  {
          /* Unpredictable; don't decode; fall through */
       } else {
@@ -2864,7 +2839,7 @@ DisResult disInstr_ARM_WRK (
             setFlags_D1_D2_ND( ARMG_CC_OP_MULL, resLo, resHi, pair, condT );
          }
          DIP("%cmlal%c%s r%u, r%u, r%u, r%u\n",
-             isS ? 's' : 'u', bitS ? 's' : ' ', nCC(insn_cond),
+             isS ? 's' : 'u', bitS ? 's' : ' ', nCC(INSN_COND),
              rDlo, rDhi, rM, rS);
          goto decode_success;
       }
@@ -2874,12 +2849,12 @@ DisResult disInstr_ARM_WRK (
    /* --------------------- Msr etc --------------------- */
 
    // MSR (immediate form, flags only)
-   if (BITS8(0,0,1,1,0,0,1,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && insn_15_12 == BITS4(1,1,1,1)) {
+   if (BITS8(0,0,1,1,0,0,1,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && INSN(15,12) == BITS4(1,1,1,1)) {
       UInt bitR = (insn >> 22) & 1;
-      if (bitR == 0 && insn_19_16 == BITS4(1,0,0,0)) {
-         UInt   imm = (insn_11_0 >> 0) & 0xFF;
-         UInt   rot = 2 * ((insn_11_0 >> 8) & 0xF);
+      if (bitR == 0 && INSN(19,16) == BITS4(1,0,0,0)) {
+         UInt   imm = (INSN(11,0) >> 0) & 0xFF;
+         UInt   rot = 2 * ((INSN(11,0) >> 8) & 0xF);
          IRTemp immT = newTemp(Ity_I32);
          vassert(rot <= 30);
          imm = ROR32(imm, rot);
@@ -2888,30 +2863,30 @@ DisResult disInstr_ARM_WRK (
                  | ARMG_CC_MASK_V | ARMG_CC_MASK_C);
          assign( immT, mkU32(imm & 0xF0000000) );
          setFlags_D1(ARMG_CC_OP_COPY, immT, condT);
-         DIP("msr%s cpsr_f, #0x%08x\n", nCC(insn_cond), imm);
+         DIP("msr%s cpsr_f, #0x%08x\n", nCC(INSN_COND), imm);
          goto decode_success;
       }
       /* fall through */
    }
 
    // MRS
-   if (BITS8(0,0,0,1,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && insn_19_16 == BITS4(1,1,1,1)
-       && insn_11_0 == 0) {
+   if (BITS8(0,0,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && INSN(19,16) == BITS4(1,1,1,1)
+       && INSN(11,0) == 0) {
       UInt bitR = (insn >> 22) & 1;
-      UInt rD   = insn_15_12;
+      UInt rD   = INSN(15,12);
       if (bitR == 0 && rD != 15) {
          IRTemp res = newTemp(Ity_I32);
          assign( res, mk_armg_calculate_flags_nzcv() );
          putIReg( rD, mkexpr(res), condT, Ijk_Boring );
-         DIP("mrs%s r%u, cpsr\n", nCC(insn_cond), rD);
+         DIP("mrs%s r%u, cpsr\n", nCC(INSN_COND), rD);
          goto decode_success;
       }
       /* fall through */
    }
 
    /* --------------------- Svc --------------------- */
-   if (BITS8(1,1,1,1,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,0,0,0,0))) {
+   if (BITS8(1,1,1,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,0,0,0))) {
       UInt imm24 = (insn >> 0) & 0xFFFFFF;
       if (imm24 == 0) {
          /* A syscall.  We can't do this conditionally, hence: */
@@ -2922,7 +2897,7 @@ DisResult disInstr_ARM_WRK (
          irsb->next     = mkU32( guest_R15_curr_instr + 4 );
          irsb->jumpkind = Ijk_Sys_syscall;
          dres.whatNext  = Dis_StopHere;
-         DIP("svc%s #0x%08x\n", nCC(insn_cond), imm24);
+         DIP("svc%s #0x%08x\n", nCC(INSN_COND), imm24);
          goto decode_success;
       }
       /* fall through */
@@ -2931,12 +2906,12 @@ DisResult disInstr_ARM_WRK (
    /* ------------------------ swp ------------------------ */
 
    // SWP, SWPB
-   if (BITS8(0,0,0,1,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,0,0,0) == insn_11_8
-       && BITS4(1,0,0,1) == insn_7_4) {
-      UInt   rN   = insn_19_16;
-      UInt   rD   = insn_15_12;
-      UInt   rM   = insn_3_0;
+   if (BITS8(0,0,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,0,0,0) == INSN(11,8)
+       && BITS4(1,0,0,1) == INSN(7,4)) {
+      UInt   rN   = INSN(19,16);
+      UInt   rD   = INSN(15,12);
+      UInt   rM   = INSN(3,0);
       IRTemp tRn  = newTemp(Ity_I32);
       IRTemp tNew = newTemp(Ity_I32);
       IRTemp tOld = IRTemp_INVALID;
@@ -2975,7 +2950,7 @@ DisResult disInstr_ARM_WRK (
          putIReg(rD, isB ? unop(Iop_8Uto32, mkexpr(tOld)) : mkexpr(tOld),
                      IRTemp_INVALID, Ijk_Boring);
          DIP("swp%s%s r%u, r%u, [r%u]\n",
-             isB ? "b" : "", nCC(insn_cond), rD, rM, rN);
+             isB ? "b" : "", nCC(INSN_COND), rD, rM, rN);
          goto decode_success;
       }
       /* fall through */
@@ -3006,15 +2981,15 @@ DisResult disInstr_ARM_WRK (
          2  ia-Rn   (access at Rn, then Rn += 4+8n)
          3  db-Rn   (Rn -= 4+8n,   then access at Rn)
    */
-   if (BITS8(1,1,0,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,0,0,1,0,0))
-       && insn_11_8 == BITS4(1,0,1,1)) {
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,1,0,0))
+       && INSN(11,8) == BITS4(1,0,1,1)) {
       UInt bP     = (insn >> 24) & 1;
       UInt bU     = (insn >> 23) & 1;
       UInt bW     = (insn >> 21) & 1;
       UInt bL     = (insn >> 20) & 1;
       UInt offset = (insn >> 0) & 0xFF;
-      UInt rN     = insn_19_16;
-      UInt dD     = insn_15_12;
+      UInt rN     = INSN(19,16);
+      UInt dD     = INSN(15,12);
       UInt nRegs  = (offset - 1) / 2;
       Int  i;
 
@@ -3093,13 +3068,13 @@ DisResult disInstr_ARM_WRK (
       HChar* nm = bL==1 ? "ld" : "st";
       switch (summary) {
          case 1:  DIP("f%smx%s r%u, {d%u-d%u}\n", 
-                      nm, nCC(insn_cond), rN, dD, dD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
                   break;
          case 2:  DIP("f%smiax%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(insn_cond), rN, dD, dD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
                   break;
          case 3:  DIP("f%smdbx%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(insn_cond), rN, dD, dD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
                   break;
          default: vassert(0);
       }
@@ -3132,15 +3107,15 @@ DisResult disInstr_ARM_WRK (
          2  ia-Rn   (access at Rn, then Rn += 8n)
          3  db-Rn   (Rn -= 8n,     then access at Rn)
    */
-   if (BITS8(1,1,0,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,0,0,1,0,0))
-       && insn_11_8 == BITS4(1,0,1,1)) {
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,1,0,0))
+       && INSN(11,8) == BITS4(1,0,1,1)) {
       UInt bP     = (insn >> 24) & 1;
       UInt bU     = (insn >> 23) & 1;
       UInt bW     = (insn >> 21) & 1;
       UInt bL     = (insn >> 20) & 1;
       UInt offset = (insn >> 0) & 0xFF;
-      UInt rN     = insn_19_16;
-      UInt dD     = insn_15_12;
+      UInt rN     = INSN(19,16);
+      UInt dD     = INSN(15,12);
       UInt nRegs  = offset / 2;
       Int  i;
 
@@ -3219,13 +3194,13 @@ DisResult disInstr_ARM_WRK (
       HChar* nm = bL==1 ? "ld" : "st";
       switch (summary) {
          case 1:  DIP("f%smd%s r%u, {d%u-d%u}\n", 
-                      nm, nCC(insn_cond), rN, dD, dD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
                   break;
          case 2:  DIP("f%smiad%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(insn_cond), rN, dD, dD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
                   break;
          case 3:  DIP("f%smdbd%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(insn_cond), rN, dD, dD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
                   break;
          default: vassert(0);
       }
@@ -3237,11 +3212,11 @@ DisResult disInstr_ARM_WRK (
   after_vfp_fldmd_fstmd:
 
    /* ------------------- fmrx, fmxr ------------------- */
-   if (BITS8(1,1,1,0,1,1,1,1) == insn_27_20
-       && BITS4(1,0,1,0) == insn_11_8
+   if (BITS8(1,1,1,0,1,1,1,1) == INSN(27,20)
+       && BITS4(1,0,1,0) == INSN(11,8)
        && BITS8(0,0,0,1,0,0,0,0) == (insn & 0xFF)) {
-      UInt rD  = insn_15_12;
-      UInt reg = insn_19_16;
+      UInt rD  = INSN(15,12);
+      UInt reg = INSN(19,16);
       if (reg == BITS4(0,0,0,1)) {
          if (rD == 15) {
             IRTemp nzcvT = newTemp(Ity_I32);
@@ -3252,26 +3227,26 @@ DisResult disInstr_ARM_WRK (
                                 IRExpr_Get(OFFB_FPSCR, Ity_I32),
                                 mkU32(0xF0000000)));
             setFlags_D1(ARMG_CC_OP_COPY, nzcvT, condT);
-            DIP("fmstat%s\n", nCC(insn_cond));
+            DIP("fmstat%s\n", nCC(INSN_COND));
          } else {
             /* Otherwise, merely transfer FPSCR to r0 .. r14. */
             putIReg(rD, IRExpr_Get(OFFB_FPSCR, Ity_I32), 
                         condT, Ijk_Boring);
-            DIP("fmrx%s r%u, fpscr\n", nCC(insn_cond), rD);
+            DIP("fmrx%s r%u, fpscr\n", nCC(INSN_COND), rD);
          }
          goto decode_success;
       }
       /* fall through */
    }
 
-   if (BITS8(1,1,1,0,1,1,1,0) == insn_27_20
-       && BITS4(1,0,1,0) == insn_11_8
+   if (BITS8(1,1,1,0,1,1,1,0) == INSN(27,20)
+       && BITS4(1,0,1,0) == INSN(11,8)
        && BITS8(0,0,0,1,0,0,0,0) == (insn & 0xFF)) {
-      UInt rD  = insn_15_12;
-      UInt reg = insn_19_16;
+      UInt rD  = INSN(15,12);
+      UInt reg = INSN(19,16);
       if (reg == BITS4(0,0,0,1)) {
          putMiscReg32(OFFB_FPSCR, getIReg(rD), condT);
-         DIP("fmxr%s fpscr, r%u\n", nCC(insn_cond), rD);
+         DIP("fmxr%s fpscr, r%u\n", nCC(INSN_COND), rD);
          goto decode_success;
       }
       /* fall through */
@@ -3280,9 +3255,9 @@ DisResult disInstr_ARM_WRK (
    /* --------------------- vmov --------------------- */
    // VMOV dM, rD, rN
    if (0x0C400B10 == (insn & 0x0FF00FF0)) {
-      UInt dM = insn_3_0;
-      UInt rD = insn_15_12; /* lo32 */
-      UInt rN = insn_19_16; /* hi32 */
+      UInt dM = INSN(3,0);
+      UInt rD = INSN(15,12); /* lo32 */
+      UInt rN = INSN(19,16); /* hi32 */
       if (rD == 15 || rN == 15) {
          /* fall through */
       } else {
@@ -3290,7 +3265,7 @@ DisResult disInstr_ARM_WRK (
                  unop(Iop_ReinterpI64asF64,
                       binop(Iop_32HLto64, getIReg(rN), getIReg(rD))),
                  condT);
-         DIP("vmov%s d%u, r%u, r%u\n", nCC(insn_cond), dM, rD, rN);
+         DIP("vmov%s d%u, r%u, r%u\n", nCC(INSN_COND), dM, rD, rN);
          goto decode_success;
       }
       /* fall through */
@@ -3298,9 +3273,9 @@ DisResult disInstr_ARM_WRK (
 
    // VMOV rD, rN, dM
    if (0x0C500B10 == (insn & 0x0FF00FF0)) {
-      UInt dM = insn_3_0;
-      UInt rD = insn_15_12; /* lo32 */
-      UInt rN = insn_19_16; /* hi32 */
+      UInt dM = INSN(3,0);
+      UInt rD = INSN(15,12); /* lo32 */
+      UInt rN = INSN(19,16); /* hi32 */
       if (rD == 15 || rN == 15 || rD == rN) {
          /* fall through */
       } else {
@@ -3308,7 +3283,7 @@ DisResult disInstr_ARM_WRK (
          assign(i64, unop(Iop_ReinterpF64asI64, getDReg(dM)));
          putIReg(rN, unop(Iop_64HIto32, mkexpr(i64)), condT, Ijk_Boring);
          putIReg(rD, unop(Iop_64to32,   mkexpr(i64)), condT, Ijk_Boring);
-         DIP("vmov%s r%u, r%u, d%u\n", nCC(insn_cond), rD, rN, dM);
+         DIP("vmov%s r%u, r%u, d%u\n", nCC(INSN_COND), rD, rN, dM);
          goto decode_success;
       }
       /* fall through */
@@ -3316,10 +3291,10 @@ DisResult disInstr_ARM_WRK (
 
    /* --------------------- f{ld,st}d --------------------- */
    // FLDD, FSTD
-   if (BITS8(1,1,0,1,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,0,1,1,0))
-       && BITS4(1,0,1,1) == insn_11_8) {
-      UInt dD     = insn_15_12;
-      UInt rN     = insn_19_16;
+   if (BITS8(1,1,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)) {
+      UInt dD     = INSN(15,12);
+      UInt rN     = INSN(19,16);
       UInt offset = (insn & 0xFF) << 2;
       UInt bU     = (insn >> 23) & 1; /* 1: +offset  0: -offset */
       UInt bL     = (insn >> 20) & 1; /* 1: load  0: store */
@@ -3337,18 +3312,18 @@ DisResult disInstr_ARM_WRK (
          storeLE(mkexpr(ea), getDReg(dD));
       }
       DIP("f%sd%s d%u, [r%u, %c#%u]\n",
-          bL ? "ld" : "st", nCC(insn_cond), dD, rN,
+          bL ? "ld" : "st", nCC(INSN_COND), dD, rN,
           bU ? '+' : '-', offset);
       goto decode_success;
    }
 
    /* --------------------- dp insns (D) --------------------- */
-   if (BITS8(1,1,1,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,0,1,0,0))
-       && BITS4(1,0,1,1) == insn_11_8
-       && BITS4(0,0,0,0) == (insn_7_4 & BITS4(1,0,1,1))) {
-      UInt    dM  = insn_3_0;   /* argR */
-      UInt    dD  = insn_15_12; /* dst/acc */
-      UInt    dN  = insn_19_16; /* argL */
+   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,1,0,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,0,0,0) == (INSN(7,4) & BITS4(1,0,1,1))) {
+      UInt    dM  = INSN(3,0);   /* argR */
+      UInt    dD  = INSN(15,12); /* dst/acc */
+      UInt    dN  = INSN(19,16); /* argL */
       UInt    bP  = (insn >> 23) & 1;
       UInt    bQ  = (insn >> 21) & 1;
       UInt    bR  = (insn >> 20) & 1;
@@ -3362,7 +3337,7 @@ DisResult disInstr_ARM_WRK (
                               triop(Iop_MulF64, rm, getDReg(dN),
                                                     getDReg(dM))),
                         condT);
-            DIP("fmacd%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fmacd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(0,0,0,1): /* NMAC: d - n * m */
             putDReg(dD, triop(Iop_SubF64, rm,
@@ -3370,7 +3345,7 @@ DisResult disInstr_ARM_WRK (
                               triop(Iop_MulF64, rm, getDReg(dN),
                                                     getDReg(dM))),
                         condT);
-            DIP("fnmacd%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fnmacd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(0,0,1,0): /* MSC: - d + n * m */
             putDReg(dD, triop(Iop_AddF64, rm,
@@ -3378,7 +3353,7 @@ DisResult disInstr_ARM_WRK (
                               triop(Iop_MulF64, rm, getDReg(dN),
                                                     getDReg(dM))),
                         condT);
-            DIP("fmscd%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fmscd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(0,0,1,1): /* NMSC: - d - n * m */
             putDReg(dD, triop(Iop_SubF64, rm,
@@ -3386,34 +3361,34 @@ DisResult disInstr_ARM_WRK (
                               triop(Iop_MulF64, rm, getDReg(dN),
                                                     getDReg(dM))),
                         condT);
-            DIP("fnmscd%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fnmscd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(0,1,0,0): /* MUL: n * m */
             putDReg(dD, triop(Iop_MulF64, rm, getDReg(dN), getDReg(dM)),
                         condT);
-            DIP("fmuld%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fmuld%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(0,1,0,1): /* NMUL: - n * m */
             putDReg(dD, unop(Iop_NegF64,
                              triop(Iop_MulF64, rm, getDReg(dN),
                                                    getDReg(dM))),
                     condT);
-            DIP("fnmuld%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fnmuld%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(0,1,1,0): /* ADD: n + m */
             putDReg(dD, triop(Iop_AddF64, rm, getDReg(dN), getDReg(dM)),
                         condT);
-            DIP("faddd%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("faddd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(0,1,1,1): /* SUB: n - m */
             putDReg(dD, triop(Iop_SubF64, rm, getDReg(dN), getDReg(dM)),
                         condT);
-            DIP("fsubd%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fsubd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          case BITS4(1,0,0,0): /* DIV: n / m */
             putDReg(dD, triop(Iop_DivF64, rm, getDReg(dN), getDReg(dM)),
                         condT);
-            DIP("fdivd%s d%u, d%u, d%u\n", nCC(insn_cond), dD, dN, dM);
+            DIP("fdivd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
             goto decode_success;
          default:
             break;
@@ -3436,15 +3411,15 @@ DisResult disInstr_ARM_WRK (
       N=0 generates Invalid Operation exn if either arg is a signalling NaN
       (Not that we pay any attention to N here)
    */
-   if (BITS8(1,1,1,0,1,0,1,1) == insn_27_20
-       && BITS4(0,1,0,0) == (insn_19_16 & BITS4(1,1,1,0))
-       && BITS4(1,0,1,1) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,1,1))) {
+   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
+       && BITS4(0,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
       UInt bZ = (insn >> 16) & 1;
       UInt bN = (insn >> 7) & 1;
-      UInt dD = insn_15_12;
-      UInt dM = insn_3_0;
-      if (bZ && insn_3_0 != 0) {
+      UInt dD = INSN(15,12);
+      UInt dM = INSN(3,0);
+      if (bZ && INSN(3,0) != 0) {
          /* does not decode; fall through */
       } else {
          IRTemp argL = newTemp(Ity_F64);
@@ -3483,9 +3458,9 @@ DisResult disInstr_ARM_WRK (
          putMiscReg32(OFFB_FPSCR, mkexpr(newFPSCR), condT);
 
          if (bZ) {
-            DIP("fcmpz%sd%s d%u\n", bN ? "e" : "", nCC(insn_cond), dD);
+            DIP("fcmpz%sd%s d%u\n", bN ? "e" : "", nCC(INSN_COND), dD);
          } else {
-            DIP("fcmp%sd%s d%u, d%u\n", bN ? "e" : "", nCC(insn_cond), dD, dM);
+            DIP("fcmp%sd%s d%u, d%u\n", bN ? "e" : "", nCC(INSN_COND), dD, dM);
          }
          goto decode_success;
       }
@@ -3493,37 +3468,37 @@ DisResult disInstr_ARM_WRK (
    }  
 
    /* --------------------- unary (D) --------------------- */
-   if (BITS8(1,1,1,0,1,0,1,1) == insn_27_20
-       && BITS4(0,0,0,0) == (insn_19_16 & BITS4(1,1,1,0))
-       && BITS4(1,0,1,1) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,1,1))) {
-      UInt dD  = insn_15_12;
-      UInt dM  = insn_3_0;
+   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
+       && BITS4(0,0,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt dD  = INSN(15,12);
+      UInt dM  = INSN(3,0);
       UInt b16 = (insn >> 16) & 1;
       UInt b7  = (insn >> 7) & 1;
       /**/ if (b16 == 0 && b7 == 0) {
          // FCPYD
          putDReg(dD, getDReg(dM), condT);
-         DIP("fcpyd%s d%u, d%u\n", nCC(insn_cond), dD, dM);
+         DIP("fcpyd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
          goto decode_success;
       }
       else if (b16 == 0 && b7 == 1) {
          // FABSD
          putDReg(dD, unop(Iop_AbsF64, getDReg(dM)), condT);
-         DIP("fabsd%s d%u, d%u\n", nCC(insn_cond), dD, dM);
+         DIP("fabsd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
          goto decode_success;
       }
       else if (b16 == 1 && b7 == 0) {
          // FNEGD
          putDReg(dD, unop(Iop_NegF64, getDReg(dM)), condT);
-         DIP("fnegd%s d%u, d%u\n", nCC(insn_cond), dD, dM);
+         DIP("fnegd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
          goto decode_success;
       }
       else if (b16 == 1 && b7 == 1) {
          // FSQRTD
          IRExpr* rm = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
          putDReg(dD, binop(Iop_SqrtF64, rm, getDReg(dM)), condT);
-         DIP("fsqrtd%s d%u, d%u\n", nCC(insn_cond), dD, dM);
+         DIP("fsqrtd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
          goto decode_success;
       }
       else
@@ -3535,38 +3510,38 @@ DisResult disInstr_ARM_WRK (
    /* ----------------- I <-> D conversions ----------------- */
 
    // F{S,U}ITOD dD, fM
-   if (BITS8(1,1,1,0,1,0,1,1) == (insn_27_20 & BITS8(1,1,1,1,1,1,1,1))
-       && BITS4(1,0,0,0) == (insn_19_16 & BITS4(1,1,1,1))
-       && BITS4(1,0,1,1) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,0,1))) {
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,1))
+       && BITS4(1,0,0,0) == (INSN(19,16) & BITS4(1,1,1,1))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
       UInt bM    = (insn >> 5) & 1;
-      UInt fM    = (insn_3_0 << 1) | bM;
-      UInt dD    = insn_15_12;
+      UInt fM    = (INSN(3,0) << 1) | bM;
+      UInt dD    = INSN(15,12);
       UInt syned = (insn >> 7) & 1;
       if (syned) {
          // FSITOD
          putDReg(dD, unop(Iop_I32StoF64,
                           unop(Iop_ReinterpF32asI32, getFReg(fM))),
                  condT);
-         DIP("fsitod%s d%u, s%u\n", nCC(insn_cond), dD, fM);
+         DIP("fsitod%s d%u, s%u\n", nCC(INSN_COND), dD, fM);
       } else {
          // FUITOD
          putDReg(dD, unop(Iop_I32UtoF64,
                           unop(Iop_ReinterpF32asI32, getFReg(fM))),
                  condT);
-         DIP("fuitod%s d%u, s%u\n", nCC(insn_cond), dD, fM);
+         DIP("fuitod%s d%u, s%u\n", nCC(INSN_COND), dD, fM);
       }
       goto decode_success;
    }
 
    // FTO{S,U}ID fD, dM
-   if (BITS8(1,1,1,0,1,0,1,1) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(1,1,0,0) == (insn_19_16 & BITS4(1,1,1,0))
-       && BITS4(1,0,1,1) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,1,1))) {
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(1,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
       UInt   bD    = (insn >> 22) & 1;
-      UInt   fD    = (insn_15_12 << 1) | bD;
-      UInt   dM    = insn_3_0;
+      UInt   fD    = (INSN(15,12) << 1) | bD;
+      UInt   dM    = INSN(3,0);
       UInt   bZ    = (insn >> 7) & 1;
       UInt   syned = (insn >> 16) & 1;
       IRTemp rmode = newTemp(Ity_I32);
@@ -3579,7 +3554,7 @@ DisResult disInstr_ARM_WRK (
                                 getDReg(dM))),
                  condT);
          DIP("ftosi%sd%s s%u, d%u\n", bZ ? "z" : "",
-             nCC(insn_cond), fD, dM);
+             nCC(INSN_COND), fD, dM);
       } else {
          // FTOUID
          putFReg(fD, unop(Iop_ReinterpI32asF32,
@@ -3587,7 +3562,7 @@ DisResult disInstr_ARM_WRK (
                                 getDReg(dM))),
                  condT);
          DIP("ftoui%sd%s s%u, d%u\n", bZ ? "z" : "",
-             nCC(insn_cond), fD, dM);
+             nCC(INSN_COND), fD, dM);
       }
       goto decode_success;
    }
@@ -3617,16 +3592,16 @@ DisResult disInstr_ARM_WRK (
          2  ia-Rn   (access at Rn, then Rn += 4n)
          3  db-Rn   (Rn -= 4n,     then access at Rn)
    */
-   if (BITS8(1,1,0,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,0,0,0,0,0))
-       && insn_11_8 == BITS4(1,0,1,0)) {
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
+       && INSN(11,8) == BITS4(1,0,1,0)) {
       UInt bP     = (insn >> 24) & 1;
       UInt bU     = (insn >> 23) & 1;
       UInt bW     = (insn >> 21) & 1;
       UInt bL     = (insn >> 20) & 1;
       UInt bD     = (insn >> 22) & 1;
       UInt offset = (insn >> 0) & 0xFF;
-      UInt rN     = insn_19_16;
-      UInt fD     = (insn_15_12 << 1) | bD;
+      UInt rN     = INSN(19,16);
+      UInt fD     = (INSN(15,12) << 1) | bD;
       UInt nRegs  = offset;
       Int  i;
 
@@ -3705,13 +3680,13 @@ DisResult disInstr_ARM_WRK (
       HChar* nm = bL==1 ? "ld" : "st";
       switch (summary) {
          case 1:  DIP("f%sms%s r%u, {s%u-s%u}\n", 
-                      nm, nCC(insn_cond), rN, fD, fD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, fD, fD + nRegs - 1);
                   break;
          case 2:  DIP("f%smias%s r%u!, {s%u-s%u}\n", 
-                      nm, nCC(insn_cond), rN, fD, fD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, fD, fD + nRegs - 1);
                   break;
          case 3:  DIP("f%smdbs%s r%u!, {s%u-s%u}\n", 
-                      nm, nCC(insn_cond), rN, fD, fD + nRegs - 1);
+                      nm, nCC(INSN_COND), rN, fD, fD + nRegs - 1);
                   break;
          default: vassert(0);
       }
@@ -3723,13 +3698,13 @@ DisResult disInstr_ARM_WRK (
   after_vfp_fldms_fstms:
 
    /* --------------------- fmsr, fmrs --------------------- */
-   if (BITS8(1,1,1,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,1,1,1,0))
-       && BITS4(1,0,1,0) == insn_11_8
-       && BITS4(0,0,0,0) == insn_3_0
-       && BITS4(0,0,0,1) == (insn_7_4 & BITS4(0,1,1,1))) {
-      UInt rD  = insn_15_12;
+   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,0,0,0) == INSN(3,0)
+       && BITS4(0,0,0,1) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt rD  = INSN(15,12);
       UInt b7  = (insn >> 7) & 1;
-      UInt fN  = (insn_19_16 << 1) | b7;
+      UInt fN  = (INSN(19,16) << 1) | b7;
       UInt b20 = (insn >> 20) & 1;
       if (rD == 15) {
          /* fall through */
@@ -3741,10 +3716,10 @@ DisResult disInstr_ARM_WRK (
          if (b20) {
             putIReg(rD, unop(Iop_ReinterpF32asI32, getFReg(fN)),
                         condT, Ijk_Boring);
-            DIP("fmrs%s r%u, s%u\n", nCC(insn_cond), rD, fN);
+            DIP("fmrs%s r%u, s%u\n", nCC(INSN_COND), rD, fN);
          } else {
             putFReg(fN, unop(Iop_ReinterpI32asF32, getIReg(rD)), condT);
-            DIP("fmsr%s s%u, r%u\n", nCC(insn_cond), fN, rD);
+            DIP("fmsr%s s%u, r%u\n", nCC(INSN_COND), fN, rD);
          }
          goto decode_success;
       }
@@ -3753,11 +3728,11 @@ DisResult disInstr_ARM_WRK (
 
    /* --------------------- f{ld,st}s --------------------- */
    // FLDS, FSTS
-   if (BITS8(1,1,0,1,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,0,0,1,0))
-       && BITS4(1,0,1,0) == insn_11_8) {
+   if (BITS8(1,1,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,0,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)) {
       UInt bD     = (insn >> 22) & 1;
-      UInt fD     = (insn_15_12 << 1) | bD;
-      UInt rN     = insn_19_16;
+      UInt fD     = (INSN(15,12) << 1) | bD;
+      UInt rN     = INSN(19,16);
       UInt offset = (insn & 0xFF) << 2;
       UInt bU     = (insn >> 23) & 1; /* 1: +offset  0: -offset */
       UInt bL     = (insn >> 20) & 1; /* 1: load  0: store */
@@ -3775,21 +3750,21 @@ DisResult disInstr_ARM_WRK (
          storeLE(mkexpr(ea), getFReg(fD));
       }
       DIP("f%ss%s s%u, [r%u, %c#%u]\n",
-          bL ? "ld" : "st", nCC(insn_cond), fD, rN,
+          bL ? "ld" : "st", nCC(INSN_COND), fD, rN,
           bU ? '+' : '-', offset);
       goto decode_success;
    }
 
    /* --------------------- dp insns (F) --------------------- */
-   if (BITS8(1,1,1,0,0,0,0,0) == (insn_27_20 & BITS8(1,1,1,1,0,0,0,0))
-       && BITS4(1,0,1,0) == insn_11_8
-       && BITS4(0,0,0,0) == (insn_7_4 & BITS4(0,0,0,1))) {
+   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,0,0,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,0,0,0) == (INSN(7,4) & BITS4(0,0,0,1))) {
       UInt    bM  = (insn >> 5) & 1;
       UInt    bD  = (insn >> 22) & 1;
       UInt    bN  = (insn >> 7) & 1;
-      UInt    fM  = (insn_3_0 << 1) | bM;   /* argR */
-      UInt    fD  = (insn_15_12 << 1) | bD; /* dst/acc */
-      UInt    fN  = (insn_19_16 << 1) | bN; /* argL */
+      UInt    fM  = (INSN(3,0) << 1) | bM;   /* argR */
+      UInt    fD  = (INSN(15,12) << 1) | bD; /* dst/acc */
+      UInt    fN  = (INSN(19,16) << 1) | bN; /* argL */
       UInt    bP  = (insn >> 23) & 1;
       UInt    bQ  = (insn >> 21) & 1;
       UInt    bR  = (insn >> 20) & 1;
@@ -3802,50 +3777,50 @@ DisResult disInstr_ARM_WRK (
                               getFReg(fD),
                               triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
                         condT);
-            DIP("fmacs%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fmacs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          case BITS4(0,0,0,1): /* NMAC: d - n * m */
             putFReg(fD, triop(Iop_SubF32, rm,
                               getFReg(fD),
                               triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
                         condT);
-            DIP("fnmacs%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fnmacs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          case BITS4(0,0,1,0): /* MSC: - d + n * m */
             putFReg(fD, triop(Iop_AddF32, rm,
                               unop(Iop_NegF32, getFReg(fD)),
                               triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
                         condT);
-            DIP("fmscs%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fmscs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          case BITS4(0,0,1,1): /* NMSC: - d - n * m */
             break; //ATC
          case BITS4(0,1,0,0): /* MUL: n * m */
             putFReg(fD, triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM)),
                         condT);
-            DIP("fmuls%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fmuls%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          case BITS4(0,1,0,1): /* NMUL: - n * m */
             putFReg(fD, unop(Iop_NegF32,
                              triop(Iop_MulF32, rm, getFReg(fN),
                                                    getFReg(fM))),
                     condT);
-            DIP("fnmuls%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fnmuls%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          case BITS4(0,1,1,0): /* ADD: n + m */
             putFReg(fD, triop(Iop_AddF32, rm, getFReg(fN), getFReg(fM)),
                         condT);
-            DIP("fadds%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fadds%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          case BITS4(0,1,1,1): /* SUB: n - m */
             putFReg(fD, triop(Iop_SubF32, rm, getFReg(fN), getFReg(fM)),
                         condT);
-            DIP("fsubs%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fsubs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          case BITS4(1,0,0,0): /* DIV: n / m */
             putFReg(fD, triop(Iop_DivF32, rm, getFReg(fN), getFReg(fM)),
                         condT);
-            DIP("fdivs%s s%u, s%u, s%u\n", nCC(insn_cond), fD, fN, fM);
+            DIP("fdivs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
             goto decode_success;
          default:
             break;
@@ -3868,17 +3843,17 @@ DisResult disInstr_ARM_WRK (
       N=0 generates Invalid Operation exn if either arg is a signalling NaN
       (Not that we pay any attention to N here)
    */
-   if (BITS8(1,1,1,0,1,0,1,1) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,1,0,0) == (insn_19_16 & BITS4(1,1,1,0))
-       && BITS4(1,0,1,0) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,0,1))) {
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
       UInt bZ = (insn >> 16) & 1;
       UInt bN = (insn >> 7) & 1;
       UInt bD = (insn >> 22) & 1;
       UInt bM = (insn >> 5) & 1;
-      UInt fD = (insn_15_12 << 1) | bD;
-      UInt fM = (insn_3_0 << 1) | bM;
-      if (bZ && (insn_3_0 != 0 || (insn_7_4 & 3) != 0)) {
+      UInt fD = (INSN(15,12) << 1) | bD;
+      UInt fM = (INSN(3,0) << 1) | bM;
+      if (bZ && (INSN(3,0) != 0 || (INSN(7,4) & 3) != 0)) {
          /* does not decode; fall through */
       } else {
          IRTemp argL = newTemp(Ity_F64);
@@ -3919,10 +3894,10 @@ DisResult disInstr_ARM_WRK (
          putMiscReg32(OFFB_FPSCR, mkexpr(newFPSCR), condT);
 
          if (bZ) {
-            DIP("fcmpz%ss%s s%u\n", bN ? "e" : "", nCC(insn_cond), fD);
+            DIP("fcmpz%ss%s s%u\n", bN ? "e" : "", nCC(INSN_COND), fD);
          } else {
             DIP("fcmp%ss%s s%u, s%u\n", bN ? "e" : "",
-                nCC(insn_cond), fD, fM);
+                nCC(INSN_COND), fD, fM);
          }
          goto decode_success;
       }
@@ -3930,39 +3905,39 @@ DisResult disInstr_ARM_WRK (
    }  
 
    /* --------------------- unary (S) --------------------- */
-   if (BITS8(1,1,1,0,1,0,1,1) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,0,0,0) == (insn_19_16 & BITS4(1,1,1,0))
-       && BITS4(1,0,1,0) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,0,1))) {
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,0,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
       UInt bD = (insn >> 22) & 1;
       UInt bM = (insn >> 5) & 1;
-      UInt fD  = (insn_15_12 << 1) | bD;
-      UInt fM  = (insn_3_0 << 1) | bM;
+      UInt fD  = (INSN(15,12) << 1) | bD;
+      UInt fM  = (INSN(3,0) << 1) | bM;
       UInt b16 = (insn >> 16) & 1;
       UInt b7  = (insn >> 7) & 1;
       /**/ if (b16 == 0 && b7 == 0) {
          // FCPYS
          putFReg(fD, getFReg(fM), condT);
-         DIP("fcpys%s s%u, s%u\n", nCC(insn_cond), fD, fM);
+         DIP("fcpys%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
          goto decode_success;
       }
       else if (b16 == 0 && b7 == 1) {
          // FABSS
          putFReg(fD, unop(Iop_AbsF32, getFReg(fM)), condT);
-         DIP("fabss%s s%u, s%u\n", nCC(insn_cond), fD, fM);
+         DIP("fabss%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
          goto decode_success;
       }
       else if (b16 == 1 && b7 == 0) {
          // FNEGS
          putFReg(fD, unop(Iop_NegF32, getFReg(fM)), condT);
-         DIP("fnegs%s s%u, s%u\n", nCC(insn_cond), fD, fM);
+         DIP("fnegs%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
          goto decode_success;
       }
       else if (b16 == 1 && b7 == 1) {
          // FSQRTS
          IRExpr* rm = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
          putFReg(fD, binop(Iop_SqrtF32, rm, getFReg(fM)), condT);
-         DIP("fsqrts%s s%u, s%u\n", nCC(insn_cond), fD, fM);
+         DIP("fsqrts%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
          goto decode_success;
       }
       else
@@ -3979,14 +3954,14 @@ DisResult disInstr_ARM_WRK (
       no possibility of a loss of precision, but that's obviously not
       the case here.  Hence this case possibly requires rounding, and
       so it drags in the current rounding mode. */
-   if (BITS8(1,1,1,0,1,0,1,1) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(1,0,0,0) == (insn_19_16 & BITS4(1,1,1,1))
-       && BITS4(1,0,1,0) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,0,1))) {
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(1,0,0,0) == (INSN(19,16) & BITS4(1,1,1,1))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
       UInt bM    = (insn >> 5) & 1;
       UInt bD    = (insn >> 22) & 1;
-      UInt fM    = (insn_3_0 << 1) | bM;
-      UInt fD    = (insn_15_12 << 1) | bD;
+      UInt fM    = (INSN(3,0) << 1) | bM;
+      UInt fD    = (INSN(15,12) << 1) | bD;
       UInt syned = (insn >> 7) & 1;
       IRTemp rmode = newTemp(Ity_I32);
       assign(rmode, mkexpr(mk_get_IR_rounding_mode()));
@@ -3997,7 +3972,7 @@ DisResult disInstr_ARM_WRK (
                            unop(Iop_I32StoF64,
                                 unop(Iop_ReinterpF32asI32, getFReg(fM)))),
                  condT);
-         DIP("fsitos%s s%u, s%u\n", nCC(insn_cond), fD, fM);
+         DIP("fsitos%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
       } else {
          // FUITOS
          putFReg(fD, binop(Iop_F64toF32,
@@ -4005,20 +3980,20 @@ DisResult disInstr_ARM_WRK (
                            unop(Iop_I32UtoF64,
                                 unop(Iop_ReinterpF32asI32, getFReg(fM)))),
                  condT);
-         DIP("fuitos%s s%u, s%u\n", nCC(insn_cond), fD, fM);
+         DIP("fuitos%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
       }
       goto decode_success;
    }
 
    // FTO{S,U}IS fD, fM
-   if (BITS8(1,1,1,0,1,0,1,1) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(1,1,0,0) == (insn_19_16 & BITS4(1,1,1,0))
-       && BITS4(1,0,1,0) == insn_11_8
-       && BITS4(0,1,0,0) == (insn_7_4 & BITS4(0,1,0,1))) {
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(1,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
       UInt   bM    = (insn >> 5) & 1;
       UInt   bD    = (insn >> 22) & 1;
-      UInt   fD    = (insn_15_12 << 1) | bD;
-      UInt   fM    = (insn_3_0 << 1) | bM;
+      UInt   fD    = (INSN(15,12) << 1) | bD;
+      UInt   fM    = (INSN(3,0) << 1) | bM;
       UInt   bZ    = (insn >> 7) & 1;
       UInt   syned = (insn >> 16) & 1;
       IRTemp rmode = newTemp(Ity_I32);
@@ -4031,7 +4006,7 @@ DisResult disInstr_ARM_WRK (
                                 unop(Iop_F32toF64, getFReg(fM)))),
                  condT);
          DIP("ftosi%ss%s s%u, d%u\n", bZ ? "z" : "",
-             nCC(insn_cond), fD, fM);
+             nCC(INSN_COND), fD, fM);
          goto decode_success;
       } else {
          // FTOUIS
@@ -4040,7 +4015,7 @@ DisResult disInstr_ARM_WRK (
          //                       unop(Iop_F32toF64, getFReg(fM)))),
          //        condT);
          //DIP("ftoui%ss%s s%u, d%u\n", bZ ? "z" : "",
-         //    nCC(insn_cond), fD, fM);
+         //    nCC(INSN_COND), fD, fM);
          //goto decode_success;
       }
    }
@@ -4048,31 +4023,31 @@ DisResult disInstr_ARM_WRK (
    /* ----------------- S <-> D conversions ----------------- */
 
    // FCVTDS
-   if (BITS8(1,1,1,0,1,0,1,1) == insn_27_20
-       && BITS4(0,1,1,1) == insn_19_16
-       && BITS4(1,0,1,0) == insn_11_8
-       && BITS4(1,1,0,0) == (insn_7_4 & BITS4(1,1,0,1))) {
-      UInt dD = insn_15_12;
+   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
+       && BITS4(0,1,1,1) == INSN(19,16)
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(1,1,0,0) == (INSN(7,4) & BITS4(1,1,0,1))) {
+      UInt dD = INSN(15,12);
       UInt bM = (insn >> 5) & 1;
-      UInt fM = (insn_3_0 << 1) | bM;
+      UInt fM = (INSN(3,0) << 1) | bM;
       putDReg(dD, unop(Iop_F32toF64, getFReg(fM)), condT);
-      DIP("fcvtds%s d%u, s%u\n", nCC(insn_cond), dD, fM);
+      DIP("fcvtds%s d%u, s%u\n", nCC(INSN_COND), dD, fM);
       goto decode_success;
    }
 
    // FCVTSD
-   if (BITS8(1,1,1,0,1,0,1,1) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,1,1,1) == insn_19_16
-       && BITS4(1,0,1,1) == insn_11_8
-       && BITS4(1,1,0,0) == insn_7_4) {
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,1,1,1) == INSN(19,16)
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(1,1,0,0) == INSN(7,4)) {
       UInt   bD    = (insn >> 22) & 1;
-      UInt   fD    = (insn_15_12 << 1) | bD;
-      UInt   dM    = insn_3_0;
+      UInt   fD    = (INSN(15,12) << 1) | bD;
+      UInt   dM    = INSN(3,0);
       IRTemp rmode = newTemp(Ity_I32);
       assign(rmode, mkexpr(mk_get_IR_rounding_mode()));
       putFReg(fD, binop(Iop_F64toF32, mkexpr(rmode), getDReg(dM)),
                   condT);
-      DIP("fcvtsd%s s%u, d%u\n", nCC(insn_cond), fD, dM);
+      DIP("fcvtsd%s s%u, d%u\n", nCC(INSN_COND), fD, dM);
       goto decode_success;
    }
 
@@ -4084,8 +4059,8 @@ DisResult disInstr_ARM_WRK (
 
    // LDREX
    if (0x01900F9F == (insn & 0x0FF00FFF)) {
-      UInt rT = insn_15_12;
-      UInt rN = insn_19_16;
+      UInt rT = INSN(15,12);
+      UInt rN = INSN(19,16);
       if (rT == 15 || rN == 15 || rT == 14 /* || (rT & 1)*/) {
          /* undecodable; fall through */
       } else {
@@ -4099,7 +4074,7 @@ DisResult disInstr_ARM_WRK (
          res = newTemp(Ity_I32);
          stmt( IRStmt_LLSC(Iend_LE, res, getIReg(rN), NULL/*this is a load*/) );
          putIReg(rT, mkexpr(res), IRTemp_INVALID, Ijk_Boring);
-         DIP("ldrex%s r%u, [r%u]\n", nCC(insn_cond), rT, rN);
+         DIP("ldrex%s r%u, [r%u]\n", nCC(INSN_COND), rT, rN);
          goto decode_success;
       }
       /* fall through */
@@ -4107,9 +4082,9 @@ DisResult disInstr_ARM_WRK (
 
    // STREX
    if (0x01800F90 == (insn & 0x0FF00FF0)) {
-      UInt rT = insn_3_0;
-      UInt rN = insn_19_16;
-      UInt rD = insn_15_12;
+      UInt rT = INSN(3,0);
+      UInt rN = INSN(19,16);
+      UInt rD = INSN(15,12);
       if (rT == 15 || rN == 15 || rD == 15
           || rT == 14 /* || (rT & 1)*/
           || rD == rT || rN == rT) {
@@ -4135,7 +4110,7 @@ DisResult disInstr_ARM_WRK (
 
          putIReg(rD, mkexpr(resSC32),
                      IRTemp_INVALID, Ijk_Boring);
-         DIP("strex%s r%u, r%u, [r%u]\n", nCC(insn_cond), rD, rT, rN);
+         DIP("strex%s r%u, r%u, [r%u]\n", nCC(INSN_COND), rD, rT, rN);
          goto decode_success;
       }
       /* fall through */
@@ -4144,7 +4119,7 @@ DisResult disInstr_ARM_WRK (
    /* --------------------- movw, movt --------------------- */
    if (0x03000000 == (insn & 0x0FF00000)
        || 0x03400000 == (insn & 0x0FF00000)) /* pray for CSE */ {
-      UInt rD    = insn_15_12;
+      UInt rD    = INSN(15,12);
       UInt imm16 = (insn & 0xFFF) | ((insn >> 4) & 0x0000F000);
       UInt isT   = (insn >> 22) & 1;
       if (rD == 15) {
@@ -4156,11 +4131,11 @@ DisResult disInstr_ARM_WRK (
                           binop(Iop_And32, getIReg(rD), mkU32(0xFFFF)),
                           mkU32(imm16 << 16)),
                     condT, Ijk_Boring);
-            DIP("movt%s r%u, #0x%04x\n", nCC(insn_cond), rD, imm16);
+            DIP("movt%s r%u, #0x%04x\n", nCC(INSN_COND), rD, imm16);
             goto decode_success;
          } else {
             putIReg(rD, mkU32(imm16), condT, Ijk_Boring);
-            DIP("movw%s r%u, #0x%04x\n", nCC(insn_cond), rD, imm16);
+            DIP("movw%s r%u, #0x%04x\n", nCC(INSN_COND), rD, imm16);
             goto decode_success;
          }
       }
@@ -4168,15 +4143,15 @@ DisResult disInstr_ARM_WRK (
    }
 
    /* ------------------- {u,s}xt{b,h}{,16} ------------------- */
-   if (BITS8(0,1,1,0,1, 0,0,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,0,0))
-       && BITS4(1,1,1,1) == insn_19_16
-       && BITS4(0,1,1,1) == insn_7_4
-       && BITS4(0,0, 0,0) == (insn_11_8 & BITS4(0,0,1,1))) {
-      UInt subopc = insn_27_20 & BITS8(0,0,0,0,0, 1,1,1);
+   if (BITS8(0,1,1,0,1, 0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,0,0))
+       && BITS4(1,1,1,1) == INSN(19,16)
+       && BITS4(0,1,1,1) == INSN(7,4)
+       && BITS4(0,0, 0,0) == (INSN(11,8) & BITS4(0,0,1,1))) {
+      UInt subopc = INSN(27,20) & BITS8(0,0,0,0,0, 1,1,1);
       if (subopc != BITS4(0,0,0,1) && subopc != BITS4(0,1,0,1)) {
-         Int    rot  = (insn_11_8 >> 2) & 3;
-         UInt   rM   = insn_3_0;
-         UInt   rD   = insn_15_12;
+         Int    rot  = (INSN(11,8) >> 2) & 3;
+         UInt   rM   = INSN(3,0);
+         UInt   rD   = INSN(15,12);
          IRTemp srcT = newTemp(Ity_I32);
          IRTemp rotT = newTemp(Ity_I32);
          IRTemp dstT = newTemp(Ity_I32);
@@ -4228,17 +4203,17 @@ DisResult disInstr_ARM_WRK (
                vassert(0); // guarded by "if" above
          }
          putIReg(rD, mkexpr(dstT), condT, Ijk_Boring);
-         DIP("%s%s r%u, r%u, ROR #%u\n", nm, nCC(insn_cond), rD, rM, rot);
+         DIP("%s%s r%u, r%u, ROR #%u\n", nm, nCC(INSN_COND), rD, rM, rot);
          goto decode_success;
       }
       /* fall through */
    }
 
    /* ------------------- bfi, bfc ------------------- */
-   if (BITS8(0,1,1,1,1,1,0, 0) == (insn_27_20 & BITS8(1,1,1,1,1,1,1,0))
-       && BITS4(0, 0,0,1) == (insn_7_4 & BITS4(0,1,1,1))) {
-      UInt rD  = insn_15_12;
-      UInt rN  = insn_3_0;
+   if (BITS8(0,1,1,1,1,1,0, 0) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,0))
+       && BITS4(0, 0,0,1) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt rD  = INSN(15,12);
+      UInt rN  = INSN(3,0);
       UInt msb = (insn >> 16) & 0x1F; /* 20:16 */
       UInt lsb = (insn >> 7) & 0x1F;  /* 11:7 */
       if (rD == 15 || msb < lsb) {
@@ -4268,10 +4243,10 @@ DisResult disInstr_ARM_WRK (
 
          if (rN == 15) {
             DIP("bfc%s r%u, #%u, #%u\n",
-                nCC(insn_cond), rD, lsb, msb-lsb+1);
+                nCC(INSN_COND), rD, lsb, msb-lsb+1);
          } else {
             DIP("bfi%s r%u, r%u, #%u, #%u\n",
-                nCC(insn_cond), rD, rN, lsb, msb-lsb+1);
+                nCC(INSN_COND), rD, rN, lsb, msb-lsb+1);
          }
          goto decode_success;
       }
@@ -4279,10 +4254,10 @@ DisResult disInstr_ARM_WRK (
    }
 
    /* ------------------- {u,s}bfx ------------------- */
-   if (BITS8(0,1,1,1,1,0,1,0) == (insn_27_20 & BITS8(1,1,1,1,1,0,1,0))
-       && BITS4(0,1,0,1) == (insn_7_4 & BITS4(0,1,1,1))) {
-      UInt rD  = insn_15_12;
-      UInt rN  = insn_3_0;
+   if (BITS8(0,1,1,1,1,0,1,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,0))
+       && BITS4(0,1,0,1) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt rD  = INSN(15,12);
+      UInt rN  = INSN(3,0);
       UInt wm1 = (insn >> 16) & 0x1F; /* 20:16 */
       UInt lsb = (insn >> 7) & 0x1F;  /* 11:7 */
       UInt msb = lsb + wm1;
@@ -4309,19 +4284,19 @@ DisResult disInstr_ARM_WRK (
 
          DIP("%s%s r%u, r%u, #%u, #%u\n",
              isU ? "ubfx" : "sbfx",
-             nCC(insn_cond), rD, rN, lsb, wm1 + 1);
+             nCC(INSN_COND), rD, rN, lsb, wm1 + 1);
          goto decode_success;
       }
       /* fall through */
    }
 
    /* ------------------- smul{b,t}{b,t} ------------- */
-   if (BITS8(0,0,0,1,0,1,1,0) == insn_27_20
-       && BITS4(0,0,0,0) == insn_15_12
-       && BITS4(1,0,0,0) == (insn_7_4 & BITS4(1,0,0,1))) {
-      UInt rD  = insn_19_16;
-      UInt rM  = insn_11_8;
-      UInt rN  = insn_3_0;
+   if (BITS8(0,0,0,1,0,1,1,0) == INSN(27,20)
+       && BITS4(0,0,0,0) == INSN(15,12)
+       && BITS4(1,0,0,0) == (INSN(7,4) & BITS4(1,0,0,1))) {
+      UInt rD  = INSN(19,16);
+      UInt rM  = INSN(11,8);
+      UInt rN  = INSN(3,0);
       UInt bM = (insn >> 6) & 1;
       UInt bN = (insn >> 5) & 1;
       if (bN == 0 && bM == 1) goto decode_failure; //ATC
@@ -4348,7 +4323,7 @@ DisResult disInstr_ARM_WRK (
          putIReg(rD, mkexpr(res), condT, Ijk_Boring);
 
          DIP("smul%c%c%s r%u, r%u, r%u\n",
-             bN ? 't' : 'b', bM ? 't' : 'b', nCC(insn_cond), rD, rN, rM);
+             bN ? 't' : 'b', bM ? 't' : 'b', nCC(INSN_COND), rD, rN, rM);
          goto decode_success;
       }
       /* fall through */
@@ -4374,32 +4349,32 @@ DisResult disInstr_ARM_WRK (
              32  Rn +/- Rm
    */
    /* Quickly skip over all of this for hopefully most instructions */
-   if ((insn_27_24 & BITS4(1,1,1,0)) != BITS4(0,0,0,0))
+   if ((INSN(27,24) & BITS4(1,1,1,0)) != BITS4(0,0,0,0))
       goto after_load_store_doubleword;
 
    /* Check the "11S1" thing. */
-   if ((insn_7_4 & BITS4(1,1,0,1)) != BITS4(1,1,0,1))
+   if ((INSN(7,4) & BITS4(1,1,0,1)) != BITS4(1,1,0,1))
       goto after_load_store_doubleword;
 
    summary = 0;
 
-   /**/ if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(1,0,0)) {
+   /**/ if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,20) == BITS3(1,0,0)) {
       summary = 1 | 16;
    }
-   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(0,0,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,20) == BITS3(0,0,0)) {
       summary = 1 | 32;
    }
-   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(1,1,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,20) == BITS3(1,1,0)) {
       summary = 2 | 16;
    }
-   else if (insn_27_24 == BITS4(0,0,0,1) && insn_22_20 == BITS3(0,1,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,20) == BITS3(0,1,0)) {
       summary = 2 | 32;
       goto decode_failure; //ATC
    }
-   else if (insn_27_24 == BITS4(0,0,0,0) && insn_22_20 == BITS3(1,0,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,0) && INSN(22,20) == BITS3(1,0,0)) {
       summary = 3 | 16;
    }
-   else if (insn_27_24 == BITS4(0,0,0,0) && insn_22_20 == BITS3(0,0,0)) {
+   else if (INSN(27,24) == BITS4(0,0,0,0) && INSN(22,20) == BITS3(0,0,0)) {
       summary = 3 | 32;
       goto decode_failure; //ATC
    }
@@ -4517,13 +4492,13 @@ DisResult disInstr_ARM_WRK (
      }
 
      switch (summary & 0x0F) {
-        case 1:  DIP("%s%s r%u, %s\n", name, nCC(insn_cond), rD, dis_buf);
+        case 1:  DIP("%s%s r%u, %s\n", name, nCC(INSN_COND), rD, dis_buf);
                  break;
         case 2:  DIP("%s%s r%u, %s! (at-EA-then-Rn=EA)\n",
-                     name, nCC(insn_cond), rD, dis_buf);
+                     name, nCC(INSN_COND), rD, dis_buf);
                  break;
         case 3:  DIP("%s%s r%u, %s! (at-Rn-then-Rn=EA)\n",
-                     name, nCC(insn_cond), rD, dis_buf);
+                     name, nCC(INSN_COND), rD, dis_buf);
                  break;
         default: vassert(0);
      }
@@ -4534,12 +4509,12 @@ DisResult disInstr_ARM_WRK (
   after_load_store_doubleword:
 
    /* ------------------- sxtab ------------- */
-   if (BITS8(0,1,1,0,1,0,1,0) == insn_27_20
-       && BITS4(0,0,0,0) == (insn_11_8 & BITS4(0,0,1,1))
-       && BITS4(0,1,1,1) == insn_7_4) {
-      UInt rN  = insn_19_16;
-      UInt rD  = insn_15_12;
-      UInt rM  = insn_3_0;
+   if (BITS8(0,1,1,0,1,0,1,0) == INSN(27,20)
+       && BITS4(0,0,0,0) == (INSN(11,8) & BITS4(0,0,1,1))
+       && BITS4(0,1,1,1) == INSN(7,4)) {
+      UInt rN  = INSN(19,16);
+      UInt rD  = INSN(15,12);
+      UInt rM  = INSN(3,0);
       UInt rot = (insn >> 10) & 3;
       if (rN == 15/*it's SXTB*/ || rD == 15 || rM == 15) {
          /* undecodable; fall through */
@@ -4556,19 +4531,19 @@ DisResult disInstr_ARM_WRK (
                                       genROR32(srcR, 8 * rot)))));
          putIReg(rD, mkexpr(res), condT, Ijk_Boring);
          DIP("sxtab%s r%u, r%u, r%u, ror #%u\n",
-             nCC(insn_cond), rD, rN, rM, rot);
+             nCC(INSN_COND), rD, rN, rM, rot);
          goto decode_success;
       }
       /* fall through */
    }
 
    /* ------------------- uxtah ------------- */
-   if (BITS8(0,1,1,0,1,1,1,1) == insn_27_20
-       && BITS4(0,0,0,0) == (insn_11_8 & BITS4(0,0,1,1))
-       && BITS4(0,1,1,1) == insn_7_4) {
-      UInt rN  = insn_19_16;
-      UInt rD  = insn_15_12;
-      UInt rM  = insn_3_0;
+   if (BITS8(0,1,1,0,1,1,1,1) == INSN(27,20)
+       && BITS4(0,0,0,0) == (INSN(11,8) & BITS4(0,0,1,1))
+       && BITS4(0,1,1,1) == INSN(7,4)) {
+      UInt rN  = INSN(19,16);
+      UInt rD  = INSN(15,12);
+      UInt rM  = INSN(3,0);
       UInt rot = (insn >> 10) & 3;
       if (rN == 15/*it's UXTH*/ || rD == 15 || rM == 15) {
          /* undecodable; fall through */
@@ -4586,7 +4561,7 @@ DisResult disInstr_ARM_WRK (
          putIReg(rD, mkexpr(res), condT, Ijk_Boring);
 
          DIP("uxtah%s r%u, r%u, r%u, ror #%u\n",
-             nCC(insn_cond), rD, rN, rM, rot);
+             nCC(INSN_COND), rD, rN, rM, rot);
          goto decode_success;
       }
       /* fall through */
@@ -4606,10 +4581,10 @@ DisResult disInstr_ARM_WRK (
    vex_printf("                 cond=%d(0x%x) 27:20=%u(0x%02x) "
                                 "4:4=%d "
                                 "3:0=%u(0x%x)\n",
-              (Int)insn_cond, (UInt)insn_cond,
-              (Int)insn_27_20, (UInt)insn_27_20,
-              (Int)insn_4,
-              (Int)insn_3_0, (UInt)insn_3_0 );
+              (Int)INSN_COND, (UInt)INSN_COND,
+              (Int)INSN(27,20), (UInt)INSN(27,20),
+              (Int)INSN(4,4),
+              (Int)INSN(3,0), (UInt)INSN(3,0) );
 
    /* Tell the dispatcher that this insn cannot be decoded, and so has
       not been executed, and (is currently) the next to be executed.
@@ -4670,6 +4645,9 @@ DisResult disInstr_ARM_WRK (
    }
 
    return dres;
+
+#  undef INSN
+#  undef INSN_COND
 }
 
 #undef DIP
