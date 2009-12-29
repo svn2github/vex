@@ -832,7 +832,7 @@ HInstrArray* doRegisterAllocation (
       }
 
       /* The spill slots are 64 bits in size.  As per the comment on
-         definition of HRegClass in h_generic_regs.h, that means, to
+         definition of HRegClass in host_generic_regs.h, that means, to
          spill a vreg of class Flt64 or Vec128, we'll need to find two
          adjacent spill slots to use.  Note, this logic needs to kept
          in sync with the size info on the definition of HRegClass. */
