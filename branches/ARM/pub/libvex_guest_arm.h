@@ -121,6 +121,15 @@ typedef
       ULong guest_D15;
       UInt  guest_FPSCR;
 
+      /* Not a town in Cornwall, but instead the TPIDRURO, on of the
+         Thread ID registers present in CP15 (the system control
+         coprocessor), register set "c13", register 3 (the User
+         Read-only Thread ID Register).  arm-linux apparently uses it
+         to hold the TLS pointer for the thread.  It's read-only in
+         user space.  On Linux it is set in user space by various
+         thread-related syscalls. */
+      UInt guest_TPIDRURO;
+
       /* Padding to make it have an 16-aligned size */
       /* UInt padding1; */
       /* UInt padding2; */

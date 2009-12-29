@@ -311,6 +311,7 @@ static IRExpr* genROR32( IRTemp src, Int rot )
 #define OFFB_D15      offsetof(VexGuestARMState,guest_D15)
 
 #define OFFB_FPSCR    offsetof(VexGuestARMState,guest_FPSCR)
+#define OFFB_TPIDRURO offsetof(VexGuestARMState,guest_TPIDRURO)
 
 
 /* ---------------- Integer registers ---------------- */
@@ -4562,6 +4563,29 @@ DisResult disInstr_ARM_WRK (
 
          DIP("uxtah%s r%u, r%u, r%u, ror #%u\n",
              nCC(INSN_COND), rD, rN, rM, rot);
+         goto decode_success;
+      }
+      /* fall through */
+   }
+
+   /* ----------------------------------------------------------- */
+   /* -- ARMv7 instructions                                    -- */
+   /* ----------------------------------------------------------- */
+
+   /* -------------- read CP15 TPIDRURO register ------------- */
+   /* mrc     p15, 0, r0, c13, c0, 3  up to
+      mrc     p15, 0, r14, c13, c0, 3
+   */
+   /* I don't know whether this is really v7-only.  But anyway, we
+      have to support it since arm-linux uses TPIDRURO as a thread
+      state register. */
+   if (0x0E1D0F70 == (insn & 0x0FFF0FFF)) {
+      UInt rD = INSN(15,12);
+      if (rD <= 14) {
+         /* skip r15, that's too stupid to handle */
+         putIReg(rD, IRExpr_Get(OFFB_TPIDRURO, Ity_I32),
+                     condT, Ijk_Boring);
+         DIP("mrc%s p15,0, r%u, c13, c0, 3\n", nCC(INSN_COND), rD);
          goto decode_success;
       }
       /* fall through */
