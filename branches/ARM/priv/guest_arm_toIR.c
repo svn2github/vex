@@ -4370,7 +4370,6 @@ DisResult disInstr_ARM_WRK (
    }
    else if (INSN(27,24) == BITS4(0,0,0,1) && INSN(22,20) == BITS3(0,1,0)) {
       summary = 2 | 32;
-      goto decode_failure; //ATC
    }
    else if (INSN(27,24) == BITS4(0,0,0,0) && INSN(22,20) == BITS3(1,0,0)) {
       summary = 3 | 16;
