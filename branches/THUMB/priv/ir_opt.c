@@ -931,6 +931,7 @@ static IRExpr* mkZeroForXor ( IROp op )
    switch (op) {
       case Iop_Xor8:  return IRExpr_Const(IRConst_U8(0));
       case Iop_Xor16: return IRExpr_Const(IRConst_U16(0));
+      case Iop_Sub32:
       case Iop_Xor32: return IRExpr_Const(IRConst_U32(0));
       case Iop_Xor64: return IRExpr_Const(IRConst_U64(0));
       case Iop_XorV128: return IRExpr_Const(IRConst_V128(0));
@@ -1578,11 +1579,13 @@ static IRExpr* fold_Expr ( IRExpr* e )
          }
 
          /* Xor8/16/32/64/V128(t,t) ==> 0, for some IRTemp t */
+         /* Sub32(t,t) ==> 0, for some IRTemp t */
          if (   (e->Iex.Binop.op == Iop_Xor64
               || e->Iex.Binop.op == Iop_Xor32
               || e->Iex.Binop.op == Iop_Xor16
               || e->Iex.Binop.op == Iop_Xor8
-              || e->Iex.Binop.op == Iop_XorV128)
+              || e->Iex.Binop.op == Iop_XorV128
+              || e->Iex.Binop.op == Iop_Sub32)
              && sameIRTemps(e->Iex.Binop.arg1, e->Iex.Binop.arg2)) {
             e2 = mkZeroForXor(e->Iex.Binop.op);
          }

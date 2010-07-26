@@ -260,7 +260,9 @@ UInt armg_calculate_condition ( UInt cond_n_op /* ARMCondcode << 4 | cc_op */,
          zf = nzcv >> ARMG_CC_SHIFT_Z;
          return 1 & (inv ^ ~(zf | (nf ^ vf)));
 
-      case ARMCondAL: // should never get here: Always => no flags to calc
+      case ARMCondAL:
+         return 1; /* well, that bit at least was easy! */
+
       case ARMCondNV: // should never get here: Illegal instr
       default:
          /* shouldn't really make these calls from generated code */
@@ -442,7 +444,7 @@ void LibVEX_GuestARM_initialise ( /*OUT*/VexGuestARMState* vex_state )
    vex_state->guest_R12 = 0;
    vex_state->guest_R13 = 0;
    vex_state->guest_R14 = 0;
-   vex_state->guest_R15 = 0;
+   vex_state->guest_R15T = 0;  /* NB: implies ARM mode */
 
    vex_state->guest_CC_OP   = ARMG_CC_OP_COPY;
    vex_state->guest_CC_DEP1 = 0;
@@ -479,8 +481,12 @@ void LibVEX_GuestARM_initialise ( /*OUT*/VexGuestARMState* vex_state )
 
    vex_state->guest_TPIDRURO = 0;
 
-   /* vex_state->padding1 = 0; */
-   /* vex_state->padding2 = 0; */
+   /* Not in a Thumb IT block. */
+   vex_state->guest_ITSTATE = 0;
+
+   vex_state->padding1 = 0;
+   vex_state->padding2 = 0;
+   vex_state->padding3 = 0;
 }
 
 
@@ -493,14 +499,14 @@ void LibVEX_GuestARM_initialise ( /*OUT*/VexGuestARMState* vex_state )
    .. maxoff requires precise memory exceptions.  If in doubt return
    True (but this is generates significantly slower code).  
 
-   We enforce precise exns for guest R13(sp), R15(pc).
+   We enforce precise exns for guest R13(sp), R15T(pc).
 */
 Bool guest_arm_state_requires_precise_mem_exns ( Int minoff, 
                                                  Int maxoff)
 {
    Int sp_min = offsetof(VexGuestARMState, guest_R13);
    Int sp_max = sp_min + 4 - 1;
-   Int pc_min = offsetof(VexGuestARMState, guest_R15);
+   Int pc_min = offsetof(VexGuestARMState, guest_R15T);
    Int pc_max = pc_min + 4 - 1;
 
    if (maxoff < sp_min || minoff > sp_max) {
@@ -546,7 +552,7 @@ VexGuestLayout
           .sizeof_SP = 4,
 
           /* Describe the instruction pointer. */
-          .offset_IP = offsetof(VexGuestARMState,guest_R15),
+          .offset_IP = offsetof(VexGuestARMState,guest_R15T),
           .sizeof_IP = 4,
 
           /* Describe any sections to be regarded by Memcheck as
@@ -557,7 +563,7 @@ VexGuestLayout
              have to be tracked.  See detailed comment in gdefs.h on
              meaning of thunk fields. */
           .alwaysDefd
-             = { /* 0 */ ALWAYSDEFD(guest_R15),
+             = { /* 0 */ ALWAYSDEFD(guest_R15T),
                  /* 1 */ ALWAYSDEFD(guest_CC_OP),
                  /* 2 */ ALWAYSDEFD(guest_CC_NDEP),
                  /* 3 */ ALWAYSDEFD(guest_EMWARN),

@@ -28,6 +28,12 @@
    The GNU General Public License is contained in the file COPYING.
 */
 
+/* XXXX thumb to check:
+   that all cases where putIRegT writes r15, we generate a jump.
+
+   All uses of newTemp assign to an IRTemp and not a UInt
+ */
+
 /* Limitations, etc
 
    - pretty dodgy exception semantics for {LD,ST}Mxx, no doubt
@@ -90,8 +96,9 @@
 static Bool host_is_bigendian;
 
 /* CONST: The guest address for the instruction currently being
-   translated. */
-static Addr32 guest_R15_curr_instr;
+   translated.  This is the real, "decoded" address (not subject
+   to the CPSR.T kludge). */
+static Addr32 guest_R15_curr_instr_notENC;
 
 /* MOD: The IRSB* into which we're generating code. */
 static IRSB* irsb;
@@ -150,12 +157,40 @@ static inline UInt getUIntLittleEndianly ( UChar* p )
    return w;
 }
 
+/* Do a little-endian load of a 16-bit word, regardless of the
+   endianness of the underlying host. */
+static inline UShort getUShortLittleEndianly ( UChar* p )
+{
+   UShort w = 0;
+   w = (w << 8) | p[1];
+   w = (w << 8) | p[0];
+   return w;
+}
+
 static UInt ROR32 ( UInt x, UInt sh ) {
    vassert(sh >= 0 && sh < 32);
    if (sh == 0)
       return x;
    else
       return (x << (32-sh)) | (x >> sh);
+}
+
+static Int popcount32 ( UInt x )
+{
+   Int res = 0, i;
+   for (i = 0; i < 32; i++) {
+      res += (x & 1);
+      x >>= 1;
+   }
+   return res;
+}
+
+static UInt setbit32 ( UInt x, Int ix, UInt b )
+{
+   UInt mask = 1 << ix;
+   x &= ~mask;
+   x |= ((b << ix) & mask);
+   return x;
 }
 
 #define BITS2(_b1,_b0) \
@@ -170,6 +205,17 @@ static UInt ROR32 ( UInt x, UInt sh ) {
 #define BITS8(_b7,_b6,_b5,_b4,_b3,_b2,_b1,_b0)  \
    ((BITS4((_b7),(_b6),(_b5),(_b4)) << 4) \
     | BITS4((_b3),(_b2),(_b1),(_b0)))
+
+#define BITS5(_b4,_b3,_b2,_b1,_b0)  \
+   (BITS8(0,0,0,(_b4),(_b3),(_b2),(_b1),(_b0)))
+#define BITS6(_b5,_b4,_b3,_b2,_b1,_b0)  \
+   (BITS8(0,0,(_b5),(_b4),(_b3),(_b2),(_b1),(_b0)))
+#define BITS7(_b6,_b5,_b4,_b3,_b2,_b1,_b0)  \
+   (BITS8(0,(_b6),(_b5),(_b4),(_b3),(_b2),(_b1),(_b0)))
+
+#define BITS9(_b8,_b7,_b6,_b5,_b4,_b3,_b2,_b1,_b0)      \
+   (((_b8) << 8) \
+    | BITS8((_b7),(_b6),(_b5),(_b4),(_b3),(_b2),(_b1),(_b0)))
 
 /* produces _uint[_bMax:_bMin] */
 #define SLICE_UInt(_uint,_bMax,_bMin) \
@@ -279,7 +325,7 @@ static IRExpr* genROR32( IRTemp src, Int rot )
 #define OFFB_R12      offsetof(VexGuestARMState,guest_R12)
 #define OFFB_R13      offsetof(VexGuestARMState,guest_R13)
 #define OFFB_R14      offsetof(VexGuestARMState,guest_R14)
-#define OFFB_R15      offsetof(VexGuestARMState,guest_R15)
+#define OFFB_R15T     offsetof(VexGuestARMState,guest_R15T)
 
 #define OFFB_CC_OP    offsetof(VexGuestARMState,guest_CC_OP)
 #define OFFB_CC_DEP1  offsetof(VexGuestARMState,guest_CC_DEP1)
@@ -306,6 +352,7 @@ static IRExpr* genROR32( IRTemp src, Int rot )
 
 #define OFFB_FPSCR    offsetof(VexGuestARMState,guest_FPSCR)
 #define OFFB_TPIDRURO offsetof(VexGuestARMState,guest_TPIDRURO)
+#define OFFB_ITSTATE  offsetof(VexGuestARMState,guest_ITSTATE)
 
 
 /* ---------------- Integer registers ---------------- */
@@ -331,7 +378,7 @@ static Int integerGuestRegOffset ( UInt iregNo )
       case 12: return OFFB_R12;
       case 13: return OFFB_R13;
       case 14: return OFFB_R14;
-      case 15: return OFFB_R15;
+      case 15: return OFFB_R15T;
       default: vassert(0);
    }
 }
@@ -343,9 +390,9 @@ static IRExpr* llGetIReg ( UInt iregNo )
    return IRExpr_Get( integerGuestRegOffset(iregNo), Ity_I32 );
 }
 
-/* Architected read from a reg.  This automagically adds 8 to all 
-   reads of r15. */
-static IRExpr* getIReg ( UInt iregNo )
+/* Architected read from a reg in ARM mode.  This automagically adds 8
+   to all reads of r15. */
+static IRExpr* getIRegA ( UInt iregNo )
 {
    IRExpr* e;
    vassert(iregNo < 16);
@@ -356,7 +403,24 @@ static IRExpr* getIReg ( UInt iregNo )
          omitted; hence in the 2nd and subsequent unrollings we don't
          have a correct value in guest r15.  Instead produce the
          constant that we know would be produced at this point. */
-      e = mkU32(guest_R15_curr_instr + 8);
+      vassert(0 == (guest_R15_curr_instr_notENC & 3));
+      e = mkU32(guest_R15_curr_instr_notENC + 8);
+   } else {
+      e = IRExpr_Get( integerGuestRegOffset(iregNo), Ity_I32 );
+   }
+   return e;
+}
+
+/* Architected read from a reg in Thumb mode.  This automagically adds
+   4 to all reads of r15. */
+static IRExpr* getIRegT ( UInt iregNo )
+{
+   IRExpr* e;
+   vassert(iregNo < 16);
+   if (iregNo == 15) {
+      /* Ditto comment in getIReg. */
+      vassert(0 == (guest_R15_curr_instr_notENC & 1));
+      e = mkU32(guest_R15_curr_instr_notENC + 4);
    } else {
       e = IRExpr_Get( integerGuestRegOffset(iregNo), Ity_I32 );
    }
@@ -372,19 +436,22 @@ static void llPutIReg ( UInt iregNo, IRExpr* e )
    stmt( IRStmt_Put(integerGuestRegOffset(iregNo), e) );
 }
 
-/* Architected write to a reg.  If it is to r15, record info so at the
-   end of this insn's translation, a branch to it can be made.  Also
-   handles conditional writes to the register:
-   if guardT == IRTemp_INVALID then the write is unconditional.
-   If writing r15, also 4-align it. */
-static void putIReg ( UInt       iregNo,
-                      IRExpr*    e,
-                      IRTemp     guardT /* :: Ity_I32, 0 or 1 */,
-                      IRJumpKind jk /* if a jump is generated */ )
+/* Architected write to an integer register in ARM mode.  If it is to
+   r15, record info so at the end of this insn's translation, a branch
+   to it can be made.  Also handles conditional writes to the
+   register: if guardT == IRTemp_INVALID then the write is
+   unconditional.  If writing r15, also 4-align it. */
+static void putIRegA ( UInt       iregNo,
+                       IRExpr*    e,
+                       IRTemp     guardT /* :: Ity_I32, 0 or 1 */,
+                       IRJumpKind jk /* if a jump is generated */ )
 {
    /* if writing r15, force e to be 4-aligned. */
-   if (iregNo == 15)
-      e = binop(Iop_And32, e, mkU32(~3));
+   // INTERWORKING FIXME.  this needs to be relaxed so that
+   // puts caused by LDMxx which load r15 interwork right.
+   // but is no aligned too relaxed?
+   //if (iregNo == 15)
+   //   e = binop(Iop_And32, e, mkU32(~3));
    /* So, generate either an unconditional or a conditional write to
       the reg. */
    if (guardT == IRTemp_INVALID) {
@@ -407,6 +474,38 @@ static void putIReg ( UInt       iregNo,
       r15guard   = guardT;
       r15kind    = jk;
    }
+}
+
+
+/* Architected write to an integer register in Thumb mode.  Writes to
+   r15 are not allowed.  Handles conditional writes to the register:
+   if guardT == IRTemp_INVALID then the write is unconditional. */
+static void putIRegT ( UInt       iregNo,
+                       IRExpr*    e,
+                       IRTemp     guardT /* :: Ity_I32, 0 or 1 */ )
+{
+   /* So, generate either an unconditional or a conditional write to
+      the reg. */
+   vassert(iregNo >= 0 && iregNo <= 14);
+   if (guardT == IRTemp_INVALID) {
+      /* unconditional write */
+      llPutIReg( iregNo, e );
+   } else {
+      llPutIReg( iregNo,
+                 IRExpr_Mux0X( unop(Iop_32to8, mkexpr(guardT)),
+                               llGetIReg(iregNo),
+                               e ));
+   }
+}
+
+
+/* Thumb16 and Thumb32 only.
+   Returns true if reg is 13 or 15.  Implements the BadReg
+   predicate in the ARM ARM. */
+static Bool isBadRegT ( UInt r )
+{
+   vassert(r <= 15);
+   return r == 13 || r == 15;
 }
 
 
@@ -564,6 +663,18 @@ static void putMiscReg32 ( UInt    gsoffset,
    }
 }
 
+static IRTemp get_ITSTATE ( void )
+{
+   IRTemp t = newTemp(Ity_I32);
+   assign(t, IRExpr_Get( OFFB_ITSTATE, Ity_I32));
+   return t;
+}
+
+static void put_ITSTATE ( IRTemp t )
+{
+   stmt( IRStmt_Put( OFFB_ITSTATE, mkexpr(t)) );
+}
+
 
 /* ---------------- FPSCR stuff ---------------- */
 
@@ -641,18 +752,28 @@ static HChar* nCC ( ARMCondcode cond ) {
 /* Build IR to calculate some particular condition from stored
    CC_OP/CC_DEP1/CC_DEP2/CC_NDEP.  Returns an expression of type
    Ity_I32, suitable for narrowing.  Although the return type is
-   Ity_I32, the returned value is either 0 or 1.
+   Ity_I32, the returned value is either 0 or 1.  'cond' must be
+   :: Ity_I32 and must denote the condition to compute in 
+   bits 7:4, and be zero everywhere else.
 */
-static IRExpr* mk_armg_calculate_condition ( ARMCondcode cond )
+static IRExpr* mk_armg_calculate_condition_dyn ( IRExpr* cond )
 {
-  /* First arg is "(cond << 4) | condition".  This requires that the
-     ARM_CC_OP_ values all fit in 4 bits.  Hence we are passing a
-     (COND, OP) pair in the lowest 8 bits of the first argument. */
-   vassert(cond >= 0 && cond <= 15);
+   vassert(typeOfIRExpr(irsb->tyenv, cond) == Ity_I32);
+   /* And 'cond' had better produce a value in which only bits 7:4
+      bits are nonzero.  However, obviously we can't assert for
+      that. */
+
+   /* So what we're constructing for the first argument is 
+      "(cond << 4) | stored-operation-operation".  However,
+      as per comments above, must be supplied pre-shifted to this
+      function.
+
+      This pairing scheme requires that the ARM_CC_OP_ values all fit
+      in 4 bits.  Hence we are passing a (COND, OP) pair in the lowest
+      8 bits of the first argument. */
    IRExpr** args
       = mkIRExprVec_4(
-           binop(Iop_Or32, IRExpr_Get(OFFB_CC_OP, Ity_I32),
-                           mkU32(cond << 4)),
+           binop(Iop_Or32, IRExpr_Get(OFFB_CC_OP, Ity_I32), cond),
            IRExpr_Get(OFFB_CC_DEP1, Ity_I32),
            IRExpr_Get(OFFB_CC_DEP2, Ity_I32),
            IRExpr_Get(OFFB_CC_NDEP, Ity_I32)
@@ -669,6 +790,21 @@ static IRExpr* mk_armg_calculate_condition ( ARMCondcode cond )
       checking.  We're only interested in DEP1 and DEP2. */
    call->Iex.CCall.cee->mcx_mask = (1<<0) | (1<<3);
    return call;
+}
+
+
+/* Build IR to calculate some particular condition from stored
+   CC_OP/CC_DEP1/CC_DEP2/CC_NDEP.  Returns an expression of type
+   Ity_I32, suitable for narrowing.  Although the return type is
+   Ity_I32, the returned value is either 0 or 1.
+*/
+static IRExpr* mk_armg_calculate_condition ( ARMCondcode cond )
+{
+  /* First arg is "(cond << 4) | condition".  This requires that the
+     ARM_CC_OP_ values all fit in 4 bits.  Hence we are passing a
+     (COND, OP) pair in the lowest 8 bits of the first argument. */
+   vassert(cond >= 0 && cond <= 15);
+   return mk_armg_calculate_condition_dyn( mkU32(cond << 4) );
 }
 
 
@@ -825,6 +961,7 @@ static void setFlags_D1 ( UInt cc_op, IRTemp t_dep1,
 }
 
 
+/* ARM only */
 /* Generate a side-exit to the next instruction, if the given guard
    expression :: Ity_I32 is 0 (note!  the side exit is taken if the
    condition is false!)  This is used to skip over conditional
@@ -832,22 +969,655 @@ static void setFlags_D1 ( UInt cc_op, IRTemp t_dep1,
    because they are too complex or (more likely) they potentially
    generate exceptions.
 */
-static void mk_skip_to_next_if_cond_is_false ( 
+static void mk_skip_over_A32_if_cond_is_false ( 
                IRTemp guardT /* :: Ity_I32, 0 or 1 */
             )
 {
    vassert(guardT != IRTemp_INVALID);
+   vassert(0 == (guest_R15_curr_instr_notENC & 3));
    stmt( IRStmt_Exit(
             unop(Iop_Not1, unop(Iop_32to1, mkexpr(guardT))),
             Ijk_Boring,
-            IRConst_U32(toUInt(guest_R15_curr_instr + 4))
+            IRConst_U32(toUInt(guest_R15_curr_instr_notENC + 4))
        ));
 }
+
+/* Thumb16 only */
+/* ditto, but jump over a 16-bit thumb insn */
+static void mk_skip_over_T16_if_cond_is_false ( 
+               IRTemp guardT /* :: Ity_I32, 0 or 1 */
+            )
+{
+   vassert(guardT != IRTemp_INVALID);
+   vassert(0 == (guest_R15_curr_instr_notENC & 1));
+   stmt( IRStmt_Exit(
+            unop(Iop_Not1, unop(Iop_32to1, mkexpr(guardT))),
+            Ijk_Boring,
+            IRConst_U32(toUInt((guest_R15_curr_instr_notENC + 2) | 1))
+       ));
+}
+
+
+/* Thumb32 only */
+/* ditto, but jump over a 32-bit thumb insn */
+static void mk_skip_over_T32_if_cond_is_false ( 
+               IRTemp guardT /* :: Ity_I32, 0 or 1 */
+            )
+{
+   vassert(guardT != IRTemp_INVALID);
+   vassert(0 == (guest_R15_curr_instr_notENC & 1));
+   stmt( IRStmt_Exit(
+            unop(Iop_Not1, unop(Iop_32to1, mkexpr(guardT))),
+            Ijk_Boring,
+            IRConst_U32(toUInt((guest_R15_curr_instr_notENC + 4) | 1))
+       ));
+}
+
+
+/* Thumb16 and Thumb32 only
+   Generate a SIGILL followed by a restart of the current instruction
+   if the given temp is nonzero. */
+static void gen_SIGILL_T_if_nonzero ( IRTemp t /* :: Ity_I32 */ )
+{
+   vassert(t != IRTemp_INVALID);
+   vassert(0 == (guest_R15_curr_instr_notENC & 1));
+   stmt(
+      IRStmt_Exit(
+         binop(Iop_CmpNE32, mkexpr(t), mkU32(0)),
+         Ijk_NoDecode,
+         IRConst_U32(toUInt(guest_R15_curr_instr_notENC | 1))
+      )
+   );
+}
+
+
+/* Inspect the old_itstate, and generate a SIGILL if it indicates that
+   we are currently in an IT block and are not the last in the block.
+   This also rolls back guest_ITSTATE to its old value before the exit
+   and restores it to its new value afterwards.  This is so that if
+   the exit is taken, we have an up to date version of ITSTATE
+   available.  Without doing that, we have no hope of making precise
+   exceptions work. */
+static void gen_SIGILL_T_if_in_but_NLI_ITBlock (
+               IRTemp old_itstate /* :: Ity_I32 */,
+               IRTemp new_itstate /* :: Ity_I32 */
+            )
+{
+   put_ITSTATE(old_itstate); // backout
+   IRTemp guards_for_next3 = newTemp(Ity_I32);
+   assign(guards_for_next3,
+          binop(Iop_Shr32, mkexpr(old_itstate), mkU8(8)));
+   gen_SIGILL_T_if_nonzero(guards_for_next3);
+   put_ITSTATE(new_itstate); //restore
+}
+
+
+/* Simpler version of the above, which generates a SIGILL if
+   we're anywhere within an IT block. */
+static void gen_SIGILL_T_if_in_ITBlock (
+               IRTemp old_itstate /* :: Ity_I32 */,
+               IRTemp new_itstate /* :: Ity_I32 */
+            )
+{
+   put_ITSTATE(old_itstate); // backout
+   gen_SIGILL_T_if_nonzero(old_itstate);
+   put_ITSTATE(new_itstate); //restore
+}
+
 
 
 /*------------------------------------------------------------*/
 /*--- Larger helpers                                       ---*/
 /*------------------------------------------------------------*/
+
+/* Compute both the result and new C flag value for a LSL by an imm5
+   or by a register operand.  May generate reads of the old C value
+   (hence only safe to use before any writes to guest state happen).
+   Are factored out so can be used by both ARM and Thumb.
+
+   Note that in compute_result_and_C_after_{LSL,LSR,ASR}_by{imm5,reg},
+   "res" (the result)  is a.k.a. "shop", shifter operand
+   "newC" (the new C)  is a.k.a. "shco", shifter carry out
+
+   The calling convention for res and newC is a bit funny.  They could
+   be passed by value, but instead are passed by ref.
+*/
+
+static void compute_result_and_C_after_LSL_by_imm5 (
+               /*OUT*/HChar* buf,
+               IRTemp* res,
+               IRTemp* newC,
+               IRTemp rMt, UInt shift_amt, /* operands */
+               UInt rM      /* only for debug printing */
+            )
+{
+   if (shift_amt == 0) {
+      if (newC) {
+         assign( *newC, mk_armg_calculate_flag_c() );
+      }
+      assign( *res, mkexpr(rMt) );
+      DIS(buf, "r%u", rM);
+   } else {
+      vassert(shift_amt >= 1 && shift_amt <= 31);
+      if (newC) {
+         assign( *newC,
+                 binop(Iop_And32,
+                       binop(Iop_Shr32, mkexpr(rMt), 
+                                        mkU8(32 - shift_amt)),
+                       mkU32(1)));
+      }
+      assign( *res,
+              binop(Iop_Shl32, mkexpr(rMt), mkU8(shift_amt)) );
+      DIS(buf, "r%u, LSL #%u", rM, shift_amt);
+   }
+}
+
+
+static void compute_result_and_C_after_LSL_by_reg (
+               /*OUT*/HChar* buf,
+               IRTemp* res,
+               IRTemp* newC,
+               IRTemp rMt, IRTemp rSt,  /* operands */
+               UInt rM,    UInt rS      /* only for debug printing */
+            )
+{
+   // shift left in range 0 .. 255
+   // amt  = rS & 255
+   // res  = amt < 32 ?  Rm << amt  : 0
+   // newC = amt == 0     ? oldC  :
+   //        amt in 1..32 ?  Rm[32-amt]  : 0
+   IRTemp amtT = newTemp(Ity_I32);
+   assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
+   if (newC) {
+      /* mux0X(amt == 0,
+               mux0X(amt < 32, 
+                     0,
+                     Rm[(32-amt) & 31])
+               oldC)
+      */
+      /* About the best you can do is pray that iropt is able
+         to nuke most or all of the following junk. */
+      IRTemp oldC = newTemp(Ity_I32);
+      assign(oldC, mk_armg_calculate_flag_c() );
+      assign(
+         *newC,
+         IRExpr_Mux0X(
+            unop(Iop_1Uto8,
+                 binop(Iop_CmpEQ32, mkexpr(amtT), mkU32(0))),
+            IRExpr_Mux0X(
+               unop(Iop_1Uto8,
+                    binop(Iop_CmpLE32U, mkexpr(amtT), mkU32(32))),
+               mkU32(0),
+               binop(Iop_Shr32,
+                     mkexpr(rMt),
+                     unop(Iop_32to8,
+                          binop(Iop_And32,
+                                binop(Iop_Sub32,
+                                      mkU32(32),
+                                      mkexpr(amtT)),
+                                mkU32(31)
+                          )
+                     )
+               )
+            ),
+            mkexpr(oldC)
+         )
+      );
+   }
+   // (Rm << (Rs & 31))  &  (((Rs & 255) - 32) >>s 31)
+   // Lhs of the & limits the shift to 31 bits, so as to
+   // give known IR semantics.  Rhs of the & is all 1s for
+   // Rs <= 31 and all 0s for Rs >= 32.
+   assign(
+      *res,
+      binop(
+         Iop_And32,
+         binop(Iop_Shl32,
+               mkexpr(rMt),
+               unop(Iop_32to8,
+                    binop(Iop_And32, mkexpr(rSt), mkU32(31)))),
+         binop(Iop_Sar32,
+               binop(Iop_Sub32,
+                     mkexpr(amtT),
+                     mkU32(32)),
+               mkU8(31))));
+    DIS(buf, "r%u, LSL r%u", rM, rS);
+}
+
+
+static void compute_result_and_C_after_LSR_by_imm5 (
+               /*OUT*/HChar* buf,
+               IRTemp* res,
+               IRTemp* newC,
+               IRTemp rMt, UInt shift_amt, /* operands */
+               UInt rM      /* only for debug printing */
+            )
+{
+   if (shift_amt == 0) {
+      // conceptually a 32-bit shift, however:
+      // res  = 0
+      // newC = Rm[31]
+      if (newC) {
+         assign( *newC,
+                 binop(Iop_And32,
+                       binop(Iop_Shr32, mkexpr(rMt), mkU8(31)), 
+                       mkU32(1)));
+      }
+      assign( *res, mkU32(0) );
+      DIS(buf, "r%u, LSR #0(a.k.a. 32)", rM);
+   } else {
+      // shift in range 1..31
+      // res  = Rm >>u shift_amt
+      // newC = Rm[shift_amt - 1]
+      vassert(shift_amt >= 1 && shift_amt <= 31);
+      if (newC) {
+         assign( *newC,
+                 binop(Iop_And32,
+                       binop(Iop_Shr32, mkexpr(rMt), 
+                                        mkU8(shift_amt - 1)),
+                       mkU32(1)));
+      }
+      assign( *res,
+              binop(Iop_Shr32, mkexpr(rMt), mkU8(shift_amt)) );
+      DIS(buf, "r%u, LSR #%u", rM, shift_amt);
+   }
+}
+
+
+static void compute_result_and_C_after_LSR_by_reg (
+               /*OUT*/HChar* buf,
+               IRTemp* res,
+               IRTemp* newC,
+               IRTemp rMt, IRTemp rSt,  /* operands */
+               UInt rM,    UInt rS      /* only for debug printing */
+            )
+{
+   // shift right in range 0 .. 255
+   // amt = rS & 255
+   // res  = amt < 32 ?  Rm >>u amt  : 0
+   // newC = amt == 0     ? oldC  :
+   //        amt in 1..32 ?  Rm[amt-1]  : 0
+   IRTemp amtT = newTemp(Ity_I32);
+   assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
+   if (newC) {
+      /* mux0X(amt == 0,
+               mux0X(amt < 32, 
+                     0,
+                     Rm[(amt-1) & 31])
+               oldC)
+      */
+      IRTemp oldC = newTemp(Ity_I32);
+      assign(oldC, mk_armg_calculate_flag_c() );
+      assign(
+         *newC,
+         IRExpr_Mux0X(
+            unop(Iop_1Uto8,
+                 binop(Iop_CmpEQ32, mkexpr(amtT), mkU32(0))),
+            IRExpr_Mux0X(
+               unop(Iop_1Uto8,
+                    binop(Iop_CmpLE32U, mkexpr(amtT), mkU32(32))),
+               mkU32(0),
+               binop(Iop_Shr32,
+                     mkexpr(rMt),
+                     unop(Iop_32to8,
+                          binop(Iop_And32,
+                                binop(Iop_Sub32,
+                                      mkexpr(amtT),
+                                      mkU32(1)),
+                                mkU32(31)
+                          )
+                     )
+               )
+            ),
+            mkexpr(oldC)
+         )
+      );
+   }
+   // (Rm >>u (Rs & 31))  &  (((Rs & 255) - 32) >>s 31)
+   // Lhs of the & limits the shift to 31 bits, so as to
+   // give known IR semantics.  Rhs of the & is all 1s for
+   // Rs <= 31 and all 0s for Rs >= 32.
+   assign(
+      *res,
+      binop(
+         Iop_And32,
+         binop(Iop_Shr32,
+               mkexpr(rMt),
+               unop(Iop_32to8,
+                    binop(Iop_And32, mkexpr(rSt), mkU32(31)))),
+         binop(Iop_Sar32,
+               binop(Iop_Sub32,
+                     mkexpr(amtT),
+                     mkU32(32)),
+               mkU8(31))));
+    DIS(buf, "r%u, LSR r%u", rM, rS);
+}
+
+
+static void compute_result_and_C_after_ASR_by_imm5 (
+               /*OUT*/HChar* buf,
+               IRTemp* res,
+               IRTemp* newC,
+               IRTemp rMt, UInt shift_amt, /* operands */
+               UInt rM      /* only for debug printing */
+            )
+{
+   if (shift_amt == 0) {
+      // conceptually a 32-bit shift, however:
+      // res  = Rm >>s 31
+      // newC = Rm[31]
+      if (newC) {
+         assign( *newC,
+                 binop(Iop_And32,
+                       binop(Iop_Shr32, mkexpr(rMt), mkU8(31)), 
+                       mkU32(1)));
+      }
+      assign( *res, binop(Iop_Sar32, mkexpr(rMt), mkU8(31)) );
+      DIS(buf, "r%u, ASR #0(a.k.a. 32)", rM);
+   } else {
+      // shift in range 1..31
+      // res = Rm >>s shift_amt
+      // newC = Rm[shift_amt - 1]
+      vassert(shift_amt >= 1 && shift_amt <= 31);
+      if (newC) {
+         assign( *newC,
+                 binop(Iop_And32,
+                       binop(Iop_Shr32, mkexpr(rMt), 
+                                        mkU8(shift_amt - 1)),
+                       mkU32(1)));
+      }
+      assign( *res,
+              binop(Iop_Sar32, mkexpr(rMt), mkU8(shift_amt)) );
+      DIS(buf, "r%u, ASR #%u", rM, shift_amt);
+   }
+}
+
+
+static void compute_result_and_C_after_ASR_by_reg (
+               /*OUT*/HChar* buf,
+               IRTemp* res,
+               IRTemp* newC,
+               IRTemp rMt, IRTemp rSt,  /* operands */
+               UInt rM,    UInt rS      /* only for debug printing */
+            )
+{
+   // arithmetic shift right in range 0 .. 255
+   // amt = rS & 255
+   // res  = amt < 32 ?  Rm >>s amt  : Rm >>s 31
+   // newC = amt == 0     ? oldC  :
+   //        amt in 1..32 ?  Rm[amt-1]  : Rm[31]
+   IRTemp amtT = newTemp(Ity_I32);
+   assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
+   if (newC) {
+      /* mux0X(amt == 0,
+               mux0X(amt < 32, 
+                     Rm[31],
+                     Rm[(amt-1) & 31])
+               oldC)
+      */
+      IRTemp oldC = newTemp(Ity_I32);
+      assign(oldC, mk_armg_calculate_flag_c() );
+      assign(
+         *newC,
+         IRExpr_Mux0X(
+            unop(Iop_1Uto8,
+                 binop(Iop_CmpEQ32, mkexpr(amtT), mkU32(0))),
+            IRExpr_Mux0X(
+               unop(Iop_1Uto8,
+                    binop(Iop_CmpLE32U, mkexpr(amtT), mkU32(32))),
+               binop(Iop_Shr32,
+                     mkexpr(rMt),
+                     mkU8(31)
+               ),
+               binop(Iop_Shr32,
+                     mkexpr(rMt),
+                     unop(Iop_32to8,
+                          binop(Iop_And32,
+                                binop(Iop_Sub32,
+                                      mkexpr(amtT),
+                                      mkU32(1)),
+                                mkU32(31)
+                          )
+                     )
+               )
+            ),
+            mkexpr(oldC)
+         )
+      );
+   }
+   // (Rm >>s (amt <u 32 ? amt : 31))
+   assign(
+      *res,
+      binop(
+         Iop_Sar32,
+         mkexpr(rMt),
+         unop(
+            Iop_32to8,
+            IRExpr_Mux0X(
+               unop(
+                 Iop_1Uto8,
+                 binop(Iop_CmpLT32U, mkexpr(amtT), mkU32(32))),
+               mkU32(31),
+               mkexpr(amtT)))));
+    DIS(buf, "r%u, ASR r%u", rM, rS);
+}
+
+
+static void compute_result_and_C_after_ROR_by_reg (
+               /*OUT*/HChar* buf,
+               IRTemp* res,
+               IRTemp* newC,
+               IRTemp rMt, IRTemp rSt,  /* operands */
+               UInt rM,    UInt rS      /* only for debug printing */
+            )
+{
+   // rotate right in range 0 .. 255
+   // amt = rS & 255
+   // shop =  Rm `ror` (amt & 31)
+   // shco =  amt == 0 ? oldC : Rm[(amt-1) & 31]
+   IRTemp amtT = newTemp(Ity_I32);
+   assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
+   IRTemp amt5T = newTemp(Ity_I32);
+   assign( amt5T, binop(Iop_And32, mkexpr(rSt), mkU32(31)) );
+   IRTemp oldC = newTemp(Ity_I32);
+   assign(oldC, mk_armg_calculate_flag_c() );
+   if (newC) {
+      assign(
+         *newC,
+         IRExpr_Mux0X(
+            unop(Iop_32to8, mkexpr(amtT)),
+            mkexpr(oldC),
+            binop(Iop_And32,
+                  binop(Iop_Shr32,
+                        mkexpr(rMt), 
+                        unop(Iop_32to8,
+                             binop(Iop_And32,
+                                   binop(Iop_Sub32,
+                                         mkexpr(amtT), 
+                                         mkU32(1)
+                                   ),
+                                   mkU32(31)
+                             )
+                        )
+                  ),
+                  mkU32(1)
+            )
+         )
+      );
+   }
+   assign(
+      *res,
+      IRExpr_Mux0X(
+         unop(Iop_32to8, mkexpr(amt5T)), mkexpr(rMt),
+         binop(Iop_Or32,
+               binop(Iop_Shr32,
+                     mkexpr(rMt), 
+                     unop(Iop_32to8, mkexpr(amt5T))
+               ),
+               binop(Iop_Shl32,
+                     mkexpr(rMt),
+                     unop(Iop_32to8,
+                          binop(Iop_Sub32, mkU32(32), mkexpr(amt5T))
+                     )
+               )
+         )
+      )
+   );
+   DIS(buf, "r%u, ROR r#%u", rM, rS);
+}
+
+
+/* Generate an expression corresponding to the immediate-shift case of
+   a shifter operand.  This is used both for ARM and Thumb2.
+
+   Bind it to a temporary, and return that via *res.  If newC is
+   non-NULL, also compute a value for the shifter's carry out (in the
+   LSB of a word), bind it to a temporary, and return that via *shco.
+
+   Generates GETs from the guest state and is therefore not safe to
+   use once we start doing PUTs to it, for any given instruction.
+
+   'how' is encoded thusly:
+      00b LSL,  01b LSR,  10b ASR,  11b ROR
+   Most but not all ARM and Thumb integer insns use this encoding.
+   Be careful to ensure the right value is passed here.
+*/
+static void compute_result_and_C_after_shift_by_imm5 (
+               /*OUT*/HChar* buf,
+               /*OUT*/IRTemp* res,
+               /*OUT*/IRTemp* newC,
+               IRTemp  rMt,       /* reg to shift */
+               UInt    how,       /* what kind of shift */
+               UInt    shift_amt, /* shift amount (0..31) */
+               UInt    rM         /* only for debug printing */
+            )
+{
+   vassert(shift_amt < 32);
+   vassert(how < 4);
+
+   switch (how) {
+
+      case 0:
+         compute_result_and_C_after_LSL_by_imm5(
+            buf, res, newC, rMt, shift_amt, rM
+         );
+         break;
+
+      case 1:
+         compute_result_and_C_after_LSR_by_imm5(
+            buf, res, newC, rMt, shift_amt, rM
+         );
+         break;
+
+      case 2:
+         compute_result_and_C_after_ASR_by_imm5(
+            buf, res, newC, rMt, shift_amt, rM
+         );
+         break;
+
+      case 3:
+         if (shift_amt == 0) {
+            IRTemp oldcT = newTemp(Ity_I32);
+            // rotate right 1 bit through carry (?)
+            // RRX -- described at ARM ARM A5-17
+            // res  = (oldC << 31) | (Rm >>u 1)
+            // newC = Rm[0]
+            if (newC) {
+               assign( *newC,
+                       binop(Iop_And32, mkexpr(rMt), mkU32(1)));
+            }
+            assign( oldcT, mk_armg_calculate_flag_c() );
+            assign( *res, 
+                    binop(Iop_Or32,
+                          binop(Iop_Shl32, mkexpr(oldcT), mkU8(31)),
+                          binop(Iop_Shr32, mkexpr(rMt), mkU8(1))) );
+            DIS(buf, "r%u, RRX", rM);
+         } else {
+            // rotate right in range 1..31
+            // res  = Rm `ror` shift_amt
+            // newC = Rm[shift_amt - 1]
+            vassert(shift_amt >= 1 && shift_amt <= 31);
+            if (newC) {
+               assign( *newC,
+                       binop(Iop_And32,
+                             binop(Iop_Shr32, mkexpr(rMt), 
+                                              mkU8(shift_amt - 1)),
+                             mkU32(1)));
+            }
+            assign( *res,
+                    binop(Iop_Or32,
+                          binop(Iop_Shr32, mkexpr(rMt), mkU8(shift_amt)),
+                          binop(Iop_Shl32, mkexpr(rMt),
+                                           mkU8(32-shift_amt))));
+            DIS(buf, "r%u, ROR #%u", rM, shift_amt);
+         }
+         break;
+
+      default:
+         /*NOTREACHED*/
+         vassert(0);
+   }
+}
+
+
+/* Generate an expression corresponding to the register-shift case of
+   a shifter operand.  This is used both for ARM and Thumb2.
+
+   Bind it to a temporary, and return that via *res.  If newC is
+   non-NULL, also compute a value for the shifter's carry out (in the
+   LSB of a word), bind it to a temporary, and return that via *shco.
+
+   Generates GETs from the guest state and is therefore not safe to
+   use once we start doing PUTs to it, for any given instruction.
+
+   'how' is encoded thusly:
+      00b LSL,  01b LSR,  10b ASR,  11b ROR
+   Most but not all ARM and Thumb integer insns use this encoding.
+   Be careful to ensure the right value is passed here.
+*/
+static void compute_result_and_C_after_shift_by_reg (
+               /*OUT*/HChar*  buf,
+               /*OUT*/IRTemp* res,
+               /*OUT*/IRTemp* newC,
+               IRTemp  rMt,       /* reg to shift */
+               UInt    how,       /* what kind of shift */
+               IRTemp  rSt,       /* shift amount */
+               UInt    rM,        /* only for debug printing */
+               UInt    rS         /* only for debug printing */
+            )
+{
+   vassert(how < 4);
+   switch (how) {
+      case 0: { /* LSL */
+         compute_result_and_C_after_LSL_by_reg(
+            buf, res, newC, rMt, rSt, rM, rS
+         );
+         break;
+      }
+      case 1: { /* LSR */
+         compute_result_and_C_after_LSR_by_reg(
+            buf, res, newC, rMt, rSt, rM, rS
+         );
+         break;
+      }
+      case 2: { /* ASR */
+         compute_result_and_C_after_ASR_by_reg(
+            buf, res, newC, rMt, rSt, rM, rS
+         );
+         break;
+      }
+      case 3: { /* ROR */
+         compute_result_and_C_after_ROR_by_reg(
+             buf, res, newC, rMt, rSt, rM, rS
+         );
+         break;
+      }
+      default:
+         /*NOTREACHED*/
+         vassert(0);
+   }
+}
+
 
 /* Generate an expression corresponding to a shifter_operand, bind it
    to a temporary, and return that via *shop.  If shco is non-NULL,
@@ -856,6 +1626,11 @@ static void mk_skip_to_next_if_cond_is_false (
 
    If for some reason we can't come up with a shifter operand (missing
    case?  not really a shifter operand?) return False.
+
+   Generates GETs from the guest state and is therefore not safe to
+   use once we start doing PUTs to it, for any given instruction.
+
+   For ARM insns only; not for Thumb.
 */
 static Bool mk_shifter_operand ( UInt insn_25, UInt insn_11_0,
                                  /*OUT*/IRTemp* shop,
@@ -904,142 +1679,14 @@ static Bool mk_shifter_operand ( UInt insn_25, UInt insn_11_0,
       UInt how       = (insn_11_0 >> 5) & 3;
       /* how: 00 = Shl, 01 = Shr, 10 = Sar, 11 = Ror */
       IRTemp rMt = newTemp(Ity_I32);
-      assign(rMt, getIReg(rM));
+      assign(rMt, getIRegA(rM));
 
       vassert(shift_amt <= 31);
 
-      switch (how) {
-
-         case 0:
-            if (shift_amt == 0) {
-               if (shco) {
-                  assign( *shco, mk_armg_calculate_flag_c() );
-               }
-               assign( *shop, mkexpr(rMt) );
-               DIS(buf, "r%u", rM);
-            } else {
-               vassert(shift_amt >= 1 && shift_amt <= 31);
-               if (shco) {
-                  assign( *shco,
-                          binop(Iop_And32,
-                                binop(Iop_Shr32, mkexpr(rMt), 
-                                                 mkU8(32 - shift_amt)),
-                                mkU32(1)));
-               }
-               assign( *shop,
-                       binop(Iop_Shl32, mkexpr(rMt), mkU8(shift_amt)) );
-               DIS(buf, "r%u, LSL #%u", rM, shift_amt);
-            }
-            return True;
-            /*NOTREACHED*/
-
-         case 1:
-            if (shift_amt == 0) {
-               // conceptually a 32-bit shift, however:
-               // shop = 0
-               // shco = Rm[31]
-               if (shco) {
-                  assign( *shco,
-                          binop(Iop_And32,
-                                binop(Iop_Shr32, mkexpr(rMt), mkU8(31)), 
-                                mkU32(1)));
-               }
-               assign( *shop, mkU32(0) );
-               DIS(buf, "r%u, LSR #0(a.k.a. 32)", rM);
-            } else {
-               // shift in range 1..31
-               // shop = Rm >>u shift_amt
-               // shco = Rm[shift_amt - 1]
-               vassert(shift_amt >= 1 && shift_amt <= 31);
-               if (shco) {
-                  assign( *shco,
-                          binop(Iop_And32,
-                                binop(Iop_Shr32, mkexpr(rMt), 
-                                                 mkU8(shift_amt - 1)),
-                                mkU32(1)));
-               }
-               assign( *shop,
-                       binop(Iop_Shr32, mkexpr(rMt), mkU8(shift_amt)) );
-               DIS(buf, "r%u, LSR #%u", rM, shift_amt);
-            }
-            return True;
-            /*NOTREACHED*/
-
-         case 2:
-            if (shift_amt == 0) {
-               // conceptually a 32-bit shift, however:
-               // shop = Rm >>s 31
-               // shco = Rm[31]
-               if (shco) {
-                  assign( *shco,
-                          binop(Iop_And32,
-                                binop(Iop_Shr32, mkexpr(rMt), mkU8(31)), 
-                                mkU32(1)));
-               }
-               assign( *shop, binop(Iop_Sar32, mkexpr(rMt), mkU8(31)) );
-               DIS(buf, "r%u, ASR #0(a.k.a. 32)", rM);
-            } else {
-               // shift in range 1..31
-               // shop = Rm >>s shift_amt
-               // shco = Rm[shift_amt - 1]
-               vassert(shift_amt >= 1 && shift_amt <= 31);
-               if (shco) {
-                  assign( *shco,
-                          binop(Iop_And32,
-                                binop(Iop_Shr32, mkexpr(rMt), 
-                                                 mkU8(shift_amt - 1)),
-                                mkU32(1)));
-               }
-               assign( *shop,
-                       binop(Iop_Sar32, mkexpr(rMt), mkU8(shift_amt)) );
-               DIS(buf, "r%u, ASR #%u", rM, shift_amt);
-            }
-            return True;
-            /*NOTREACHED*/
-
-         case 3:
-            if (shift_amt == 0) {
-               IRTemp oldcT = newTemp(Ity_I32);
-               // rotate right 1 bit through carry (?)
-               // RRX -- described at ARM ARM A5-17
-               // shop = (oldC << 31) | (Rm >>u 1)
-               // shco = Rm[0]
-               if (shco) {
-                  assign( *shco,
-                          binop(Iop_And32, mkexpr(rMt), mkU32(1)));
-               }
-               assign( oldcT, mk_armg_calculate_flag_c() );
-               assign( *shop, 
-                       binop(Iop_Or32,
-                             binop(Iop_Shl32, mkexpr(oldcT), mkU8(31)),
-                             binop(Iop_Shr32, mkexpr(rMt), mkU8(1))) );
-               DIS(buf, "r%u, RRX", rM);
-            } else {
-               // rotate right in range 1..31
-               // shop = Rm `ror` shift_amt
-               // shco = Rm[shift_amt - 1]
-               vassert(shift_amt >= 1 && shift_amt <= 31);
-               if (shco) {
-                  assign( *shco,
-                          binop(Iop_And32,
-                                binop(Iop_Shr32, mkexpr(rMt), 
-                                                 mkU8(shift_amt - 1)),
-                                mkU32(1)));
-               }
-               assign( *shop,
-                       binop(Iop_Or32,
-                             binop(Iop_Shr32, mkexpr(rMt), mkU8(shift_amt)),
-                             binop(Iop_Shl32, mkexpr(rMt),
-                                              mkU8(32-shift_amt))));
-               DIS(buf, "r%u, ROR #%u", rM, shift_amt);
-            }
-            return True;
-            /*NOTREACHED*/
-
-         default:
-            /*NOTREACHED*/
-            vassert(0);
-      }
+      compute_result_and_C_after_shift_by_imm5(
+         buf, shop, shco, rMt, how, shift_amt, rM
+      );
+      return True;
    }
 
    /* Shift/rotate by register */
@@ -1055,259 +1702,13 @@ static Bool mk_shifter_operand ( UInt insn_25, UInt insn_11_0,
       if (insn_7 == 1)
          return False; /* not really a shifter operand */
 
-      assign(rMt, getIReg(rM));
-      assign(rSt, getIReg(rS));
+      assign(rMt, getIRegA(rM));
+      assign(rSt, getIRegA(rS));
 
-      switch (how) {
-         case 0: { /* LSL */
-            // shift left in range 0 .. 255
-            // amt = rS & 255
-            // shop = amt < 32 ?  Rm << amt  : 0
-            // shco = amt == 0     ? oldC  :
-            //        amt in 1..32 ?  Rm[32-amt]  : 0
-            IRTemp amtT = newTemp(Ity_I32);
-            assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
-            if (shco) {
-               /* mux0X(amt == 0,
-                        mux0X(amt < 32, 
-                              0,
-                              Rm[(32-amt) & 31])
-                        oldC)
-               */
-               /* About the best you can do is pray that iropt is able
-                  to nuke most or all of the following junk. */
-               IRTemp oldC = newTemp(Ity_I32);
-               assign(oldC, mk_armg_calculate_flag_c() );
-               assign(
-                  *shco,
-                  IRExpr_Mux0X(
-                     unop(Iop_1Uto8,
-                          binop(Iop_CmpEQ32, mkexpr(amtT), mkU32(0))),
-                     IRExpr_Mux0X(
-                        unop(Iop_1Uto8,
-                             binop(Iop_CmpLE32U, mkexpr(amtT), mkU32(32))),
-                        mkU32(0),
-                        binop(Iop_Shr32,
-                              mkexpr(rMt),
-                              unop(Iop_32to8,
-                                   binop(Iop_And32,
-                                         binop(Iop_Sub32,
-                                               mkU32(32),
-                                               mkexpr(amtT)),
-                                         mkU32(31)
-                                   )
-                              )
-                        )
-                     ),
-                     mkexpr(oldC)
-                  )
-               );
-            }
-            // (Rm << (Rs & 31))  &  (((Rs & 255) - 32) >>s 31)
-            // Lhs of the & limits the shift to 31 bits, so as to
-            // give known IR semantics.  Rhs of the & is all 1s for
-            // Rs <= 31 and all 0s for Rs >= 32.
-            assign(
-               *shop,
-               binop(
-                  Iop_And32,
-                  binop(Iop_Shl32,
-                        mkexpr(rMt),
-                        unop(Iop_32to8,
-                             binop(Iop_And32, mkexpr(rSt), mkU32(31)))),
-                  binop(Iop_Sar32,
-                        binop(Iop_Sub32,
-                              mkexpr(amtT),
-                              mkU32(32)),
-                        mkU8(31))));
-             DIS(buf, "r%u, LSL r%u", rM, rS);
-             return True;
-         }
-         case 1: { /* LSR */
-            // shift right in range 0 .. 255
-            // amt = rS & 255
-            // shop = amt < 32 ?  Rm >>u amt  : 0
-            // shco = amt == 0     ? oldC  :
-            //        amt in 1..32 ?  Rm[amt-1]  : 0
-            IRTemp amtT = newTemp(Ity_I32);
-            assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
-            if (shco) {
-               /* mux0X(amt == 0,
-                        mux0X(amt < 32, 
-                              0,
-                              Rm[(amt-1) & 31])
-                        oldC)
-               */
-               IRTemp oldC = newTemp(Ity_I32);
-               assign(oldC, mk_armg_calculate_flag_c() );
-               assign(
-                  *shco,
-                  IRExpr_Mux0X(
-                     unop(Iop_1Uto8,
-                          binop(Iop_CmpEQ32, mkexpr(amtT), mkU32(0))),
-                     IRExpr_Mux0X(
-                        unop(Iop_1Uto8,
-                             binop(Iop_CmpLE32U, mkexpr(amtT), mkU32(32))),
-                        mkU32(0),
-                        binop(Iop_Shr32,
-                              mkexpr(rMt),
-                              unop(Iop_32to8,
-                                   binop(Iop_And32,
-                                         binop(Iop_Sub32,
-                                               mkexpr(amtT),
-                                               mkU32(1)),
-                                         mkU32(31)
-                                   )
-                              )
-                        )
-                     ),
-                     mkexpr(oldC)
-                  )
-               );
-            }
-            // (Rm >>u (Rs & 31))  &  (((Rs & 255) - 32) >>s 31)
-            // Lhs of the & limits the shift to 31 bits, so as to
-            // give known IR semantics.  Rhs of the & is all 1s for
-            // Rs <= 31 and all 0s for Rs >= 32.
-            assign(
-               *shop,
-               binop(
-                  Iop_And32,
-                  binop(Iop_Shr32,
-                        mkexpr(rMt),
-                        unop(Iop_32to8,
-                             binop(Iop_And32, mkexpr(rSt), mkU32(31)))),
-                  binop(Iop_Sar32,
-                        binop(Iop_Sub32,
-                              mkexpr(amtT),
-                              mkU32(32)),
-                        mkU8(31))));
-             DIS(buf, "r%u, LSR r%u", rM, rS);
-             return True;
-         }
-         case 2: { /* ASR */
-            // arithmetic shift right in range 0 .. 255
-            // amt = rS & 255
-            // shop = amt < 32 ?  Rm >>s amt  : Rm >>s 31
-            // shco = amt == 0     ? oldC  :
-            //        amt in 1..32 ?  Rm[amt-1]  : Rm[31]
-            IRTemp amtT = newTemp(Ity_I32);
-            assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
-            if (shco) {
-               /* mux0X(amt == 0,
-                        mux0X(amt < 32, 
-                              Rm[31],
-                              Rm[(amt-1) & 31])
-                        oldC)
-               */
-               IRTemp oldC = newTemp(Ity_I32);
-               assign(oldC, mk_armg_calculate_flag_c() );
-               assign(
-                  *shco,
-                  IRExpr_Mux0X(
-                     unop(Iop_1Uto8,
-                          binop(Iop_CmpEQ32, mkexpr(amtT), mkU32(0))),
-                     IRExpr_Mux0X(
-                        unop(Iop_1Uto8,
-                             binop(Iop_CmpLE32U, mkexpr(amtT), mkU32(32))),
-                        binop(Iop_Shr32,
-                              mkexpr(rMt),
-                              mkU8(31)
-                        ),
-                        binop(Iop_Shr32,
-                              mkexpr(rMt),
-                              unop(Iop_32to8,
-                                   binop(Iop_And32,
-                                         binop(Iop_Sub32,
-                                               mkexpr(amtT),
-                                               mkU32(1)),
-                                         mkU32(31)
-                                   )
-                              )
-                        )
-                     ),
-                     mkexpr(oldC)
-                  )
-               );
-            }
-            // (Rm >>s (amt <u 32 ? amt : 31))
-            assign(
-               *shop,
-               binop(
-                  Iop_Sar32,
-                  mkexpr(rMt),
-                  unop(
-                     Iop_32to8,
-                     IRExpr_Mux0X(
-                        unop(
-                          Iop_1Uto8,
-                          binop(Iop_CmpLT32U, mkexpr(amtT), mkU32(32))),
-                        mkU32(31),
-                        mkexpr(amtT)))));
-             DIS(buf, "r%u, ASR r%u", rM, rS);
-             return True;
-         }
-         case 3: { /* ROR */
-            // rotate right in range 0 .. 255
-            // amt = rS & 255
-            // shop =  Rm `ror` (amt & 31)
-            // shco =  amt == 0 ? oldC : Rm[(amt-1) & 31]
-            IRTemp amtT = newTemp(Ity_I32);
-            assign( amtT, binop(Iop_And32, mkexpr(rSt), mkU32(255)) );
-            IRTemp amt5T = newTemp(Ity_I32);
-            assign( amt5T, binop(Iop_And32, mkexpr(rSt), mkU32(31)) );
-            IRTemp oldC = newTemp(Ity_I32);
-            assign(oldC, mk_armg_calculate_flag_c() );
-            if (shco) {
-               assign(
-                  *shco,
-                  IRExpr_Mux0X(
-                     unop(Iop_32to8, mkexpr(amtT)),
-                     mkexpr(oldC),
-                     binop(Iop_And32,
-                           binop(Iop_Shr32,
-                                 mkexpr(rMt), 
-                                 unop(Iop_32to8,
-                                      binop(Iop_And32,
-                                            binop(Iop_Sub32,
-                                                  mkexpr(amtT), 
-                                                  mkU32(1)
-                                            ),
-                                            mkU32(31)
-                                      )
-                                 )
-                           ),
-                           mkU32(1)
-                     )
-                  )
-               );
-            }
-            assign(
-               *shop,
-               IRExpr_Mux0X(
-                  unop(Iop_32to8, mkexpr(amt5T)), mkexpr(rMt),
-                  binop(Iop_Or32,
-                        binop(Iop_Shr32,
-                              mkexpr(rMt), 
-                              unop(Iop_32to8, mkexpr(amt5T))
-                        ),
-                        binop(Iop_Shl32,
-                              mkexpr(rMt),
-                              unop(Iop_32to8,
-                                   binop(Iop_Sub32, mkU32(32), mkexpr(amt5T))
-                              )
-                        )
-                  )
-               )
-            );
-            DIS(buf, "r%u, ROR r#%u", rM, rS);
-            return True;
-            /*NOTREACHED*/
-         }
-         default:
-            /*NOTREACHED*/
-            vassert(0);
-      }
+      compute_result_and_C_after_shift_by_reg(
+         buf, shop, shco, rMt, how, rSt, rM, rS
+      );
+      return True;
    }
 
    vex_printf("mk_shifter_operand(0x%x,0x%x)\n", insn_25, insn_11_0 );
@@ -1315,6 +1716,7 @@ static Bool mk_shifter_operand ( UInt insn_25, UInt insn_11_0,
 }
 
 
+/* ARM only */
 static 
 IRExpr* mk_EA_reg_plusminus_imm12 ( UInt rN, UInt bU, UInt imm12,
                                     /*OUT*/HChar* buf )
@@ -1326,12 +1728,13 @@ IRExpr* mk_EA_reg_plusminus_imm12 ( UInt rN, UInt bU, UInt imm12,
    DIS(buf, "[r%u, #%c%u]", rN, opChar, imm12);
    return
       binop( (bU == 1 ? Iop_Add32 : Iop_Sub32),
-             getIReg(rN),
+             getIRegA(rN),
              mkU32(imm12) );
 }
 
 
-/* NB: This is "DecodeImmShift" in newer versions of the the ARM ARM.
+/* ARM only.
+   NB: This is "DecodeImmShift" in newer versions of the the ARM ARM.
 */
 static
 IRExpr* mk_EA_reg_plusminus_shifted_reg ( UInt rN, UInt bU, UInt rM,
@@ -1348,7 +1751,7 @@ IRExpr* mk_EA_reg_plusminus_shifted_reg ( UInt rN, UInt bU, UInt rM,
    switch (sh2) {
       case 0: /* LSL */
          /* imm5 can be in the range 0 .. 31 inclusive. */
-         index = binop(Iop_Shl32, getIReg(rM), mkU8(imm5));
+         index = binop(Iop_Shl32, getIRegA(rM), mkU8(imm5));
          DIS(buf, "[r%u, %c r%u LSL #%u]", rN, opChar, rM, imm5); 
          break;
       case 1: /* LSR */
@@ -1356,7 +1759,7 @@ IRExpr* mk_EA_reg_plusminus_shifted_reg ( UInt rN, UInt bU, UInt rM,
             index = mkU32(0);
             vassert(0); // ATC
          } else {
-            index = binop(Iop_Shr32, getIReg(rM), mkU8(imm5));
+            index = binop(Iop_Shr32, getIRegA(rM), mkU8(imm5));
          }
          DIS(buf, "[r%u, %cr%u, LSR #%u]",
                   rN, opChar, rM, imm5 == 0 ? 32 : imm5); 
@@ -1365,10 +1768,10 @@ IRExpr* mk_EA_reg_plusminus_shifted_reg ( UInt rN, UInt bU, UInt rM,
          /* Doesn't this just mean that the behaviour with imm5 == 0
             is the same as if it had been 31 ? */
          if (imm5 == 0) {
-            index = binop(Iop_Sar32, getIReg(rM), mkU8(31));
+            index = binop(Iop_Sar32, getIRegA(rM), mkU8(31));
             vassert(0); // ATC
          } else {
-            index = binop(Iop_Sar32, getIReg(rM), mkU8(imm5));
+            index = binop(Iop_Sar32, getIRegA(rM), mkU8(imm5));
          }
          DIS(buf, "[r%u, %cr%u, ASR #%u]",
                   rN, opChar, rM, imm5 == 0 ? 32 : imm5); 
@@ -1377,7 +1780,7 @@ IRExpr* mk_EA_reg_plusminus_shifted_reg ( UInt rN, UInt bU, UInt rM,
          if (imm5 == 0) {
             IRTemp rmT    = newTemp(Ity_I32);
             IRTemp cflagT = newTemp(Ity_I32);
-            assign(rmT, getIReg(rM));
+            assign(rmT, getIRegA(rM));
             assign(cflagT, mk_armg_calculate_flag_c());
             index = binop(Iop_Or32, 
                           binop(Iop_Shl32, mkexpr(cflagT), mkU8(31)),
@@ -1385,7 +1788,7 @@ IRExpr* mk_EA_reg_plusminus_shifted_reg ( UInt rN, UInt bU, UInt rM,
             DIS(buf, "[r%u, %cr%u, RRX]", rN, opChar, rM);
          } else {
             IRTemp rmT = newTemp(Ity_I32);
-            assign(rmT, getIReg(rM));
+            assign(rmT, getIRegA(rM));
             vassert(imm5 >= 1 && imm5 <= 31);
             index = binop(Iop_Or32, 
                           binop(Iop_Shl32, mkexpr(rmT), mkU8(32-imm5)),
@@ -1398,10 +1801,11 @@ IRExpr* mk_EA_reg_plusminus_shifted_reg ( UInt rN, UInt bU, UInt rM,
    }
    vassert(index);
    return binop(bU == 1 ? Iop_Add32 : Iop_Sub32,
-                getIReg(rN), index);
+                getIRegA(rN), index);
 }
 
 
+/* ARM only */
 static 
 IRExpr* mk_EA_reg_plusminus_imm8 ( UInt rN, UInt bU, UInt imm8,
                                    /*OUT*/HChar* buf )
@@ -1413,11 +1817,12 @@ IRExpr* mk_EA_reg_plusminus_imm8 ( UInt rN, UInt bU, UInt imm8,
    DIS(buf, "[r%u, #%c%u]", rN, opChar, imm8);
    return
       binop( (bU == 1 ? Iop_Add32 : Iop_Sub32),
-             getIReg(rN),
+             getIRegA(rN),
              mkU32(imm8) );
 }
 
 
+/* ARM only */
 static
 IRExpr* mk_EA_reg_plusminus_reg ( UInt rN, UInt bU, UInt rM,
                                   /*OUT*/HChar* buf )
@@ -1426,10 +1831,10 @@ IRExpr* mk_EA_reg_plusminus_reg ( UInt rN, UInt bU, UInt rM,
    vassert(bU < 2);
    vassert(rM < 16);
    UChar   opChar = bU == 1 ? '+' : '-';
-   IRExpr* index  = getIReg(rM);
+   IRExpr* index  = getIRegA(rM);
    DIS(buf, "[r%u, %c r%u]", rN, opChar, rM); 
    return binop(bU == 1 ? Iop_Add32 : Iop_Sub32,
-                getIReg(rN), index);
+                getIRegA(rN), index);
 }
 
 
@@ -1508,11 +1913,329 @@ IRTemp mk_convert_IRCmpF64Result_to_NZCV ( IRTemp irRes )
 }
 
 
+/* Thumb32 only.  This is "ThumbExpandImm" in the ARM ARM.  If
+   updatesC is non-NULL, a boolean is written to it indicating whether
+   or not the C flag is updated, as per ARM ARM "ThumbExpandImm_C".
+*/
+static UInt thumbExpandImm ( Bool* updatesC,
+                             UInt imm1, UInt imm3, UInt imm8 )
+{
+   vassert(imm1 < (1<<1));
+   vassert(imm3 < (1<<3));
+   vassert(imm8 < (1<<8));
+   UInt i_imm3_a = (imm1 << 4) | (imm3 << 1) | ((imm8 >> 7) & 1);
+   UInt abcdefgh = imm8;
+   UInt lbcdefgh = imm8 | 0x80;
+   if (updatesC) {
+      *updatesC = i_imm3_a >= 8;
+   }
+   switch (i_imm3_a) {
+      case 0: case 1:
+         return abcdefgh;
+      case 2: case 3:
+         return (abcdefgh << 16) | abcdefgh;
+      case 4: case 5:
+         return (abcdefgh << 24) | (abcdefgh << 8);
+      case 6: case 7:
+         return (abcdefgh << 24) | (abcdefgh << 16)
+                | (abcdefgh << 8) | abcdefgh;
+      case 8 ... 31:
+         return lbcdefgh << (32 - i_imm3_a);
+      default:
+         break;
+   }
+   /*NOTREACHED*/vassert(0);
+}
+
+
+/* Version of thumbExpandImm where we simply feed it the
+   instruction halfwords (the lowest addressed one is I0). */
+static UInt thumbExpandImm_from_I0_I1 ( Bool* updatesC,
+                                        UShort i0s, UShort i1s )
+{
+   UInt i0    = (UInt)i0s;
+   UInt i1    = (UInt)i1s;
+   UInt imm1  = SLICE_UInt(i0,10,10);
+   UInt imm3  = SLICE_UInt(i1,14,12);
+   UInt imm8  = SLICE_UInt(i1,7,0);
+   return thumbExpandImm(updatesC, imm1, imm3, imm8);
+}
+
+
+/* Thumb16 only.  Given the firstcond and mask fields from an IT
+   instruction, compute the 32-bit ITSTATE value implied, as described
+   in libvex_guest_arm.h.  This is not the ARM ARM representation.
+   Also produce the t/e chars for the 2nd, 3rd, 4th insns, for
+   disassembly printing.  Returns False if firstcond or mask
+   denote something invalid.
+
+   The number and conditions for the instructions to be
+   conditionalised depend on firstcond and mask:
+
+   mask      cond 1    cond 2      cond 3      cond 4
+
+   1000      fc[3:0]
+   x100      fc[3:0]   fc[3:1]:x
+   xy10      fc[3:0]   fc[3:1]:x   fc[3:1]:y
+   xyz1      fc[3:0]   fc[3:1]:x   fc[3:1]:y   fc[3:1]:z
+
+   The condition fields are assembled in *itstate backwards (cond 4 at
+   the top, cond 1 at the bottom).  Conditions are << 4'd and then
+   ^0xE'd, and those fields that correspond to instructions in the IT
+   block are tagged with a 1 bit.
+*/
+static Bool compute_ITSTATE ( /*OUT*/UInt*  itstate,
+                              /*OUT*/UChar* ch1,
+                              /*OUT*/UChar* ch2,
+                              /*OUT*/UChar* ch3,
+                              UInt firstcond, UInt mask )
+{
+   vassert(firstcond <= 0xF);
+   vassert(mask <= 0xF);
+   *itstate = 0;
+   *ch1 = *ch2 = *ch3 = '.';
+   if (firstcond == 0xF)
+      return False; /* NV is not allowed */
+   if (firstcond == 0xE && popcount32(mask) != 1) 
+      return False; /* if firstcond is AL then all the rest must be too */
+
+   UInt m3 = (mask >> 3) & 1;
+   UInt m2 = (mask >> 2) & 1;
+   UInt m1 = (mask >> 1) & 1;
+   UInt m0 = (mask >> 0) & 1;
+
+   UInt fc = (firstcond << 4) | 1/*in-IT-block*/;
+   UInt ni = (0xE/*AL*/ << 4) | 0/*not-in-IT-block*/;
+
+   if (m3 == 1 && (m2|m1|m0) == 0) {
+      *itstate = (ni << 24) | (ni << 16) | (ni << 8) | fc;
+      *itstate ^= 0xE0E0E0E0;
+      return True;
+   }
+
+   if (m2 == 1 && (m1|m0) == 0) {
+      *itstate = (ni << 24) | (ni << 16) | (setbit32(fc, 4, m3) << 8) | fc;
+      *itstate ^= 0xE0E0E0E0;
+      *ch1 = m3 == (firstcond & 1) ? 't' : 'e';
+      return True;
+   }
+
+   if (m1 == 1 && m0 == 0) {
+      *itstate = (ni << 24)
+                 | (setbit32(fc, 4, m2) << 16)
+                 | (setbit32(fc, 4, m3) << 8) | fc;
+      *itstate ^= 0xE0E0E0E0;
+      *ch1 = m3 == (firstcond & 1) ? 't' : 'e';
+      *ch2 = m2 == (firstcond & 1) ? 't' : 'e';
+      return True;
+   }
+
+   if (m0 == 1) {
+      *itstate = (setbit32(fc, 4, m1) << 24)
+                 | (setbit32(fc, 4, m2) << 16)
+                 | (setbit32(fc, 4, m3) << 8) | fc;
+      *itstate ^= 0xE0E0E0E0;
+      *ch1 = m3 == (firstcond & 1) ? 't' : 'e';
+      *ch2 = m2 == (firstcond & 1) ? 't' : 'e';
+      *ch3 = m1 == (firstcond & 1) ? 't' : 'e';
+      return True;
+   }
+
+   return False;
+}
+
+
+/*------------------------------------------------------------*/
+/*--- LDMxx/STMxx helper (both ARM and Thumb32)            ---*/
+/*------------------------------------------------------------*/
+
+/* Generate IR for LDMxx and STMxx.  This is complex.  Assumes it's
+   unconditional, so the caller must produce a jump-around before
+   calling this, if the insn is to be conditional.  Caller is
+   responsible for all validation of parameters.  For LDMxx, if PC is
+   amongst the values loaded, caller is also responsible for
+   generating the jump. */
+static void mk_ldm_stm ( Bool arm,     /* True: ARM, False: Thumb */
+                         UInt rN,      /* base reg */
+                         UInt bINC,    /* 1: inc,  0: dec */
+                         UInt bBEFORE, /* 1: inc/dec before, 0: after */
+                         UInt bW,      /* 1: writeback to Rn */
+                         UInt bL,      /* 1: load, 0: store */
+                         UInt regList )
+{
+   Int i, r, m, nRegs;
+
+   /* Get hold of the old Rn value.  We might need to write its value
+      to memory during a store, and if it's also the writeback
+      register then we need to get its value now.  We can't treat it
+      exactly like the other registers we're going to transfer,
+      because for xxMDA and xxMDB writeback forms, the generated IR
+      updates Rn in the guest state before any transfers take place.
+      We have to do this as per comments below, in order that if Rn is
+      the stack pointer then it always has a value is below or equal
+      to any of the transfer addresses.  Ick. */
+   IRTemp oldRnT = newTemp(Ity_I32);
+   assign(oldRnT, arm ? getIRegA(rN) : getIRegT(rN));
+
+   IRTemp anchorT = newTemp(Ity_I32);
+   /* The old (Addison-Wesley) ARM ARM seems to say that LDMxx/STMxx
+      ignore the bottom two bits of the address.  However, Cortex-A8
+      doesn't seem to care.  Hence: */
+   /* No .. don't force alignment .. */
+   /* assign(anchorT, binop(Iop_And32, mkexpr(oldRnT), mkU32(~3U))); */
+   /* Instead, use the potentially misaligned address directly. */
+   assign(anchorT, mkexpr(oldRnT));
+
+   IROp opADDorSUB = bINC ? Iop_Add32 : Iop_Sub32;
+   // bINC == 1:  xxMIA, xxMIB
+   // bINC == 0:  xxMDA, xxMDB
+
+   // For xxMDA and xxMDB, update Rn first if necessary.  We have
+   // to do this first so that, for the common idiom of the transfers
+   // faulting because we're pushing stuff onto a stack and the stack
+   // is growing down onto allocate-on-fault pages (as Valgrind simulates),
+   // we need to have the SP up-to-date "covering" (pointing below) the
+   // transfer area.  For the same reason, if we are doing xxMIA or xxMIB,
+   // do the transfer first, and then update rN afterwards.
+   nRegs = 0;
+   for (i = 0; i < 16; i++) {
+     if ((regList & (1 << i)) != 0)
+         nRegs++;
+   }
+   if (bW == 1 && !bINC) {
+      IRExpr* e = binop(opADDorSUB, mkexpr(oldRnT), mkU32(4*nRegs));
+      if (arm)
+         putIRegA( rN, e, IRTemp_INVALID, Ijk_Boring );
+      else
+         putIRegT( rN, e, IRTemp_INVALID );
+   }
+
+   // Make up a list of the registers to transfer, and their offsets
+   // in memory relative to the anchor.  If the base reg (Rn) is part
+   // of the transfer, then do it last for a load and first for a store.
+   UInt xReg[16], xOff[16];
+   Int  nX = 0;
+   m = 0;
+   for (i = 0; i < 16; i++) {
+      r = bINC ? i : (15-i);
+      if (0 == (regList & (1<<r)))
+         continue;
+      if (bBEFORE)
+         m++;
+      /* paranoia: check we aren't transferring the writeback
+         register during a load. Should be assured by decode-point
+         check above. */
+      if (bW == 1 && bL == 1)
+         vassert(r != rN);
+
+      xOff[nX] = 4 * m;
+      xReg[nX] = r;
+      nX++;
+
+      if (!bBEFORE)
+         m++;
+   }
+   vassert(m == nRegs);
+   vassert(nX == nRegs);
+   vassert(nX <= 16);
+
+   if (bW == 0 && (regList & (1<<rN)) != 0) {
+      /* Non-writeback, and basereg is to be transferred.  Do its
+         transfer last for a load and first for a store.  Requires
+         reordering xOff/xReg. */
+      if (0) {
+         vex_printf("\nREG_LIST_PRE: (rN=%d)\n", rN);
+         for (i = 0; i < nX; i++)
+            vex_printf("reg %d   off %d\n", xReg[i], xOff[i]);
+         vex_printf("\n");
+      }
+
+      vassert(nX > 0);
+      for (i = 0; i < nX; i++) {
+         if (xReg[i] == rN)
+             break;
+      }
+      vassert(i < nX); /* else we didn't find it! */
+      UInt tReg = xReg[i];
+      UInt tOff = xOff[i];
+      if (bL == 1) {
+         /* load; make this transfer happen last */
+         if (i < nX-1) {
+            for (m = i+1; m < nX; m++) {
+               xReg[m-1] = xReg[m];
+               xOff[m-1] = xOff[m];
+            }
+            vassert(m == nX);
+            xReg[m-1] = tReg;
+            xOff[m-1] = tOff;
+         }
+      } else {
+         /* store; make this transfer happen first */
+         if (i > 0) {
+            for (m = i-1; m >= 0; m--) {
+               xReg[m+1] = xReg[m];
+               xOff[m+1] = xOff[m];
+            }
+            vassert(m == -1);
+            xReg[0] = tReg;
+            xOff[0] = tOff;
+         }
+      }
+
+      if (0) {
+         vex_printf("REG_LIST_POST:\n");
+         for (i = 0; i < nX; i++)
+            vex_printf("reg %d   off %d\n", xReg[i], xOff[i]);
+         vex_printf("\n");
+      }
+   }
+
+   /* Actually generate the transfers */
+   for (i = 0; i < nX; i++) {
+      r = xReg[i];
+      if (bL == 1) {
+         IRExpr* e = loadLE(Ity_I32,
+                            binop(opADDorSUB, mkexpr(anchorT),
+                                  mkU32(xOff[i])));
+         if (arm) {
+            putIRegA( r, e, IRTemp_INVALID, Ijk_Ret );
+         } else {
+            // no: putIRegT( r, e, IRTemp_INVALID );
+            // putIRegT refuses to write to R15.  But that might happen.
+            // Since this is uncond, and we need to be able to
+            // write the PC, just use the low level put:
+            llPutIReg( r, e );
+         }
+      } else {
+         /* if we're storing Rn, make sure we use the correct
+            value, as per extensive comments above */
+         storeLE( binop(opADDorSUB, mkexpr(anchorT), mkU32(xOff[i])),
+                  r == rN ? mkexpr(oldRnT) 
+                          : (arm ? getIRegA(r) : getIRegT(r) ) );
+      }
+   }
+
+   // If we are doing xxMIA or xxMIB,
+   // do the transfer first, and then update rN afterwards.
+   if (bW == 1 && bINC) {
+      IRExpr* e = binop(opADDorSUB, mkexpr(oldRnT), mkU32(4*nRegs));
+      if (arm)
+         putIRegA( rN, e, IRTemp_INVALID, Ijk_Boring );
+      else
+         putIRegT( rN, e, IRTemp_INVALID );
+   }
+}
+
+
 /*------------------------------------------------------------*/
 /*--- Instructions in NV (never) space                     ---*/
 /*------------------------------------------------------------*/
 
-static Bool decode_NV_instruction ( UInt insn )
+/* ARM only */
+/* Translate a NV space instruction.  If successful, returns True and
+   *dres may or may not be updated.  If failure, returns False and
+   doesn't change *dres nor create any IR. */
+static Bool decode_NV_instruction ( /*MOD*/DisResult* dres, UInt insn )
 {
 #  define INSN(_bMax,_bMin)  SLICE_UInt(insn, (_bMax), (_bMin))
 #  define INSN_COND          SLICE_UInt(insn, 31, 28)
@@ -1555,6 +2278,31 @@ static Bool decode_NV_instruction ( UInt insn )
       /* fall through */
    }
 
+   /* --------------------- Interworking branches --------------------- */
+
+   // BLX (1), viz, unconditional branch and link to R15+simm24
+   // and set CPSR.T = 1, that is, switch to Thumb mode
+   if (INSN(31,25) == BITS7(1,1,1,1,1,0,1)) {
+      UInt bitH   = INSN(24,24);
+      Int  uimm24 = INSN(23,0);
+      Int  simm24 = (((uimm24 << 8) >> 8) << 2) + (bitH << 1);
+      /* Now this is a bit tricky.  Since we're decoding an ARM insn,
+         it is implies that CPSR.T == 0.  Hence the current insn's
+         address is guaranteed to be of the form X--(30)--X00.  So, no
+         need to mask any bits off it.  But need to set the lowest bit
+         to 1 to denote we're in Thumb mode after this, since
+         guest_R15T has CPSR.T as the lowest bit.  And we can't chase
+         into the call, so end the block at this point. */
+      UInt dst = guest_R15_curr_instr_notENC + 8 + (simm24 | 1);
+      putIRegA( 14, mkU32(guest_R15_curr_instr_notENC + 4),
+                    IRTemp_INVALID/*because AL*/, Ijk_Boring );
+      irsb->next     = mkU32(dst);
+      irsb->jumpkind = Ijk_Call;
+      dres->whatNext = Dis_StopHere;
+      DIP("blx 0x%x (and switch to Thumb mode)\n", dst - 1);
+      return True;
+   }
+
    /* ------------------- v7 barrier insns ------------------- */
    switch (insn) {
       case 0xF57FF06F: /* ISB */
@@ -1581,13 +2329,13 @@ static Bool decode_NV_instruction ( UInt insn )
 
 
 /*------------------------------------------------------------*/
-/*--- Disassemble a single instruction                     ---*/
+/*--- Disassemble a single ARM instruction                 ---*/
 /*------------------------------------------------------------*/
 
-/* Disassemble a single instruction into IR.  The instruction is
-   located in host memory at guest_instr, and has guest IP of
-   guest_R15_curr_instr, which will have been set before the call
-   here. */
+/* Disassemble a single ARM instruction into IR.  The instruction is
+   located in host memory at guest_instr, and has (decoded) guest IP
+   of guest_R15_curr_instr_notENC, which will have been set before the
+   call here. */
 
 static   
 DisResult disInstr_ARM_WRK (
@@ -1634,12 +2382,12 @@ DisResult disInstr_ARM_WRK (
 
    if (0) vex_printf("insn: 0x%x\n", insn);
 
-   DIP("\t0x%x:  ", (UInt)guest_R15_curr_instr);
+   DIP("\t(arm) 0x%x:  ", (UInt)guest_R15_curr_instr_notENC);
 
    /* We may be asked to update the guest R15 before going further. */
+   vassert(0 == (guest_R15_curr_instr_notENC & 3));
    if (put_IP) {
-      vassert(0 == (guest_R15_curr_instr & 3));
-      llPutIReg( 15, mkU32(guest_R15_curr_instr) );
+      llPutIReg( 15, mkU32(guest_R15_curr_instr_notENC) );
    }
 
    /* ----------------------------------------------------------- */
@@ -1667,7 +2415,7 @@ DisResult disInstr_ARM_WRK (
                                                /* orr r10,r10,r10 */) {
             /* R3 = client_request ( R4 ) */
             DIP("r3 = client_request ( %%r4 )\n");
-            irsb->next     = mkU32( guest_R15_curr_instr + 20 );
+            irsb->next     = mkU32( guest_R15_curr_instr_notENC + 20 );
             irsb->jumpkind = Ijk_ClientReq;
             dres.whatNext  = Dis_StopHere;
             goto decode_success;
@@ -1686,7 +2434,7 @@ DisResult disInstr_ARM_WRK (
                                                /* orr r12,r12,r12 */) {
             /*  branch-and-link-to-noredir R4 */
             DIP("branch-and-link-to-noredir r4\n");
-            llPutIReg(14, mkU32( guest_R15_curr_instr + 20) );
+            llPutIReg(14, mkU32( guest_R15_curr_instr_notENC + 20) );
             irsb->next     = llGetIReg(4);
             irsb->jumpkind = Ijk_NoRedir;
             dres.whatNext  = Dis_StopHere;
@@ -1703,10 +2451,10 @@ DisResult disInstr_ARM_WRK (
 
    /* ----------------------------------------------------------- */
 
-   /* Main instruction decoder starts here. */
+   /* Main ARM instruction decoder starts here. */
 
    /* Deal with the condition.  Strategy is to merely generate a
-      condition expression at this point (or NULL, meaning
+      condition temporary at this point (or IRTemp_INVALID, meaning
       unconditional).  We leave it to lower-level instruction decoders
       to decide whether they can generate straight-line code, or
       whether they must generate a side exit before the instruction.
@@ -1716,7 +2464,7 @@ DisResult disInstr_ARM_WRK (
       case ARMCondNV: {
          // Illegal instruction prior to v5 (see ARM ARM A3-5), but
          // some cases are acceptable
-         Bool ok = decode_NV_instruction(insn);
+         Bool ok = decode_NV_instruction(&dres, insn);
          if (ok)
             goto decode_success;
          else
@@ -1783,7 +2531,7 @@ DisResult disInstr_ARM_WRK (
                   break;
             }
             rNt = newTemp(Ity_I32);
-            assign(rNt, getIReg(rN));
+            assign(rNt, getIRegA(rN));
             ok = mk_shifter_operand(
                     INSN(25,25), INSN(11,0), 
                     &shop, bitS ? &shco : NULL, dis_buf
@@ -1812,8 +2560,9 @@ DisResult disInstr_ARM_WRK (
                oldV = newTemp(Ity_I32);
                assign( oldV, mk_armg_calculate_flag_v() );
             }
+            // can't safely read guest state after here
             // now safe to put the main result
-            putIReg( rD, mkexpr(res), condT, Ijk_Boring );
+            putIRegA( rD, mkexpr(res), condT, Ijk_Boring );
             // XXXX!! not safe to read any guest state after
             // this point (I think the code below doesn't do that).
             if (!bitS)
@@ -1871,7 +2620,7 @@ DisResult disInstr_ARM_WRK (
                vassert(shco == IRTemp_INVALID);
             }
             // can't safely read guest state after here
-            putIReg( rD, mkexpr(res), condT, Ijk_Boring );
+            putIRegA( rD, mkexpr(res), condT, Ijk_Boring );
             /* Update the flags thunk if necessary */
             if (bitS) {
                setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, 
@@ -1892,13 +2641,14 @@ DisResult disInstr_ARM_WRK (
             if (bitS == 0)
                break; /* if S (bit 20) is not set, it's not CMP/CMN */
             rNt = newTemp(Ity_I32);
-            assign(rNt, getIReg(rN));
+            assign(rNt, getIRegA(rN));
             ok = mk_shifter_operand(
                     INSN(25,25), INSN(11,0), 
                     &shop, NULL, dis_buf
                  );
             if (!ok)
                break;
+            // can't safely read guest state after here
             /* Update the flags thunk. */
             setFlags_D1_D2( isCMN ? ARMG_CC_OP_ADD : ARMG_CC_OP_SUB,
                             rNt, shop, condT );
@@ -1917,7 +2667,7 @@ DisResult disInstr_ARM_WRK (
             if (bitS == 0)
                break; /* if S (bit 20) is not set, it's not TST/TEQ */
             rNt = newTemp(Ity_I32);
-            assign(rNt, getIReg(rN));
+            assign(rNt, getIRegA(rN));
             ok = mk_shifter_operand(
                     INSN(25,25), INSN(11,0), 
                     &shop, &shco, dis_buf
@@ -1930,6 +2680,7 @@ DisResult disInstr_ARM_WRK (
                                mkexpr(rNt), mkexpr(shop)) );
             oldV = newTemp(Ity_I32);
             assign( oldV, mk_armg_calculate_flag_v() );
+            // can't safely read guest state after here
             setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC,
                                res, shco, oldV, condT );
             DIP("%s%s r%u, %s\n",
@@ -1947,7 +2698,7 @@ DisResult disInstr_ARM_WRK (
             name = "rsc"; goto rd_eq_rn_op_SO_op_oldC;
          rd_eq_rn_op_SO_op_oldC: {
             rNt = newTemp(Ity_I32);
-            assign(rNt, getIReg(rN));
+            assign(rNt, getIRegA(rN));
             ok = mk_shifter_operand(
                     INSN(25,25), INSN(11,0), 
                     &shop, bitS ? &shco : NULL, dis_buf
@@ -1983,7 +2734,7 @@ DisResult disInstr_ARM_WRK (
             // but don't commit it until after we've finished
             // all necessary reads from the guest state
             // now safe to put the main result
-            putIReg( rD, mkexpr(res), condT, Ijk_Boring );
+            putIRegA( rD, mkexpr(res), condT, Ijk_Boring );
             // XXXX!! not safe to read any guest state after
             // this point (I think the code below doesn't do that).
             if (!bitS)
@@ -2104,7 +2855,7 @@ DisResult disInstr_ARM_WRK (
         likely will generate an exception.  So we have to take a side
         exit at this point if the condition is false. */
      if (condT != IRTemp_INVALID) {
-        mk_skip_to_next_if_cond_is_false( condT );
+        mk_skip_over_A32_if_cond_is_false( condT );
         condT = IRTemp_INVALID;
      }
      /* Ok, now we're unconditional.  Do the load or store. */
@@ -2127,7 +2878,7 @@ DisResult disInstr_ARM_WRK (
 
      /* get the old Rn value */
      IRTemp rnT = newTemp(Ity_I32);
-     assign(rnT, getIReg(rN));
+     assign(rnT, getIRegA(rN));
 
      /* decide on the transfer address */
      IRTemp taT = IRTemp_INVALID;
@@ -2149,12 +2900,12 @@ DisResult disInstr_ARM_WRK (
 
         /* get hold of the data to be stored */
         IRTemp rDt = newTemp(Ity_I32);
-        assign(rDt, getIReg(rD));
+        assign(rDt, getIRegA(rD));
 
         /* Update Rn if necessary. */
         switch (summary & 0x0F) {
            case 2: case 3:
-              putIReg( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
+              putIRegA( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
               break;
         }
 
@@ -2172,12 +2923,12 @@ DisResult disInstr_ARM_WRK (
 
         /* generate the transfer */
         if (bB == 0) { // word load
-           putIReg( rD, loadLE(Ity_I32, mkexpr(taT)),
-                    IRTemp_INVALID, Ijk_Boring );
+           putIRegA( rD, loadLE(Ity_I32, mkexpr(taT)),
+                     IRTemp_INVALID, Ijk_Boring );
         } else { // byte load
-          vassert(bB == 1);
-           putIReg( rD, unop(Iop_8Uto32, loadLE(Ity_I8, mkexpr(taT))),
-                    IRTemp_INVALID, Ijk_Boring );
+           vassert(bB == 1);
+           putIRegA( rD, unop(Iop_8Uto32, loadLE(Ity_I8, mkexpr(taT))),
+                     IRTemp_INVALID, Ijk_Boring );
         }
 
         /* Update Rn if necessary. */
@@ -2186,7 +2937,7 @@ DisResult disInstr_ARM_WRK (
               // should be assured by logic above:
               if (bL == 1)
                  vassert(rD != rN); /* since we just wrote rD */
-              putIReg( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
+              putIRegA( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
               break;
         }
      }
@@ -2327,7 +3078,7 @@ DisResult disInstr_ARM_WRK (
         likely will generate an exception.  So we have to take a side
         exit at this point if the condition is false. */
      if (condT != IRTemp_INVALID) {
-        mk_skip_to_next_if_cond_is_false( condT );
+        mk_skip_over_A32_if_cond_is_false( condT );
         condT = IRTemp_INVALID;
      }
      /* Ok, now we're unconditional.  Do the load or store. */
@@ -2349,7 +3100,7 @@ DisResult disInstr_ARM_WRK (
 
      /* get the old Rn value */
      IRTemp rnT = newTemp(Ity_I32);
-     assign(rnT, getIReg(rN));
+     assign(rnT, getIRegA(rN));
 
      /* decide on the transfer address */
      IRTemp taT = IRTemp_INVALID;
@@ -2367,22 +3118,22 @@ DisResult disInstr_ARM_WRK (
      HChar* name = NULL;
      /* generate the transfer */
      /**/ if (bH == 1 && bL == 0 && bS == 0) { // halfword store
-        storeLE( mkexpr(taT), unop(Iop_32to16, getIReg(rD)) );
+        storeLE( mkexpr(taT), unop(Iop_32to16, getIRegA(rD)) );
         name = "strh";
      }
      else if (bH == 1 && bL == 1 && bS == 0) { // uhalf load
-        putIReg( rD, unop(Iop_16Uto32, loadLE(Ity_I16, mkexpr(taT))),
-                 IRTemp_INVALID, Ijk_Boring );
+        putIRegA( rD, unop(Iop_16Uto32, loadLE(Ity_I16, mkexpr(taT))),
+                  IRTemp_INVALID, Ijk_Boring );
         name = "ldrh";
      }
      else if (bH == 1 && bL == 1 && bS == 1) { // shalf load
-        putIReg( rD, unop(Iop_16Sto32, loadLE(Ity_I16, mkexpr(taT))),
-                 IRTemp_INVALID, Ijk_Boring );
+        putIRegA( rD, unop(Iop_16Sto32, loadLE(Ity_I16, mkexpr(taT))),
+                  IRTemp_INVALID, Ijk_Boring );
         name = "ldrsh";
      }
      else if (bH == 0 && bL == 1 && bS == 1) { // sbyte load
-        putIReg( rD, unop(Iop_8Sto32, loadLE(Ity_I8, mkexpr(taT))),
-                 IRTemp_INVALID, Ijk_Boring );
+        putIRegA( rD, unop(Iop_8Sto32, loadLE(Ity_I8, mkexpr(taT))),
+                  IRTemp_INVALID, Ijk_Boring );
         name = "ldrsb";
      }
      else
@@ -2394,7 +3145,7 @@ DisResult disInstr_ARM_WRK (
            // should be assured by logic above:
            if (bL == 1)
               vassert(rD != rN); /* since we just wrote rD */
-           putIReg( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
+           putIRegA( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
            break;
      }
 
@@ -2441,8 +3192,6 @@ DisResult disInstr_ARM_WRK (
       // A5-53 LD/STMDB  cond 1001 00WL Rn RegList
       //                   28   24   20 16       0
 
-      Int  i, r, m, nRegs;
-
       UInt bINC    = (insn >> 23) & 1;
       UInt bBEFORE = (insn >> 24) & 1;
 
@@ -2470,159 +3219,13 @@ DisResult disInstr_ARM_WRK (
          likely will generate an exception.  So we have to take a side
          exit at this point if the condition is false. */
       if (condT != IRTemp_INVALID) {
-         mk_skip_to_next_if_cond_is_false( condT );
+         mk_skip_over_A32_if_cond_is_false( condT );
          condT = IRTemp_INVALID;
       }
-      /* Ok, now we're unconditional.  Do the load or store. */
 
-      /* Get hold of the old Rn value.  We might need to write its
-         value to memory during a store, and if it's also the
-         writeback register then we need to get its value now.  We
-         can't treat it exactly like the other registers we're going
-         to transfer, because for xxMDA and xxMDB writeback forms, the
-         generated IR updates Rn in the guest state before any
-         transfers take place.  We have to do this as per comments
-         below, in order that if Rn is the stack pointer then it
-         always has a value is below or equal to any of the transfer
-         addresses.  Ick. */
-      IRTemp oldRnT = newTemp(Ity_I32);
-      assign(oldRnT, getIReg(rN));
+      /* Ok, now we're unconditional.  Generate the IR. */
+      mk_ldm_stm( True/*arm*/, rN, bINC, bBEFORE, bW, bL, regList );
 
-      IRTemp anchorT = newTemp(Ity_I32);
-      /* The old (Addison-Wesley) ARM ARM seems to say that
-         LDMxx/STMxx ignore the bottom two bits of the address.
-         However, Cortex-A8 doesn't seem to care.  Hence: */
-      /* No .. don't force alignment .. */
-      /* assign(anchorT, binop(Iop_And32, mkexpr(oldRnT), mkU32(~3U))); */
-      /* Instead, use the potentially misaligned address directly. */
-      assign(anchorT, mkexpr(oldRnT));
-
-      IROp opADDorSUB = bINC ? Iop_Add32 : Iop_Sub32;
-      // bINC == 1:  xxMIA, xxMIB
-      // bINC == 0:  xxMDA, xxMDB
-
-      // For xxMDA and xxMDB, update Rn first if necessary.  We have
-      // to do this first so that, for the common idiom of the transfers
-      // faulting because we're pushing stuff onto a stack and the stack
-      // is growing down onto allocate-on-fault pages (as Valgrind simulates),
-      // we need to have the SP up-to-date "covering" (pointing below) the
-      // transfer area.  For the same reason, if we are doing xxMIA or xxMIB,
-      // do the transfer first, and then update rN afterwards.
-      nRegs = 0;
-      for (i = 0; i < 16; i++) {
-        if ((regList & (1 << i)) != 0)
-            nRegs++;
-      }
-      if (bW == 1 && !bINC) {
-         putIReg( rN, binop(opADDorSUB, mkexpr(oldRnT), mkU32(4*nRegs)),
-                  IRTemp_INVALID, Ijk_Boring );
-      }
-
-      // Make up a list of the registers to transfer, and their offsets
-      // in memory relative to the anchor.  If the base reg (Rn) is part
-      // of the transfer, then do it last for a load and first for a store.
-      UInt xReg[16], xOff[16];
-      Int  nX = 0;
-      m = 0;
-      for (i = 0; i < 16; i++) {
-         r = bINC ? i : (15-i);
-         if (0 == (regList & (1<<r)))
-            continue;
-         if (bBEFORE)
-            m++;
-         /* paranoia: check we aren't transferring the writeback
-            register during a load. Should be assured by decode-point
-            check above. */
-         if (bW == 1 && bL == 1)
-            vassert(r != rN);
-
-         xOff[nX] = 4 * m;
-         xReg[nX] = r;
-         nX++;
-
-         if (!bBEFORE)
-            m++;
-      }
-      vassert(m == nRegs);
-      vassert(nX == nRegs);
-      vassert(nX <= 16);
-
-      if (bW == 0 && (regList & (1<<rN)) != 0) {
-         /* Non-writeback, and basereg is to be transferred.  Do its
-            transfer last for a load and first for a store.  Requires
-            reordering xOff/xReg. */
-         if (0) {
-            vex_printf("\nREG_LIST_PRE: (rN=%d)\n", rN);
-            for (i = 0; i < nX; i++)
-               vex_printf("reg %d   off %d\n", xReg[i], xOff[i]);
-            vex_printf("\n");
-         }
-
-         vassert(nX > 0);
-         for (i = 0; i < nX; i++) {
-            if (xReg[i] == rN)
-                break;
-         }
-         vassert(i < nX); /* else we didn't find it! */
-         UInt tReg = xReg[i];
-         UInt tOff = xOff[i];
-         if (bL == 1) {
-            /* load; make this transfer happen last */
-            if (i < nX-1) {
-               for (m = i+1; m < nX; m++) {
-                  xReg[m-1] = xReg[m];
-                  xOff[m-1] = xOff[m];
-               }
-               vassert(m == nX);
-               xReg[m-1] = tReg;
-               xOff[m-1] = tOff;
-            }
-         } else {
-            /* store; make this transfer happen first */
-            if (i > 0) {
-               for (m = i-1; m >= 0; m--) {
-                  xReg[m+1] = xReg[m];
-                  xOff[m+1] = xOff[m];
-               }
-               vassert(m == -1);
-               xReg[0] = tReg;
-               xOff[0] = tOff;
-            }
-         }
-
-         if (0) {
-            vex_printf("REG_LIST_POST:\n");
-            for (i = 0; i < nX; i++)
-               vex_printf("reg %d   off %d\n", xReg[i], xOff[i]);
-            vex_printf("\n");
-         }
-      }
-
-      /* Actually generate the transfers */
-      for (i = 0; i < nX; i++) {
-         r = xReg[i];
-         if (bL == 1) {
-            putIReg( r, loadLE(Ity_I32,
-                               binop(opADDorSUB, mkexpr(anchorT),
-                                                 mkU32(xOff[i]))),
-                     IRTemp_INVALID, Ijk_Ret );
-         } else {
-            /* if we're storing Rn, make sure we use the correct
-               value, as per extensive comments above */
-            storeLE( binop(opADDorSUB, mkexpr(anchorT), mkU32(xOff[i])),
-                     r == rN ? mkexpr(oldRnT) : getIReg(r) );
-         }
-      }
-
-      // If we are doing xxMIA or xxMIB,
-      // do the transfer first, and then update rN afterwards.
-      if (bW == 1 && bINC) {
-         putIReg( rN, binop(opADDorSUB, mkexpr(oldRnT), mkU32(4*nRegs)),
-                  IRTemp_INVALID, Ijk_Boring );
-      }
-
-      //if (vex_traceflags & VEX_TRACE_FE) {
-      //}
       DIP("%sm%c%c%s r%u%s, {0x%04x}\n",
           bL == 1 ? "ld" : "st", bINC ? 'i' : 'd', bBEFORE ? 'b' : 'a',
           nCC(INSN_COND),
@@ -2640,10 +3243,12 @@ DisResult disInstr_ARM_WRK (
       UInt link   = (insn >> 24) & 1;
       UInt uimm24 = insn & ((1<<24)-1);
       Int  simm24 = (Int)uimm24;
-      UInt dst    = guest_R15_curr_instr + 8 + (((simm24 << 8) >> 8) << 2);
+      UInt dst    = guest_R15_curr_instr_notENC + 8
+                    + (((simm24 << 8) >> 8) << 2);
       IRJumpKind jk = link ? Ijk_Call : Ijk_Boring;
       if (link) {
-         putIReg(14, mkU32(guest_R15_curr_instr + 4), condT, Ijk_Boring);
+         putIRegA(14, mkU32(guest_R15_curr_instr_notENC + 4),
+                      condT, Ijk_Boring);
       }
       if (condT == IRTemp_INVALID) {
          /* unconditional transfer to 'dst'.  See if we can simply
@@ -2670,7 +3275,7 @@ DisResult disInstr_ARM_WRK (
          if (!link
              && resteerCisOk
              && vex_control.guest_chase_cond
-             && dst < guest_R15_curr_instr
+             && dst < guest_R15_curr_instr_notENC
              && resteerOkFn( callback_opaque, (Addr64)(Addr32)dst) ) {
             /* Speculation: assume this backward branch is taken.  So
                we need to emit a side-exit to the insn following this
@@ -2679,7 +3284,7 @@ DisResult disInstr_ARM_WRK (
             stmt( IRStmt_Exit( unop(Iop_Not1,
                                     unop(Iop_32to1, mkexpr(condT))),
                                Ijk_Boring,
-                               IRConst_U32(guest_R15_curr_instr+4) ));
+                               IRConst_U32(guest_R15_curr_instr_notENC+4) ));
             dres.whatNext   = Dis_ResteerC;
             dres.continueAt = (Addr64)(Addr32)dst;
             comment = "(assumed taken)";
@@ -2688,9 +3293,10 @@ DisResult disInstr_ARM_WRK (
          if (!link
              && resteerCisOk
              && vex_control.guest_chase_cond
-             && dst >= guest_R15_curr_instr
+             && dst >= guest_R15_curr_instr_notENC
              && resteerOkFn( callback_opaque, 
-                             (Addr64)(Addr32)(guest_R15_curr_instr+4)) ) {
+                             (Addr64)(Addr32)
+                                     (guest_R15_curr_instr_notENC+4)) ) {
             /* Speculation: assume this forward branch is not taken.
                So we need to emit a side-exit to dst (the dest) and
                continue disassembling at the insn immediately
@@ -2699,7 +3305,8 @@ DisResult disInstr_ARM_WRK (
                                Ijk_Boring,
                                IRConst_U32(dst) ));
             dres.whatNext   = Dis_ResteerC;
-            dres.continueAt = (Addr64)(Addr32)(guest_R15_curr_instr+4);
+            dres.continueAt = (Addr64)(Addr32)
+                                      (guest_R15_curr_instr_notENC+4);
             comment = "(assumed not taken)";
          }
          else {
@@ -2707,7 +3314,7 @@ DisResult disInstr_ARM_WRK (
                this point. */
             stmt( IRStmt_Exit( unop(Iop_32to1, mkexpr(condT)),
                                jk, IRConst_U32(dst) ));
-            irsb->next     = mkU32(guest_R15_curr_instr + 4);
+            irsb->next     = mkU32(guest_R15_curr_instr_notENC + 4);
             irsb->jumpkind = jk;
             dres.whatNext  = Dis_StopHere;
          }
@@ -2717,8 +3324,8 @@ DisResult disInstr_ARM_WRK (
       goto decode_success;
    }
 
-   // BX, BLX (Branch, or Branch-and-Link, to a register)
-   //
+   // B, BL (Branch, or Branch-and-Link, to a register)
+   // NB: interworking branch
    if (INSN(27,20) == BITS8(0,0,0,1,0,0,1,0)
        && INSN(19,12) == BITS8(1,1,1,1,1,1,1,1)
        && (INSN(11,4) == BITS8(1,1,1,1,0,0,1,1)
@@ -2730,14 +3337,15 @@ DisResult disInstr_ARM_WRK (
       // Unpredictable.
       if (!(link && rM == 15)) {
          if (condT != IRTemp_INVALID) {
-            mk_skip_to_next_if_cond_is_false( condT );
+            mk_skip_over_A32_if_cond_is_false( condT );
          }
-         // AL after here
-         // pretend no Thumb, hence ~3 instead of ~1
-         dst = binop(Iop_And32, getIReg(rM), mkU32(~3));
+         // rM contains an interworking address exactly as we require
+         // (with continuation CPSR.T in bit 0), so we can use it
+         // as-is, with no masking.
+         dst = getIRegA(rM);
          if (link) {
-            putIReg( 14, mkU32(guest_R15_curr_instr + 4),
-                     IRTemp_INVALID/*because AL*/, Ijk_Boring );
+            putIRegA( 14, mkU32(guest_R15_curr_instr_notENC + 4),
+                      IRTemp_INVALID/*because AL*/, Ijk_Boring );
          }
          irsb->next     = dst;
          irsb->jumpkind = link ? Ijk_Call
@@ -2753,6 +3361,11 @@ DisResult disInstr_ARM_WRK (
       /* else: (link && rM == 15): just fall through */
    }
 
+   /* --- NB: ARM interworking branches are in NV space, hence
+      are handled elsewhere by decode_NV_instruction.
+      ---
+   */
+
    /* --------------------- Clz --------------------- */
    // CLZ
    if (INSN(27,20) == BITS8(0,0,0,1,0,1,1,0)
@@ -2762,14 +3375,14 @@ DisResult disInstr_ARM_WRK (
       UInt rM = INSN(3,0);
       IRTemp arg = newTemp(Ity_I32);
       IRTemp res = newTemp(Ity_I32);
-      assign(arg, getIReg(rM));
+      assign(arg, getIRegA(rM));
       assign(res, IRExpr_Mux0X(
                      unop(Iop_1Uto8,binop(Iop_CmpEQ32, mkexpr(arg),
                                                        mkU32(0))),
                      unop(Iop_Clz32, mkexpr(arg)),
                      mkU32(32)
             ));
-      putIReg(rD, mkexpr(res), condT, Ijk_Boring);
+      putIRegA(rD, mkexpr(res), condT, Ijk_Boring);
       DIP("clz%s r%u, r%u\n", nCC(INSN_COND), rD, rM);
       goto decode_success;
    }
@@ -2791,8 +3404,8 @@ DisResult disInstr_ARM_WRK (
          IRTemp res  = newTemp(Ity_I32);
          IRTemp oldC = IRTemp_INVALID;
          IRTemp oldV = IRTemp_INVALID;
-         assign( argL, getIReg(rM));
-         assign( argR, getIReg(rS));
+         assign( argL, getIRegA(rM));
+         assign( argR, getIRegA(rS));
          assign( res, binop(Iop_Mul32, mkexpr(argL), mkexpr(argR)) );
          if (bitS) {
             oldC = newTemp(Ity_I32);
@@ -2801,7 +3414,7 @@ DisResult disInstr_ARM_WRK (
             assign(oldV, mk_armg_calculate_flag_v());
          }
          // now update guest state
-         putIReg( rD, mkexpr(res), condT, Ijk_Boring );
+         putIRegA( rD, mkexpr(res), condT, Ijk_Boring );
          if (bitS) {
             IRTemp pair = newTemp(Ity_I32);
             assign( pair, binop(Iop_Or32,
@@ -2839,9 +3452,9 @@ DisResult disInstr_ARM_WRK (
          IRTemp res  = newTemp(Ity_I32);
          IRTemp oldC = IRTemp_INVALID;
          IRTemp oldV = IRTemp_INVALID;
-         assign( argL, getIReg(rM));
-         assign( argR, getIReg(rS));
-         assign( argP, getIReg(rN));
+         assign( argL, getIRegA(rM));
+         assign( argR, getIRegA(rS));
+         assign( argP, getIRegA(rN));
          assign( res, binop(isMLS ? Iop_Sub32 : Iop_Add32,
                             mkexpr(argP),
                             binop(Iop_Mul32, mkexpr(argL), mkexpr(argR)) ));
@@ -2853,7 +3466,7 @@ DisResult disInstr_ARM_WRK (
             assign(oldV, mk_armg_calculate_flag_v());
          }
          // now update guest state
-         putIReg( rD, mkexpr(res), condT, Ijk_Boring );
+         putIRegA( rD, mkexpr(res), condT, Ijk_Boring );
          if (bitS) {
             IRTemp pair = newTemp(Ity_I32);
             assign( pair, binop(Iop_Or32,
@@ -2888,8 +3501,8 @@ DisResult disInstr_ARM_WRK (
          IRTemp oldC  = IRTemp_INVALID;
          IRTemp oldV  = IRTemp_INVALID;
          IROp   mulOp = isS ? Iop_MullS32 : Iop_MullU32;
-         assign( argL, getIReg(rM));
-         assign( argR, getIReg(rS));
+         assign( argL, getIRegA(rM));
+         assign( argR, getIRegA(rS));
          assign( res, binop(mulOp, mkexpr(argL), mkexpr(argR)) );
          assign( resHi, unop(Iop_64HIto32, mkexpr(res)) );
          assign( resLo, unop(Iop_64to32, mkexpr(res)) );
@@ -2900,8 +3513,8 @@ DisResult disInstr_ARM_WRK (
             assign(oldV, mk_armg_calculate_flag_v());
          }
          // now update guest state
-         putIReg( rDhi, mkexpr(resHi), condT, Ijk_Boring );
-         putIReg( rDlo, mkexpr(resLo), condT, Ijk_Boring );
+         putIRegA( rDhi, mkexpr(resHi), condT, Ijk_Boring );
+         putIRegA( rDlo, mkexpr(resLo), condT, Ijk_Boring );
          if (bitS) {
             IRTemp pair = newTemp(Ity_I32);
             assign( pair, binop(Iop_Or32,
@@ -2938,9 +3551,9 @@ DisResult disInstr_ARM_WRK (
          IRTemp oldC  = IRTemp_INVALID;
          IRTemp oldV  = IRTemp_INVALID;
          IROp   mulOp = isS ? Iop_MullS32 : Iop_MullU32;
-         assign( argL, getIReg(rM));
-         assign( argR, getIReg(rS));
-         assign( old, binop(Iop_32HLto64, getIReg(rDhi), getIReg(rDlo)) );
+         assign( argL, getIRegA(rM));
+         assign( argR, getIRegA(rS));
+         assign( old, binop(Iop_32HLto64, getIRegA(rDhi), getIRegA(rDlo)) );
          assign( res, binop(Iop_Add64,
                             mkexpr(old),
                             binop(mulOp, mkexpr(argL), mkexpr(argR))) );
@@ -2953,8 +3566,8 @@ DisResult disInstr_ARM_WRK (
             assign(oldV, mk_armg_calculate_flag_v());
          }
          // now update guest state
-         putIReg( rDhi, mkexpr(resHi), condT, Ijk_Boring );
-         putIReg( rDlo, mkexpr(resLo), condT, Ijk_Boring );
+         putIRegA( rDhi, mkexpr(resHi), condT, Ijk_Boring );
+         putIRegA( rDlo, mkexpr(resLo), condT, Ijk_Boring );
          if (bitS) {
             IRTemp pair = newTemp(Ity_I32);
             assign( pair, binop(Iop_Or32,
@@ -2972,7 +3585,7 @@ DisResult disInstr_ARM_WRK (
 
    /* --------------------- Msr etc --------------------- */
 
-   // MSR (immediate form, flags only)
+   // MSR cpsr_f, #imm8  (immediate form, flags only)
    if (BITS8(0,0,1,1,0,0,1,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
        && INSN(15,12) == BITS4(1,1,1,1)) {
       UInt bitR = (insn >> 22) & 1;
@@ -2993,7 +3606,24 @@ DisResult disInstr_ARM_WRK (
       /* fall through */
    }
 
-   // MRS
+   // MSR cpsr_f, rM  (flags only)
+   if (BITS8(0,0,0,1,0,0,1,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && INSN(15,12) == BITS4(1,1,1,1)) {
+      UInt bitR = (insn >> 22) & 1;
+      if (bitR == 0 && INSN(19,16) == BITS4(1,0,0,0)
+          && INSN(11,4) == BITS8(0,0,0,0,0,0,0,0)
+          && INSN(3,0) != 15) {
+         UInt rM = INSN(3,0);
+         IRTemp immT = newTemp(Ity_I32);
+         assign(immT, binop(Iop_And32, getIRegA(rM), mkU32(0xF0000000)) );
+         setFlags_D1(ARMG_CC_OP_COPY, immT, condT);
+         DIP("msr%s cpsr_f, r%u\n", nCC(INSN_COND), rM);
+         goto decode_success;
+      }
+      /* fall through */
+   }
+
+   // MRS rD, cpsr
    if (BITS8(0,0,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
        && INSN(19,16) == BITS4(1,1,1,1)
        && INSN(11,0) == 0) {
@@ -3002,7 +3632,7 @@ DisResult disInstr_ARM_WRK (
       if (bitR == 0 && rD != 15) {
          IRTemp res = newTemp(Ity_I32);
          assign( res, mk_armg_calculate_flags_nzcv() );
-         putIReg( rD, mkexpr(res), condT, Ijk_Boring );
+         putIRegA( rD, mkexpr(res), condT, Ijk_Boring );
          DIP("mrs%s r%u, cpsr\n", nCC(INSN_COND), rD);
          goto decode_success;
       }
@@ -3015,10 +3645,10 @@ DisResult disInstr_ARM_WRK (
       if (imm24 == 0) {
          /* A syscall.  We can't do this conditionally, hence: */
          if (condT != IRTemp_INVALID) {
-            mk_skip_to_next_if_cond_is_false( condT );
+            mk_skip_over_A32_if_cond_is_false( condT );
          }
          // AL after here
-         irsb->next     = mkU32( guest_R15_curr_instr + 4 );
+         irsb->next     = mkU32( guest_R15_curr_instr_notENC + 4 );
          irsb->jumpkind = Ijk_Sys_syscall;
          dres.whatNext  = Dis_StopHere;
          DIP("svc%s #0x%08x\n", nCC(INSN_COND), imm24);
@@ -3047,12 +3677,12 @@ DisResult disInstr_ARM_WRK (
       } else {
          /* make unconditional */
          if (condT != IRTemp_INVALID) {
-            mk_skip_to_next_if_cond_is_false( condT );
+            mk_skip_over_A32_if_cond_is_false( condT );
             condT = IRTemp_INVALID;
          }
          /* Ok, now we're unconditional.  Generate a LL-SC loop. */
-         assign(tRn, getIReg(rN));
-         assign(tNew, getIReg(rM));
+         assign(tRn, getIRegA(rN));
+         assign(tNew, getIRegA(rM));
          if (isB) {
             /* swpb */
             tOld = newTemp(Ity_I8);
@@ -3070,9 +3700,9 @@ DisResult disInstr_ARM_WRK (
          }
          stmt( IRStmt_Exit(unop(Iop_Not1, mkexpr(tSC1)),
                            /*Ijk_NoRedir*/Ijk_Boring,
-                           IRConst_U32(guest_R15_curr_instr)) );
-         putIReg(rD, isB ? unop(Iop_8Uto32, mkexpr(tOld)) : mkexpr(tOld),
-                     IRTemp_INVALID, Ijk_Boring);
+                           IRConst_U32(guest_R15_curr_instr_notENC)) );
+         putIRegA(rD, isB ? unop(Iop_8Uto32, mkexpr(tOld)) : mkexpr(tOld),
+                      IRTemp_INVALID, Ijk_Boring);
          DIP("swp%s%s r%u, r%u, [r%u]\n",
              isB ? "b" : "", nCC(INSN_COND), rD, rM, rN);
          goto decode_success;
@@ -3145,14 +3775,14 @@ DisResult disInstr_ARM_WRK (
          likely will generate an exception.  So we have to take a side
          exit at this point if the condition is false. */
       if (condT != IRTemp_INVALID) {
-         mk_skip_to_next_if_cond_is_false( condT );
+         mk_skip_over_A32_if_cond_is_false( condT );
          condT = IRTemp_INVALID;
       }
       /* Ok, now we're unconditional.  Do the load or store. */
 
       /* get the old Rn value */
       IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, getIReg(rN));
+      assign(rnT, getIRegA(rN));
 
       /* make a new value for Rn, post-insn */
       IRTemp rnTnew = IRTemp_INVALID;
@@ -3171,7 +3801,7 @@ DisResult disInstr_ARM_WRK (
          update before any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
       if (summary == 3)
-         putIReg(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
 
       /* generate the transfers */
       for (i = 0; i < nRegs; i++) {
@@ -3187,7 +3817,7 @@ DisResult disInstr_ARM_WRK (
          update after any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
       if (summary == 2)
-         putIReg(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
 
       HChar* nm = bL==1 ? "ld" : "st";
       switch (summary) {
@@ -3271,14 +3901,14 @@ DisResult disInstr_ARM_WRK (
          likely will generate an exception.  So we have to take a side
          exit at this point if the condition is false. */
       if (condT != IRTemp_INVALID) {
-         mk_skip_to_next_if_cond_is_false( condT );
+         mk_skip_over_A32_if_cond_is_false( condT );
          condT = IRTemp_INVALID;
       }
       /* Ok, now we're unconditional.  Do the load or store. */
 
       /* get the old Rn value */
       IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, getIReg(rN));
+      assign(rnT, getIRegA(rN));
 
       /* make a new value for Rn, post-insn */
       IRTemp rnTnew = IRTemp_INVALID;
@@ -3297,7 +3927,7 @@ DisResult disInstr_ARM_WRK (
          update before any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
       if (summary == 3)
-         putIReg(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
 
       /* generate the transfers */
       for (i = 0; i < nRegs; i++) {
@@ -3313,7 +3943,7 @@ DisResult disInstr_ARM_WRK (
          update after any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
       if (summary == 2)
-         putIReg(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
 
       HChar* nm = bL==1 ? "ld" : "st";
       switch (summary) {
@@ -3354,8 +3984,8 @@ DisResult disInstr_ARM_WRK (
             DIP("fmstat%s\n", nCC(INSN_COND));
          } else {
             /* Otherwise, merely transfer FPSCR to r0 .. r14. */
-            putIReg(rD, IRExpr_Get(OFFB_FPSCR, Ity_I32), 
-                        condT, Ijk_Boring);
+            putIRegA(rD, IRExpr_Get(OFFB_FPSCR, Ity_I32), 
+                         condT, Ijk_Boring);
             DIP("fmrx%s r%u, fpscr\n", nCC(INSN_COND), rD);
          }
          goto decode_success;
@@ -3369,7 +3999,7 @@ DisResult disInstr_ARM_WRK (
       UInt rD  = INSN(15,12);
       UInt reg = INSN(19,16);
       if (reg == BITS4(0,0,0,1)) {
-         putMiscReg32(OFFB_FPSCR, getIReg(rD), condT);
+         putMiscReg32(OFFB_FPSCR, getIRegA(rD), condT);
          DIP("fmxr%s fpscr, r%u\n", nCC(INSN_COND), rD);
          goto decode_success;
       }
@@ -3387,7 +4017,7 @@ DisResult disInstr_ARM_WRK (
       } else {
          putDReg(dM,
                  unop(Iop_ReinterpI64asF64,
-                      binop(Iop_32HLto64, getIReg(rN), getIReg(rD))),
+                      binop(Iop_32HLto64, getIRegA(rN), getIRegA(rD))),
                  condT);
          DIP("vmov%s d%u, r%u, r%u\n", nCC(INSN_COND), dM, rD, rN);
          goto decode_success;
@@ -3405,8 +4035,8 @@ DisResult disInstr_ARM_WRK (
       } else {
          IRTemp i64 = newTemp(Ity_I64);
          assign(i64, unop(Iop_ReinterpF64asI64, getDReg(dM)));
-         putIReg(rN, unop(Iop_64HIto32, mkexpr(i64)), condT, Ijk_Boring);
-         putIReg(rD, unop(Iop_64to32,   mkexpr(i64)), condT, Ijk_Boring);
+         putIRegA(rN, unop(Iop_64HIto32, mkexpr(i64)), condT, Ijk_Boring);
+         putIRegA(rD, unop(Iop_64to32,   mkexpr(i64)), condT, Ijk_Boring);
          DIP("vmov%s r%u, r%u, d%u\n", nCC(INSN_COND), rD, rN, dM);
          goto decode_success;
       }
@@ -3424,12 +4054,12 @@ DisResult disInstr_ARM_WRK (
       UInt bL     = (insn >> 20) & 1; /* 1: load  0: store */
       /* make unconditional */
       if (condT != IRTemp_INVALID) {
-         mk_skip_to_next_if_cond_is_false( condT );
+         mk_skip_over_A32_if_cond_is_false( condT );
          condT = IRTemp_INVALID;
       }
       IRTemp ea = newTemp(Ity_I32);
       assign(ea, binop(bU ? Iop_Add32 : Iop_Sub32,
-                       getIReg(rN), mkU32(offset)));
+                       getIRegA(rN), mkU32(offset)));
       if (bL) {
          putDReg(dD, loadLE(Ity_F64,mkexpr(ea)), IRTemp_INVALID);
       } else {
@@ -3757,14 +4387,14 @@ DisResult disInstr_ARM_WRK (
          likely will generate an exception.  So we have to take a side
          exit at this point if the condition is false. */
       if (condT != IRTemp_INVALID) {
-         mk_skip_to_next_if_cond_is_false( condT );
+         mk_skip_over_A32_if_cond_is_false( condT );
          condT = IRTemp_INVALID;
       }
       /* Ok, now we're unconditional.  Do the load or store. */
 
       /* get the old Rn value */
       IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, getIReg(rN));
+      assign(rnT, getIRegA(rN));
 
       /* make a new value for Rn, post-insn */
       IRTemp rnTnew = IRTemp_INVALID;
@@ -3783,7 +4413,7 @@ DisResult disInstr_ARM_WRK (
          update before any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
       if (summary == 3)
-         putIReg(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
 
       /* generate the transfers */
       for (i = 0; i < nRegs; i++) {
@@ -3799,7 +4429,7 @@ DisResult disInstr_ARM_WRK (
          update after any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
       if (summary == 2)
-         putIReg(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
 
       HChar* nm = bL==1 ? "ld" : "st";
       switch (summary) {
@@ -3838,11 +4468,11 @@ DisResult disInstr_ARM_WRK (
             doesn't seem to explicitly disallow this case, though. */
       } else {
          if (b20) {
-            putIReg(rD, unop(Iop_ReinterpF32asI32, getFReg(fN)),
-                        condT, Ijk_Boring);
+            putIRegA(rD, unop(Iop_ReinterpF32asI32, getFReg(fN)),
+                         condT, Ijk_Boring);
             DIP("fmrs%s r%u, s%u\n", nCC(INSN_COND), rD, fN);
          } else {
-            putFReg(fN, unop(Iop_ReinterpI32asF32, getIReg(rD)), condT);
+            putFReg(fN, unop(Iop_ReinterpI32asF32, getIRegA(rD)), condT);
             DIP("fmsr%s s%u, r%u\n", nCC(INSN_COND), fN, rD);
          }
          goto decode_success;
@@ -3862,12 +4492,12 @@ DisResult disInstr_ARM_WRK (
       UInt bL     = (insn >> 20) & 1; /* 1: load  0: store */
       /* make unconditional */
       if (condT != IRTemp_INVALID) {
-         mk_skip_to_next_if_cond_is_false( condT );
+         mk_skip_over_A32_if_cond_is_false( condT );
          condT = IRTemp_INVALID;
       }
       IRTemp ea = newTemp(Ity_I32);
       assign(ea, binop(bU ? Iop_Add32 : Iop_Sub32,
-                       getIReg(rN), mkU32(offset)));
+                       getIRegA(rN), mkU32(offset)));
       if (bL) {
          putFReg(fD, loadLE(Ity_F32,mkexpr(ea)), IRTemp_INVALID);
       } else {
@@ -4191,13 +4821,14 @@ DisResult disInstr_ARM_WRK (
          IRTemp res;
          /* make unconditional */
          if (condT != IRTemp_INVALID) {
-            mk_skip_to_next_if_cond_is_false( condT );
+            mk_skip_over_A32_if_cond_is_false( condT );
             condT = IRTemp_INVALID;
          }
          /* Ok, now we're unconditional.  Do the load. */
          res = newTemp(Ity_I32);
-         stmt( IRStmt_LLSC(Iend_LE, res, getIReg(rN), NULL/*this is a load*/) );
-         putIReg(rT, mkexpr(res), IRTemp_INVALID, Ijk_Boring);
+         stmt( IRStmt_LLSC(Iend_LE, res, getIRegA(rN),
+                           NULL/*this is a load*/) );
+         putIRegA(rT, mkexpr(res), IRTemp_INVALID, Ijk_Boring);
          DIP("ldrex%s r%u, [r%u]\n", nCC(INSN_COND), rT, rN);
          goto decode_success;
       }
@@ -4218,13 +4849,13 @@ DisResult disInstr_ARM_WRK (
 
          /* make unconditional */
          if (condT != IRTemp_INVALID) {
-            mk_skip_to_next_if_cond_is_false( condT );
+            mk_skip_over_A32_if_cond_is_false( condT );
             condT = IRTemp_INVALID;
          }
 
          /* Ok, now we're unconditional.  Do the store. */
          resSC1 = newTemp(Ity_I1);
-         stmt( IRStmt_LLSC(Iend_LE, resSC1, getIReg(rN), getIReg(rT)) );
+         stmt( IRStmt_LLSC(Iend_LE, resSC1, getIRegA(rN), getIRegA(rT)) );
 
          /* Set rD to 1 on failure, 0 on success.  Currently we have
             resSC1 == 0 on failure, 1 on success. */
@@ -4232,8 +4863,8 @@ DisResult disInstr_ARM_WRK (
          assign(resSC32,
                 unop(Iop_1Uto32, unop(Iop_Not1, mkexpr(resSC1))));
 
-         putIReg(rD, mkexpr(resSC32),
-                     IRTemp_INVALID, Ijk_Boring);
+         putIRegA(rD, mkexpr(resSC32),
+                      IRTemp_INVALID, Ijk_Boring);
          DIP("strex%s r%u, r%u, [r%u]\n", nCC(INSN_COND), rD, rT, rN);
          goto decode_success;
       }
@@ -4250,15 +4881,15 @@ DisResult disInstr_ARM_WRK (
          /* forget it */
       } else {
          if (isT) {
-            putIReg(rD,
-                    binop(Iop_Or32,
-                          binop(Iop_And32, getIReg(rD), mkU32(0xFFFF)),
-                          mkU32(imm16 << 16)),
-                    condT, Ijk_Boring);
+            putIRegA(rD,
+                     binop(Iop_Or32,
+                           binop(Iop_And32, getIRegA(rD), mkU32(0xFFFF)),
+                           mkU32(imm16 << 16)),
+                     condT, Ijk_Boring);
             DIP("movt%s r%u, #0x%04x\n", nCC(INSN_COND), rD, imm16);
             goto decode_success;
          } else {
-            putIReg(rD, mkU32(imm16), condT, Ijk_Boring);
+            putIRegA(rD, mkU32(imm16), condT, Ijk_Boring);
             DIP("movw%s r%u, #0x%04x\n", nCC(INSN_COND), rD, imm16);
             goto decode_success;
          }
@@ -4280,7 +4911,7 @@ DisResult disInstr_ARM_WRK (
          IRTemp rotT = newTemp(Ity_I32);
          IRTemp dstT = newTemp(Ity_I32);
          HChar* nm   = "???";
-         assign(srcT, getIReg(rM));
+         assign(srcT, getIRegA(rM));
          assign(rotT, genROR32(srcT, 8 * rot)); /* 0, 8, 16 or 24 only */
          switch (subopc) {
             case BITS4(0,1,1,0): // UXTB
@@ -4326,7 +4957,7 @@ DisResult disInstr_ARM_WRK (
             default:
                vassert(0); // guarded by "if" above
          }
-         putIReg(rD, mkexpr(dstT), condT, Ijk_Boring);
+         putIRegA(rD, mkexpr(dstT), condT, Ijk_Boring);
          DIP("%s%s r%u, r%u, ROR #%u\n", nm, nCC(INSN_COND), rD, rM, rot);
          goto decode_success;
       }
@@ -4351,8 +4982,8 @@ DisResult disInstr_ARM_WRK (
          vassert(mask != 0); // guaranteed by "msb < lsb" check above
          mask <<= lsb;
 
-         assign(src, rN == 15 ? mkU32(0) : getIReg(rN));
-         assign(olddst, getIReg(rD));
+         assign(src, rN == 15 ? mkU32(0) : getIRegA(rN));
+         assign(olddst, getIRegA(rD));
          assign(newdst,
                 binop(Iop_Or32,
                    binop(Iop_And32,
@@ -4363,7 +4994,7 @@ DisResult disInstr_ARM_WRK (
                          mkU32(~mask)))
                );
 
-         putIReg(rD, mkexpr(newdst), condT, Ijk_Boring);
+         putIRegA(rD, mkexpr(newdst), condT, Ijk_Boring);
 
          if (rN == 15) {
             DIP("bfc%s r%u, #%u, #%u\n",
@@ -4396,7 +5027,7 @@ DisResult disInstr_ARM_WRK (
          vassert(msb >= 0 && msb <= 31);
          vassert(mask != 0); // guaranteed by msb being in 0 .. 31 inclusive
 
-         assign(src, getIReg(rN));
+         assign(src, getIRegA(rN));
          assign(tmp, binop(Iop_And32,
                            binop(Iop_Shr32, mkexpr(src), mkU8(lsb)),
                            mkU32(mask)));
@@ -4404,7 +5035,7 @@ DisResult disInstr_ARM_WRK (
                            binop(Iop_Shl32, mkexpr(tmp), mkU8(31-wm1)),
                            mkU8(31-wm1)));
 
-         putIReg(rD, mkexpr(res), condT, Ijk_Boring);
+         putIRegA(rD, mkexpr(res), condT, Ijk_Boring);
 
          DIP("%s%s r%u, r%u, #%u, #%u\n",
              isU ? "ubfx" : "sbfx",
@@ -4435,16 +5066,16 @@ DisResult disInstr_ARM_WRK (
 
          /* Extract and sign extend the two 16-bit operands */
          assign(srcL, binop(Iop_Sar32,
-                            binop(Iop_Shl32, getIReg(rN),
+                            binop(Iop_Shl32, getIRegA(rN),
                                              mkU8(bN ? 0 : 16)),
                             mkU8(16)));
          assign(srcR, binop(Iop_Sar32,
-                            binop(Iop_Shl32, getIReg(rM),
+                            binop(Iop_Shl32, getIRegA(rM),
                                              mkU8(bM ? 0 : 16)),
                             mkU8(16)));
 
          assign(res, binop(Iop_Mul32, mkexpr(srcL), mkexpr(srcR)));
-         putIReg(rD, mkexpr(res), condT, Ijk_Boring);
+         putIRegA(rD, mkexpr(res), condT, Ijk_Boring);
 
          DIP("smul%c%c%s r%u, r%u, r%u\n",
              bN ? 't' : 'b', bM ? 't' : 'b', nCC(INSN_COND), rD, rN, rM);
@@ -4547,7 +5178,7 @@ DisResult disInstr_ARM_WRK (
         likely will generate an exception.  So we have to take a side
         exit at this point if the condition is false. */
      if (condT != IRTemp_INVALID) {
-        mk_skip_to_next_if_cond_is_false( condT );
+        mk_skip_over_A32_if_cond_is_false( condT );
         condT = IRTemp_INVALID;
      }
      /* Ok, now we're unconditional.  Do the load or store. */
@@ -4569,7 +5200,7 @@ DisResult disInstr_ARM_WRK (
 
      /* get the old Rn value */
      IRTemp rnT = newTemp(Ity_I32);
-     assign(rnT, getIReg(rN));
+     assign(rnT, getIRegA(rN));
 
      /* decide on the transfer address */
      IRTemp taT = IRTemp_INVALID;
@@ -4589,16 +5220,16 @@ DisResult disInstr_ARM_WRK (
      HChar* name = NULL;
      /* generate the transfers */
      if (bS == 1) { // doubleword store
-        storeLE( binop(Iop_Add32, mkexpr(taT), mkU32(0)), getIReg(rD+0) );
-        storeLE( binop(Iop_Add32, mkexpr(taT), mkU32(4)), getIReg(rD+1) );
+        storeLE( binop(Iop_Add32, mkexpr(taT), mkU32(0)), getIRegA(rD+0) );
+        storeLE( binop(Iop_Add32, mkexpr(taT), mkU32(4)), getIRegA(rD+1) );
         name = "strd";
      } else { // doubleword load
-        putIReg( rD+0,
-                 loadLE(Ity_I32, binop(Iop_Add32, mkexpr(taT), mkU32(0))),
-                 IRTemp_INVALID, Ijk_Boring );
-        putIReg( rD+1,
-                 loadLE(Ity_I32, binop(Iop_Add32, mkexpr(taT), mkU32(4))),
-                 IRTemp_INVALID, Ijk_Boring );
+        putIRegA( rD+0,
+                  loadLE(Ity_I32, binop(Iop_Add32, mkexpr(taT), mkU32(0))),
+                  IRTemp_INVALID, Ijk_Boring );
+        putIRegA( rD+1,
+                  loadLE(Ity_I32, binop(Iop_Add32, mkexpr(taT), mkU32(4))),
+                  IRTemp_INVALID, Ijk_Boring );
         name = "ldrd";
      }
 
@@ -4610,7 +5241,7 @@ DisResult disInstr_ARM_WRK (
               vassert(rD+0 != rN); /* since we just wrote rD+0 */
               vassert(rD+1 != rN); /* since we just wrote rD+1 */
            }
-           putIReg( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
+           putIRegA( rN, mkexpr(eaT), IRTemp_INVALID, Ijk_Boring );
            break;
      }
 
@@ -4646,14 +5277,14 @@ DisResult disInstr_ARM_WRK (
          IRTemp srcL = newTemp(Ity_I32);
          IRTemp srcR = newTemp(Ity_I32);
          IRTemp res  = newTemp(Ity_I32);
-         assign(srcR, getIReg(rM));
-         assign(srcL, getIReg(rN));
+         assign(srcR, getIRegA(rM));
+         assign(srcL, getIRegA(rN));
          assign(res,  binop(Iop_Add32,
                             mkexpr(srcL),
                             unop(isU ? Iop_8Uto32 : Iop_8Sto32,
                                  unop(Iop_32to8, 
                                       genROR32(srcR, 8 * rot)))));
-         putIReg(rD, mkexpr(res), condT, Ijk_Boring);
+         putIRegA(rD, mkexpr(res), condT, Ijk_Boring);
          DIP("%cxtab%s r%u, r%u, r%u, ror #%u\n",
              isU ? 'u' : 's', nCC(INSN_COND), rD, rN, rM, rot);
          goto decode_success;
@@ -4676,14 +5307,14 @@ DisResult disInstr_ARM_WRK (
          IRTemp srcL = newTemp(Ity_I32);
          IRTemp srcR = newTemp(Ity_I32);
          IRTemp res  = newTemp(Ity_I32);
-         assign(srcR, getIReg(rM));
-         assign(srcL, getIReg(rN));
+         assign(srcR, getIRegA(rM));
+         assign(srcL, getIRegA(rN));
          assign(res,  binop(Iop_Add32,
                             mkexpr(srcL),
                             unop(isU ? Iop_16Uto32 : Iop_16Sto32,
                                  unop(Iop_32to16, 
                                       genROR32(srcR, 8 * rot)))));
-         putIReg(rD, mkexpr(res), condT, Ijk_Boring);
+         putIRegA(rD, mkexpr(res), condT, Ijk_Boring);
 
          DIP("%cxtah%s r%u, r%u, r%u, ror #%u\n",
              isU ? 'u' : 's', nCC(INSN_COND), rD, rN, rM, rot);
@@ -4707,8 +5338,8 @@ DisResult disInstr_ARM_WRK (
       UInt rD = INSN(15,12);
       if (rD <= 14) {
          /* skip r15, that's too stupid to handle */
-         putIReg(rD, IRExpr_Get(OFFB_TPIDRURO, Ity_I32),
-                     condT, Ijk_Boring);
+         putIRegA(rD, IRExpr_Get(OFFB_TPIDRURO, Ity_I32),
+                      condT, Ijk_Boring);
          DIP("mrc%s p15,0, r%u, c13, c0, 3\n", nCC(INSN_COND), rD);
          goto decode_success;
       }
@@ -4770,9 +5401,9 @@ DisResult disInstr_ARM_WRK (
       R15 should be up-to-date since it made so at the start of each
       insn, but nevertheless be paranoid and update it again right
       now. */
-   vassert(0 == (guest_R15_curr_instr & 3));
-   llPutIReg( 15, mkU32(guest_R15_curr_instr) );
-   irsb->next     = mkU32(guest_R15_curr_instr);
+   vassert(0 == (guest_R15_curr_instr_notENC & 3));
+   llPutIReg( 15, mkU32(guest_R15_curr_instr_notENC) );
+   irsb->next     = mkU32(guest_R15_curr_instr_notENC);
    irsb->jumpkind = Ijk_NoDecode;
    dres.whatNext  = Dis_StopHere;
    dres.len       = 0;
@@ -4811,11 +5442,12 @@ DisResult disInstr_ARM_WRK (
          /* unconditional */
       } else {
          /* conditional */
-         stmt( IRStmt_Exit( unop(Iop_32to1,
-                                 binop(Iop_Xor32,
-                                       mkexpr(r15guard), mkU32(1))),
-                            r15kind,
-                            IRConst_U32(guest_R15_curr_instr + 4)
+         stmt( IRStmt_Exit(
+                  unop(Iop_32to1,
+                       binop(Iop_Xor32,
+                             mkexpr(r15guard), mkU32(1))),
+                  r15kind,
+                  IRConst_U32(guest_R15_curr_instr_notENC + 4)
          ));
       }
       irsb->next     = llGetIReg(15);
@@ -4827,6 +5459,2921 @@ DisResult disInstr_ARM_WRK (
 
 #  undef INSN_COND
 #  undef INSN
+}
+
+
+/*------------------------------------------------------------*/
+/*--- Disassemble a single Thumb2 instruction              ---*/
+/*------------------------------------------------------------*/
+
+/* NB: in Thumb mode we do fetches of regs with getIRegT, which
+   automagically adds 4 to fetches of r15.  However, writes to regs
+   are done with putIRegT, which disallows writes to r15.  Hence any
+   r15 writes and associated jumps have to be done "by hand". */
+
+/* Disassemble a single Thumb instruction into IR.  The instruction is
+   located in host memory at guest_instr, and has (decoded) guest IP
+   of guest_R15_curr_instr_notENC, which will have been set before the
+   call here. */
+
+static   
+DisResult disInstr_THUMB_WRK (
+             Bool         put_IP,
+             Bool         (*resteerOkFn) ( /*opaque*/void*, Addr64 ),
+             Bool         resteerCisOk,
+             void*        callback_opaque,
+             UChar*       guest_instr,
+             VexArchInfo* archinfo,
+             VexAbiInfo*  abiinfo
+          )
+{
+   /* A macro to fish bits out of insn0.  There's also INSN1, to fish
+      bits out of insn1, but that's defined only after the end of the
+      16-bit insn decoder, so as to stop it mistakenly being used
+      therein. */
+#  define INSN0(_bMax,_bMin)  SLICE_UInt(((UInt)insn0), (_bMax), (_bMin))
+
+   DisResult dres;
+   UShort    insn0; /* first 16 bits of the insn */
+   //Bool      allow_VFP = False;
+   //UInt      hwcaps = archinfo->hwcaps;
+   HChar     dis_buf[128];  // big enough to hold LDMIA etc text
+
+   /* What insn variants are we supporting today? */
+   //allow_VFP  = (0 != (hwcaps & VEX_HWCAPS_ARM_VFP));
+   // etc etc
+
+   /* Set result defaults. */
+   dres.whatNext   = Dis_Continue;
+   dres.len        = 2;
+   dres.continueAt = 0;
+
+   /* Set default actions for post-insn handling of writes to r15, if
+      required. */
+   r15written = False;
+   r15guard   = IRTemp_INVALID; /* unconditional */
+   r15kind    = Ijk_Boring;
+
+   /* Insns could be 2 or 4 bytes long.  Just get the first 16 bits at
+      this point.  If we need the second 16, get them later.  We can't
+      get them both out immediately because it risks a fault (very
+      unlikely, but ..) if the second 16 bits aren't actually
+      necessary. */
+   insn0 = getUShortLittleEndianly( guest_instr );
+
+   if (0) vex_printf("insn: 0x%x\n", insn0);
+
+   DIP("\t(thumb) 0x%x:  ", (UInt)guest_R15_curr_instr_notENC);
+
+   /* We may be asked to update the guest R15 before going further. */
+   vassert(0 == (guest_R15_curr_instr_notENC & 1));
+   if (put_IP) {
+      llPutIReg( 15, mkU32(guest_R15_curr_instr_notENC | 1) );
+   }
+
+   /* ----------------------------------------------------------- */
+#if 0
+   /* Spot "Special" instructions (see comment at top of file). */
+   {
+      UChar* code = (UChar*)guest_instr;
+      /* Spot the 16-byte preamble: 
+
+         e1a0c1ec  mov r12, r12, ROR #3
+         e1a0c6ec  mov r12, r12, ROR #13
+         e1a0ceec  mov r12, r12, ROR #29
+         e1a0c9ec  mov r12, r12, ROR #19
+      */
+      UInt word1 = 0xE1A0C1EC;
+      UInt word2 = 0xE1A0C6EC;
+      UInt word3 = 0xE1A0CEEC;
+      UInt word4 = 0xE1A0C9EC;
+      if (getUIntLittleEndianly(code+ 0) == word1 &&
+          getUIntLittleEndianly(code+ 4) == word2 &&
+          getUIntLittleEndianly(code+ 8) == word3 &&
+          getUIntLittleEndianly(code+12) == word4) {
+         /* Got a "Special" instruction preamble.  Which one is it? */
+         if (getUIntLittleEndianly(code+16) == 0xE18AA00A
+                                               /* orr r10,r10,r10 */) {
+            /* R3 = client_request ( R4 ) */
+            DIP("r3 = client_request ( %%r4 )\n");
+            irsb->next     = mkU32( guest_R15_curr_instr_notENC + 20 );
+            irsb->jumpkind = Ijk_ClientReq;
+            dres.whatNext  = Dis_StopHere;
+            goto decode_success;
+         }
+         else
+         if (getUIntLittleEndianly(code+16) == 0xE18BB00B
+                                               /* orr r11,r11,r11 */) {
+            /* R3 = guest_NRADDR */
+            DIP("r3 = guest_NRADDR\n");
+            dres.len = 20;
+            llPutIReg(3, IRExpr_Get( OFFB_NRADDR, Ity_I32 ));
+            goto decode_success;
+         }
+         else
+         if (getUIntLittleEndianly(code+16) == 0xE18CC00C
+                                               /* orr r12,r12,r12 */) {
+            /*  branch-and-link-to-noredir R4 */
+            DIP("branch-and-link-to-noredir r4\n");
+            llPutIReg(14, mkU32( guest_R15_curr_instr_notENC + 20) );
+            irsb->next     = getIRegT(4);
+            irsb->jumpkind = Ijk_NoRedir;
+            dres.whatNext  = Dis_StopHere;
+            goto decode_success;
+         }
+         /* We don't know what it is.  Set opc1/opc2 so decode_failure
+            can print the insn following the Special-insn preamble. */
+         insn = getUIntLittleEndianly(code+16);
+         goto decode_failure;
+         /*NOTREACHED*/
+      }
+
+   }
+#endif
+   /* ----------------------------------------------------------- */
+
+   /* Main Thumb instruction decoder starts here.  It's a series of
+      switches which examine ever longer bit sequences at the MSB of
+      the instruction word, first for 16-bit insns, then for 32-bit
+      insns. */
+
+   /* --- BEGIN optimisation --- */
+   /* This is a crucial optimisation for the ITState boilerplate that
+      follows.  Examine the 9 halfwords preceding this instruction,
+      and if we are absolutely sure that none of them constitute an
+      'it' instruction, then we can be sure that this instruction is
+      not under the control of any 'it' instruction, and so
+      guest_ITSTATE must be zero.  So write zero into ITSTATE right
+      now, so that iropt can fold out almost all of the resulting
+      junk.
+
+      If we aren't sure, we can always safely skip this step.  So be a
+      bit conservative about it: only poke around in the same page as
+      this instruction, lest we get a fault from the previous page
+      that would not otherwise have happened.  The saving grace is
+      that such skipping is pretty rare -- it only happens,
+      statistically, 18/4096ths of the time, so is judged unlikely to
+      be a performance problems. */
+   {
+      /* Summary result of this analysis: False == safe but
+         suboptimal. */
+      Bool forceZ = False;
+
+      UInt pc = guest_R15_curr_instr_notENC;
+      vassert(0 == (pc & 1));
+
+      UInt pageoff = pc & 0xFFF;
+      if (pageoff >= 18) {
+         /* It's safe to poke about in the 9 halfwords preceding this
+            insn.  So, have a look at them. */
+         forceZ = True; /* assume no 'it' insn found, till we do */
+
+         UShort* hwp = (UShort*)pc;
+         Int i;
+         for (i = -1; i >= -9; i--) {
+            /* We're in the same page.  (True, but commented out due
+               to expense.) */
+            /*
+            vassert( ( ((UInt)(&hwp[i])) & 0xFFFFF000 )
+                      == ( pc & 0xFFFFF000 ) );
+            */
+            if ((hwp[i] & 0xFF00) == 0xBF00) {
+               /* might be an 'it' insn.  Play safe. */
+               forceZ = False;
+               break;
+            }
+         }
+      }
+      /* So, did we get lucky? */
+      if (forceZ) {
+         IRTemp t = newTemp(Ity_I32);
+         assign(t, mkU32(0));
+         put_ITSTATE(t);
+      }
+   }
+   /* --- END optimisation --- */
+
+   /* Generate the guarding condition for this insn, by examining
+      ITSTATE.  Assign it to condT.  Also, generate new
+      values for ITSTATE ready for stuffing back into the
+      guest state, but don't actually do the Put yet, since it will
+      need to stuffed back in only after the instruction gets to a
+      point where it is sure to complete.  Mostly we let the code at
+      decode_success handle this, but in cases where the insn contains
+      a side exit, we have to update them before the exit. */
+
+   IRTemp old_itstate = get_ITSTATE();
+
+   IRTemp new_itstate = newTemp(Ity_I32);
+   assign(new_itstate, binop(Iop_Shr32, mkexpr(old_itstate), mkU8(8)));
+
+   put_ITSTATE(new_itstate);
+
+   /* Same strategy as for ARM insns: generate a condition temporary
+      at this point  (or IRTemp_INVALID, meaning
+      unconditional).  We leave it to lower-level instruction decoders
+      to decide whether they can generate straight-line code, or
+      whether they must generate a side exit before the instruction.
+      condT :: Ity_I32 and is always either zero or one. */
+   IRTemp condT = newTemp(Ity_I32);
+   assign(condT,
+          mk_armg_calculate_condition_dyn(
+             binop(Iop_Xor32,
+                   binop(Iop_And32, mkexpr(old_itstate), mkU32(0xF0)),
+                   mkU32(0xE0))
+          )
+   );
+
+   /* Something we don't have in ARM: generate a 0 or 1 value
+      indicating whether or not we are in an IT block (NB: 0 = in IT
+      block, 1 = not in IT block).  This is used to gate condition
+      code updates in 16-bit Thumb instructions. */
+   IRTemp notInITt = newTemp(Ity_I32);
+   assign(notInITt,
+          binop(Iop_Xor32,
+                binop(Iop_And32, mkexpr(old_itstate), mkU32(1)),
+                mkU32(1)));
+
+   /* Compute 'condT && notInITt' -- that is, the instruction is going
+      to execute, and we're not in an IT block.  This is the gating
+      condition for updating condition codes in 16-bit Thumb
+      instructions, except for CMP, CMN and TST. */
+   IRTemp cond_AND_notInIT_T = newTemp(Ity_I32);
+   assign(cond_AND_notInIT_T,
+          binop(Iop_And32, mkexpr(notInITt), mkexpr(condT)));
+
+   /* At this point:
+      * ITSTATE has been updated
+      * condT holds the guarding condition for this instruction (0 or 1),
+      * notInITt is 1 if we're in "normal" code, 0 if in an IT block
+      * cond_AND_notInIT_T is the AND of the above two.
+
+      If the instruction proper can't trap, then there's nothing else
+      to do w.r.t. ITSTATE -- just go and and generate IR for the
+      insn, taking into account the guarding condition.
+
+      If, however, the instruction might trap, then we must back up
+      ITSTATE to the old value, and re-update it after the potentially
+      trapping IR section.  A trap can happen either via a memory
+      reference or because we need to throw SIGILL.
+
+      If an instruction has a side exit, we need to be sure that any
+      ITSTATE backup is re-updated before the side exit.
+   */
+
+   /* ----------------------------------------------------------- */
+   /* --                                                       -- */
+   /* -- Thumb 16-bit integer instructions                     -- */
+   /* --                                                       -- */
+   /* -- IMPORTANT: references to insn1 or INSN1 are           -- */
+   /* --            not allowed in this section                -- */
+   /* --                                                       -- */
+   /* ----------------------------------------------------------- */
+
+   /* 16-bit instructions inside an IT block, apart from CMP, CMN and
+      TST, do not set the condition codes.  Hence we must dynamically
+      test for this case for every condition code update. */
+
+   IROp   anOp   = Iop_INVALID;
+   HChar* anOpNm = NULL;
+
+   /* ================ 16-bit 15:6 cases ================ */
+
+   switch (INSN0(15,6)) {
+
+   case 0x10a: {
+      /* ---------------- CMP Rn, Rm ---------------- */
+      UInt   rN    = INSN0(2,0);
+      UInt   rM    = INSN0(5,3);
+      IRTemp argL  = newTemp(Ity_I32);
+      IRTemp argR  = newTemp(Ity_I32);
+      assign( argL, getIRegT(rN) );
+      assign( argR, getIRegT(rM) );
+      /* Update flags regardless of whether in an IT block or not. */
+      setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+      DIP("cmp r%u, r%u\n", rN, rM);
+      goto decode_success;
+   }
+
+   case 0x108: {
+      /* ---------------- TST Rn, Rm ---------------- */
+      UInt   rN   = INSN0(2,0);
+      UInt   rM   = INSN0(5,3);
+      IRTemp oldC = newTemp(Ity_I32);
+      IRTemp oldV = newTemp(Ity_I32);
+      IRTemp res  = newTemp(Ity_I32);
+      assign( oldC, mk_armg_calculate_flag_c() );
+      assign( oldV, mk_armg_calculate_flag_v() );
+      assign( res,  binop(Iop_And32, getIRegT(rN), getIRegT(rM)) );
+      /* Update flags regardless of whether in an IT block or not. */
+      setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV, condT );
+      DIP("tst r%u, r%u\n", rN, rM);
+      goto decode_success;
+   }
+
+   case 0x109: {
+      /* ---------------- NEGS Rd, Rm ---------------- */
+      /* Rd = -Rm */
+      UInt   rM   = INSN0(5,3);
+      UInt   rD   = INSN0(2,0);
+      IRTemp arg  = newTemp(Ity_I32);
+      IRTemp zero = newTemp(Ity_I32);
+      assign(arg, getIRegT(rM));
+      assign(zero, mkU32(0));
+      // rD can never be r15
+      putIRegT(rD, binop(Iop_Sub32, mkexpr(zero), mkexpr(arg)), condT);
+      setFlags_D1_D2( ARMG_CC_OP_SUB, zero, arg, cond_AND_notInIT_T);
+      DIP("negs r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x10F: {
+      /* ---------------- MVNS Rd, Rm ---------------- */
+      /* Rd = ~Rm */
+      UInt   rM   = INSN0(5,3);
+      UInt   rD   = INSN0(2,0);
+      IRTemp oldV = newTemp(Ity_I32);
+      IRTemp oldC = newTemp(Ity_I32);
+      IRTemp res  = newTemp(Ity_I32);
+      assign( oldV, mk_armg_calculate_flag_v() );
+      assign( oldC, mk_armg_calculate_flag_c() );
+      assign(res, unop(Iop_Not32, getIRegT(rM)));
+      // rD can never be r15
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                         cond_AND_notInIT_T );
+      DIP("mvns r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x10C:
+      /* ---------------- ORRS Rd, Rm ---------------- */
+      anOp = Iop_Or32; anOpNm = "orr"; goto and_orr_eor_mul;
+   case 0x100:
+      /* ---------------- ANDS Rd, Rm ---------------- */
+      anOp = Iop_And32; anOpNm = "and"; goto and_orr_eor_mul;
+   case 0x101:
+      /* ---------------- EORS Rd, Rm ---------------- */
+      anOp = Iop_Xor32; anOpNm = "eor"; goto and_orr_eor_mul;
+   case 0x10d:
+      /* ---------------- MULS Rd, Rm ---------------- */
+      anOp = Iop_Mul32; anOpNm = "mul"; goto and_orr_eor_mul;
+   and_orr_eor_mul: {
+      /* Rd = Rd `op` Rm */
+      UInt   rM   = INSN0(5,3);
+      UInt   rD   = INSN0(2,0);
+      IRTemp res  = newTemp(Ity_I32);
+      IRTemp oldV = newTemp(Ity_I32);
+      IRTemp oldC = newTemp(Ity_I32);
+      assign( oldV, mk_armg_calculate_flag_v() );
+      assign( oldC, mk_armg_calculate_flag_c() );
+      assign( res, binop(anOp, getIRegT(rD), getIRegT(rM) ));
+      // not safe to read guest state after here
+      // rD can never be r15
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                         cond_AND_notInIT_T );
+      DIP("%s r%u, r%u\n", anOpNm, rD, rM);
+      goto decode_success;
+   }
+
+   case 0x10E: {
+      /* ---------------- BICS Rd, Rm ---------------- */
+      /* Rd = Rd & ~Rm */
+      UInt   rM   = INSN0(5,3);
+      UInt   rD   = INSN0(2,0);
+      IRTemp res  = newTemp(Ity_I32);
+      IRTemp oldV = newTemp(Ity_I32);
+      IRTemp oldC = newTemp(Ity_I32);
+      assign( oldV, mk_armg_calculate_flag_v() );
+      assign( oldC, mk_armg_calculate_flag_c() );
+      assign( res, binop(Iop_And32, getIRegT(rD),
+                                    unop(Iop_Not32, getIRegT(rM) )));
+      // not safe to read guest state after here
+      // rD can never be r15
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                         cond_AND_notInIT_T );
+      DIP("bics r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x105: {
+      /* ---------------- ADCS Rd, Rm ---------------- */
+      /* Rd = Rd + Rm + oldC */
+      UInt   rM   = INSN0(5,3);
+      UInt   rD   = INSN0(2,0);
+      IRTemp argL = newTemp(Ity_I32);
+      IRTemp argR = newTemp(Ity_I32);
+      IRTemp oldC = newTemp(Ity_I32);
+      IRTemp res  = newTemp(Ity_I32);
+      assign(argL, getIRegT(rD));
+      assign(argR, getIRegT(rM));
+      assign(oldC, mk_armg_calculate_flag_c());
+      assign(res, binop(Iop_Add32,
+                        binop(Iop_Add32, mkexpr(argL), mkexpr(argR)),
+                        mkexpr(oldC)));
+      // rD can never be r15
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_ADC, argL, argR, oldC,
+                         cond_AND_notInIT_T );
+      DIP("adcs r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x106: {
+      /* ---------------- SBCS Rd, Rm ---------------- */
+      /* Rd = Rd - Rm - (oldC ^ 1) */
+      UInt   rM   = INSN0(5,3);
+      UInt   rD   = INSN0(2,0);
+      IRTemp argL = newTemp(Ity_I32);
+      IRTemp argR = newTemp(Ity_I32);
+      IRTemp oldC = newTemp(Ity_I32);
+      IRTemp res  = newTemp(Ity_I32);
+      assign(argL, getIRegT(rD));
+      assign(argR, getIRegT(rM));
+      assign(oldC, mk_armg_calculate_flag_c());
+      assign(res, binop(Iop_Sub32,
+                        binop(Iop_Sub32, mkexpr(argL), mkexpr(argR)),
+                        binop(Iop_Xor32, mkexpr(oldC), mkU32(1))));
+      // rD can never be r15
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_SBB, argL, argR, oldC,
+                         cond_AND_notInIT_T );
+      DIP("sbcs r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x2CB: {
+      /* ---------------- UXTB Rd, Rm ---------------- */
+      /* Rd = 8Uto32(Rm) */
+      UInt rM = INSN0(5,3);
+      UInt rD = INSN0(2,0);
+      putIRegT(rD, binop(Iop_And32, getIRegT(rM), mkU32(0xFF)),
+                   condT);
+      DIP("uxtb r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x2CA: {
+      /* ---------------- UXTH Rd, Rm ---------------- */
+      /* Rd = 16Uto32(Rm) */
+      UInt rM = INSN0(5,3);
+      UInt rD = INSN0(2,0);
+      putIRegT(rD, binop(Iop_And32, getIRegT(rM), mkU32(0xFFFF)),
+                   condT);
+      DIP("uxth r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x102:   // LSLS
+   case 0x103:   // LSRS
+   case 0x104:   // ASRS
+   case 0x107: { // RORS
+      /* ---------------- LSLS Rs, Rd ---------------- */
+      /* ---------------- LSRS Rs, Rd ---------------- */
+      /* ---------------- ASRS Rs, Rd ---------------- */
+      /* ---------------- RORS Rs, Rd ---------------- */
+      /* Rd = Rd `op` Rs, and set flags */
+      UInt   rS   = INSN0(5,3);
+      UInt   rD   = INSN0(2,0);
+      IRTemp oldV = newTemp(Ity_I32);
+      IRTemp rDt  = newTemp(Ity_I32);
+      IRTemp rSt  = newTemp(Ity_I32);
+      IRTemp res  = newTemp(Ity_I32);
+      IRTemp resC = newTemp(Ity_I32);
+      HChar* wot  = "???";
+      assign(rSt, getIRegT(rS));
+      assign(rDt, getIRegT(rD));
+      assign(oldV, mk_armg_calculate_flag_v());
+      /* Does not appear to be the standard 'how' encoding. */
+      switch (INSN0(15,6)) {
+         case 0x102:
+            compute_result_and_C_after_LSL_by_reg(
+               dis_buf, &res, &resC, rDt, rSt, rD, rS
+            );
+            wot = "lsl";
+            break;
+         case 0x103:
+            compute_result_and_C_after_LSR_by_reg(
+               dis_buf, &res, &resC, rDt, rSt, rD, rS
+            );
+            wot = "lsr";
+            break;
+         case 0x104:
+            compute_result_and_C_after_ASR_by_reg(
+               dis_buf, &res, &resC, rDt, rSt, rD, rS
+            );
+            wot = "asr";
+            break;
+         case 0x107:
+            compute_result_and_C_after_ROR_by_reg(
+               dis_buf, &res, &resC, rDt, rSt, rD, rS
+            );
+            wot = "ror";
+            break;
+         default:
+            /*NOTREACHED*/vassert(0);
+      }
+      // not safe to read guest state after this point
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, resC, oldV,
+                         cond_AND_notInIT_T );
+      DIP("%ss r%u, r%u\n", wot, rS, rD);
+      goto decode_success;
+   }
+
+   default:
+      break; /* examine the next shortest prefix */
+
+   }
+
+
+   /* ================ 16-bit 15:7 cases ================ */
+
+   switch (INSN0(15,7)) {
+
+   case BITS9(1,0,1,1,0,0,0,0,0): {
+      /* ------------ ADD SP, #imm7 * 4 ------------ */
+      UInt uimm7 = INSN0(6,0);
+      putIRegT(13, binop(Iop_Add32, getIRegT(13), mkU32(uimm7 * 4)),
+                   condT);
+      DIP("add sp, #%u\n", uimm7 * 4);
+      goto decode_success;
+   }
+
+   case BITS9(1,0,1,1,0,0,0,0,1): {
+      /* ------------ SUB SP, #imm7 * 4 ------------ */
+      UInt uimm7 = INSN0(6,0);
+      putIRegT(13, binop(Iop_Sub32, getIRegT(13), mkU32(uimm7 * 4)),
+                   condT);
+      DIP("sub sp, #%u\n", uimm7 * 4);
+      goto decode_success;
+   }
+
+   case BITS9(0,1,0,0,0,1,1,1,0): {
+      /* ---------------- BX rM ---------------- */
+      /* Branch to reg, and optionally switch modes.  Reg contains a
+         suitably encoded address therefore (w CPSR.T at the bottom).
+         Have to special-case r15, as usual. */
+      UInt rM = (INSN0(6,6) << 3) | INSN0(5,3);
+      if (BITS3(0,0,0) == INSN0(2,0) &&/*atc*/rM != 15) {
+         IRTemp dst = newTemp(Ity_I32);
+         gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+         mk_skip_over_T16_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+         if (rM <= 14) {
+            assign( dst, getIRegT(rM) );
+         } else {
+            break; // ATC
+            vassert(rM == 15);
+            assign( dst, mkU32(guest_R15_curr_instr_notENC + 4) );
+         }
+         irsb->next     = mkexpr(dst);
+         irsb->jumpkind = Ijk_Boring;
+         dres.whatNext  = Dis_StopHere;
+         DIP("bx r%u (possibly switch to ARM mode)\n", rM);
+         goto decode_success;
+      }
+      break;
+   }
+
+   /* ---------------- BLX rM ---------------- */
+   /* Branch and link to interworking address in rM. */
+   case BITS9(0,1,0,0,0,1,1,1,1): {
+      if (BITS3(0,0,0) == INSN0(2,0)) {
+         UInt rM = (INSN0(6,6) << 3) | INSN0(5,3);
+         IRTemp dst = newTemp(Ity_I32);
+         if (rM <= 14) {
+            gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+            mk_skip_over_T16_if_cond_is_false(condT);
+            condT = IRTemp_INVALID;
+            // now uncond
+            /* We're returning to Thumb code, hence "| 1" */
+            assign( dst, getIRegT(rM) );
+            putIRegT( 14, mkU32( (guest_R15_curr_instr_notENC + 2) | 1 ),
+                          IRTemp_INVALID );
+            irsb->next     = mkexpr(dst);
+            irsb->jumpkind = Ijk_Boring;
+            dres.whatNext  = Dis_StopHere;
+            DIP("blx r%u (possibly switch to ARM mode)\n", rM);
+            goto decode_success;
+         }
+         /* else unpredictable, fall through */
+      }
+      break;
+   }
+
+   default:
+      break; /* examine the next shortest prefix */
+
+   }
+
+
+   /* ================ 16-bit 15:8 cases ================ */
+
+   switch (INSN0(15,8)) {
+
+   case BITS8(0,1,0,0,0,1,0,0): {
+      /* ---------------- ADD(HI) Rd, Rm ---------------- */
+      UInt h1 = INSN0(7,7);
+      UInt h2 = INSN0(6,6);
+      UInt rM = (h2 << 3) | INSN0(5,3);
+      UInt rD = (h1 << 3) | INSN0(2,0);
+      //if (h1 == 0 && h2 == 0) { // Original T1 was more restrictive
+      if (rD == 15 && rM == 15) {
+         // then it's invalid
+      } else {
+         IRTemp res = newTemp(Ity_I32);
+         assign( res, binop(Iop_Add32, getIRegT(rD), getIRegT(rM) ));
+         if (rD != 15) {
+            putIRegT( rD, mkexpr(res), condT );
+         } else {
+            /* Only allowed outside or last-in IT block; SIGILL if not so. */
+            gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+            /* jump over insn if not selected */
+            mk_skip_over_T16_if_cond_is_false(condT);
+            condT = IRTemp_INVALID;
+            // now uncond
+            /* non-interworking branch */
+            irsb->next = binop(Iop_Or32, mkexpr(res), mkU32(1));
+            irsb->jumpkind = Ijk_Boring;
+            dres.whatNext = Dis_StopHere;
+         }
+         DIP("add(hi) r%u, r%u\n", rD, rM);
+         goto decode_success;
+      }
+      break;
+   }
+
+   case BITS8(0,1,0,0,0,1,0,1): {
+      /* ---------------- CMP(HI) Rd, Rm ---------------- */
+      UInt h1 = INSN0(7,7);
+      UInt h2 = INSN0(6,6);
+      UInt rM = (h2 << 3) | INSN0(5,3);
+      UInt rN = (h1 << 3) | INSN0(2,0);
+      if (h1 != 0 || h2 != 0) {
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         assign( argL, getIRegT(rN) );
+         assign( argR, getIRegT(rM) );
+         /* Update flags regardless of whether in an IT block or not. */
+         setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+         DIP("cmphi r%u, r%u\n", rN, rM);
+         goto decode_success;
+      }
+      break;
+   }
+
+   case BITS8(0,1,0,0,0,1,1,0): {
+      /* ---------------- MOV(HI) Rd, Rm ---------------- */
+      UInt h1 = INSN0(7,7);
+      UInt h2 = INSN0(6,6);
+      UInt rM = (h2 << 3) | INSN0(5,3);
+      UInt rD = (h1 << 3) | INSN0(2,0);
+      /* The old ARM ARM seems to disallow the case where both Rd and
+         Rm are "low" registers, but newer versions allow it. */
+      if (1 /*h1 != 0 || h2 != 0*/) {
+         IRTemp val = newTemp(Ity_I32);
+         assign( val, getIRegT(rM) );
+         if (rD != 15) {
+            putIRegT( rD, mkexpr(val), condT );
+         } else {
+            /* Only allowed outside or last-in IT block; SIGILL if not so. */
+            gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+            /* jump over insn if not selected */
+            mk_skip_over_T16_if_cond_is_false(condT);
+            condT = IRTemp_INVALID;
+            // now uncond
+            /* non-interworking branch */
+            irsb->next = binop(Iop_Or32, mkexpr(val), mkU32(1));
+            irsb->jumpkind = Ijk_Boring;
+            dres.whatNext = Dis_StopHere;
+         }
+         DIP("mov r%u, r%u\n", rD, rM);
+         goto decode_success;
+      }
+      break;
+   }
+
+   case BITS8(1,0,1,1,1,1,1,1): {
+      /* ---------------- IT (if-then) ---------------- */
+      UInt firstcond = INSN0(7,4);
+      UInt mask = INSN0(3,0);
+      UInt newITSTATE = 0;
+      /* This is the ITSTATE represented as described in
+         libvex_guest_arm.h.  It is not the ARM ARM representation. */
+      UChar c1 = '.';
+      UChar c2 = '.';
+      UChar c3 = '.';
+      Bool valid = compute_ITSTATE( &newITSTATE, &c1, &c2, &c3,
+                                    firstcond, mask );
+      if (valid && firstcond != 0xF/*NV*/) {
+         /* Not allowed in an IT block; SIGILL if so. */
+         gen_SIGILL_T_if_in_ITBlock(old_itstate, new_itstate);
+
+         IRTemp t = newTemp(Ity_I32);
+         assign(t, mkU32(newITSTATE));
+         put_ITSTATE(t);
+
+         DIP("it%c%c%c %s\n", c1, c2, c3, nCC(firstcond));
+         goto decode_success;
+      }
+   }
+
+   case BITS8(1,0,1,1,0,0,0,1):
+   case BITS8(1,0,1,1,0,0,1,1):
+   case BITS8(1,0,1,1,1,0,0,1):
+   case BITS8(1,0,1,1,1,0,1,1): {
+      /* ---------------- CB{N}Z ---------------- */
+      UInt rN    = INSN0(2,0);
+      UInt bOP   = INSN0(11,11);
+      UInt imm32 = (INSN0(9,9) << 6) | (INSN0(7,3) << 1);
+      gen_SIGILL_T_if_in_ITBlock(old_itstate, new_itstate);
+      /* It's a conditional branch forward. */
+      IRTemp kond = newTemp(Ity_I1);
+      assign( kond, binop(bOP ? Iop_CmpNE32 : Iop_CmpEQ32,
+                          getIRegT(rN), mkU32(0)) );
+
+      vassert(0 == (guest_R15_curr_instr_notENC & 1));
+      /* Looks like the nearest insn we can branch to is the one after
+         next.  That makes sense, as there's no point in being able to
+         encode a conditional branch to the next instruction. */
+      UInt dst = (guest_R15_curr_instr_notENC + 4 + imm32) | 1;
+      stmt(IRStmt_Exit( mkexpr(kond),
+                        Ijk_Boring,
+                        IRConst_U32(toUInt(dst)) ));
+      DIP("cb%s r%u, 0x%x\n", bOP ? "nz" : "z", rN, dst - 1);
+      goto decode_success;
+   }
+
+   default:
+      break; /* examine the next shortest prefix */
+
+   }
+
+
+   /* ================ 16-bit 15:9 cases ================ */
+
+   switch (INSN0(15,9)) {
+
+   case BITS7(1,0,1,1,0,1,0): {
+      /* ---------------- PUSH ---------------- */
+      /* This is a bit like STMxx, but way simpler. Complications we
+         don't have to deal with:
+         * SP being one of the transferred registers
+         * direction (increment vs decrement)
+         * before-vs-after-ness
+      */
+      Int  i, nRegs;
+      UInt bitR    = INSN0(8,8);
+      UInt regList = INSN0(7,0);
+      if (bitR) regList |= (1 << 14);
+   
+      if (regList != 0) {
+         /* Since we can't generate a guaranteed non-trapping IR
+            sequence, (1) jump over the insn if it is gated false, and
+            (2) back out the ITSTATE update. */
+         mk_skip_over_T16_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         put_ITSTATE(old_itstate);
+         // now uncond
+
+         nRegs = 0;
+         for (i = 0; i < 16; i++) {
+            if ((regList & (1 << i)) != 0)
+               nRegs++;
+         }
+         vassert(nRegs >= 1 && nRegs <= 8);
+
+         /* Move SP down first of all, so we're "covered".  And don't
+            mess with its alignment. */
+         IRTemp newSP = newTemp(Ity_I32);
+         assign(newSP, binop(Iop_Sub32, getIRegT(13), mkU32(4 * nRegs)));
+         putIRegT(13, mkexpr(newSP), IRTemp_INVALID);
+
+         /* Generate a transfer base address as a forced-aligned
+            version of the final SP value. */
+         IRTemp base = newTemp(Ity_I32);
+         assign(base, binop(Iop_And32, mkexpr(newSP), mkU32(~3)));
+
+         /* Now the transfers */
+         nRegs = 0;
+         for (i = 0; i < 16; i++) {
+            if ((regList & (1 << i)) != 0) {
+               storeLE( binop(Iop_Add32, mkexpr(base), mkU32(4 * nRegs)),
+                        getIRegT(i) );
+               nRegs++;
+            }
+         }
+
+         /* Reinstate the ITSTATE update. */
+         put_ITSTATE(new_itstate);
+
+         DIP("push {%s0x%04x}\n", bitR ? "lr," : "", regList & 0xFF);
+         goto decode_success;
+      }
+      break;
+   }
+
+   case BITS7(1,0,1,1,1,1,0): {
+      /* ---------------- POP ---------------- */
+      Int  i, nRegs;
+      UInt bitR    = INSN0(8,8);
+      UInt regList = INSN0(7,0);
+   
+      if (regList != 0 || bitR) {
+         /* Since we can't generate a guaranteed non-trapping IR
+            sequence, (1) jump over the insn if it is gated false, and
+            (2) back out the ITSTATE update. */
+         mk_skip_over_T16_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         put_ITSTATE(old_itstate);
+         // now uncond
+
+         nRegs = 0;
+         for (i = 0; i < 8; i++) {
+            if ((regList & (1 << i)) != 0)
+               nRegs++;
+         }
+         vassert(nRegs >= 0 && nRegs <= 7);
+         vassert(bitR == 0 || bitR == 1);
+
+         IRTemp oldSP = newTemp(Ity_I32);
+         assign(oldSP, getIRegT(13));
+
+         /* Generate a transfer base address as a forced-aligned
+            version of the original SP value. */
+         IRTemp base = newTemp(Ity_I32);
+         assign(base, binop(Iop_And32, mkexpr(oldSP), mkU32(~3)));
+
+         /* Compute a new value for SP, but don't install it yet, so
+            that we're "covered" until all the transfers are done.
+            And don't mess with its alignment. */
+         IRTemp newSP = newTemp(Ity_I32);
+         assign(newSP, binop(Iop_Add32, mkexpr(oldSP),
+                                        mkU32(4 * (nRegs + bitR))));
+
+         /* Now the transfers, not including PC */
+         nRegs = 0;
+         for (i = 0; i < 8; i++) {
+            if ((regList & (1 << i)) != 0) {
+               putIRegT(i, loadLE( Ity_I32,
+                                   binop(Iop_Add32, mkexpr(base),
+                                                    mkU32(4 * nRegs))),
+                           IRTemp_INVALID );
+               nRegs++;
+            }
+         }
+
+         IRTemp newPC = IRTemp_INVALID;
+         if (bitR) {
+            newPC = newTemp(Ity_I32);
+            assign( newPC, loadLE( Ity_I32,
+                                   binop(Iop_Add32, mkexpr(base),
+                                                    mkU32(4 * nRegs))));
+         }
+
+         /* Now we can safely install the new SP value */
+         putIRegT(13, mkexpr(newSP), IRTemp_INVALID);
+
+         /* Reinstate the ITSTATE update. */
+         put_ITSTATE(new_itstate);
+
+         /* now, do we also have to do a branch?  If so, it turns out
+            that the new PC value is encoded exactly as we need it to
+            be -- with CPSR.T in the bottom bit.  So we can simply use
+            it as is, no need to mess with it.  Note, therefore, this
+            is an interworking return. */
+         if (bitR) {
+            irsb->next     = mkexpr(newPC);
+            irsb->jumpkind = Ijk_Ret;
+            dres.whatNext  = Dis_StopHere;
+         }
+
+         DIP("pop {%s0x%04x}\n", bitR ? "pc," : "", regList & 0xFF);
+         goto decode_success;
+      }
+      break;
+   }
+
+   case BITS7(0,0,0,1,1,1,0):   /* ADDS */
+   case BITS7(0,0,0,1,1,1,1): { /* SUBS */
+      /* ---------------- ADDS Rd, Rn, #uimm3 ---------------- */
+      /* ---------------- SUBS Rd, Rn, #uimm3 ---------------- */
+      UInt   uimm3 = INSN0(8,6);
+      UInt   rN    = INSN0(5,3);
+      UInt   rD    = INSN0(2,0);
+      UInt   isSub = INSN0(9,9);
+      IRTemp argL  = newTemp(Ity_I32);
+      IRTemp argR  = newTemp(Ity_I32);
+      assign( argL, getIRegT(rN) );
+      assign( argR, mkU32(uimm3) );
+      putIRegT(rD, binop(isSub ? Iop_Sub32 : Iop_Add32,
+                         mkexpr(argL), mkexpr(argR)),
+                   condT);
+      setFlags_D1_D2( isSub ? ARMG_CC_OP_SUB : ARMG_CC_OP_ADD,
+                      argL, argR, cond_AND_notInIT_T );
+      DIP("%s r%u, r%u, #%u\n", isSub ? "subs" : "adds", rD, rN, uimm3);
+      goto decode_success;
+   }
+
+   case BITS7(0,0,0,1,1,0,0):   /* ADDS */
+   case BITS7(0,0,0,1,1,0,1): { /* SUBS */
+      /* ---------------- ADDS Rd, Rn, Rm ---------------- */
+      /* ---------------- SUBS Rd, Rn, Rm ---------------- */
+      UInt   rM    = INSN0(8,6);
+      UInt   rN    = INSN0(5,3);
+      UInt   rD    = INSN0(2,0);
+      UInt   isSub = INSN0(9,9);
+      IRTemp argL  = newTemp(Ity_I32);
+      IRTemp argR  = newTemp(Ity_I32);
+      assign( argL, getIRegT(rN) );
+      assign( argR, getIRegT(rM) );
+      putIRegT( rD, binop(isSub ? Iop_Sub32 : Iop_Add32,
+                          mkexpr(argL), mkexpr(argR)),
+                    condT );
+      setFlags_D1_D2( isSub ? ARMG_CC_OP_SUB : ARMG_CC_OP_ADD,
+                      argL, argR, cond_AND_notInIT_T );
+      DIP("%s r%u, r%u, r%u\n", isSub ? "subs" : "adds", rD, rN, rM);
+      goto decode_success;
+   }
+
+   case BITS7(0,1,0,1,0,0,0):   /* STR */
+   case BITS7(0,1,0,1,1,0,0): { /* LDR */
+      /* ------------- LDR Rd, [Rn, Rm] ------------- */
+      /* ------------- STR Rd, [Rn, Rm] ------------- */
+      /* LDR/STR Rd, [Rn + Rm] */
+      UInt    rD   = INSN0(2,0);
+      UInt    rN   = INSN0(5,3);
+      UInt    rM   = INSN0(8,6);
+      UInt    isLD = INSN0(11,11);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), getIRegT(rM));
+      put_ITSTATE(old_itstate); // backout
+      if (isLD) {
+         putIRegT(rD, loadLE(Ity_I32, ea), IRTemp_INVALID);
+      } else {
+         storeLE(ea, getIRegT(rD));
+      }
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("%s r%u, [r%u, r%u]\n", isLD ? "ldr" : "str", rD, rN, rM);
+      goto decode_success;
+   }
+
+   case BITS7(0,1,0,1,0,0,1):
+   case BITS7(0,1,0,1,1,0,1): {
+      /* ------------- LDRH Rd, [Rn, Rm] ------------- */
+      /* ------------- STRH Rd, [Rn, Rm] ------------- */
+      /* LDRH/STRH Rd, [Rn + Rm] */
+      UInt    rD   = INSN0(2,0);
+      UInt    rN   = INSN0(5,3);
+      UInt    rM   = INSN0(8,6);
+      UInt    isLD = INSN0(11,11);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), getIRegT(rM));
+      put_ITSTATE(old_itstate); // backout
+      if (isLD) {
+         putIRegT(rD, unop(Iop_16Uto32, loadLE(Ity_I16, ea)),
+                      IRTemp_INVALID);
+      } else {
+         storeLE( ea, unop(Iop_32to16, getIRegT(rD)) );
+      }
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("%sh r%u, [r%u, r%u]\n", isLD ? "ldr" : "str", rD, rN, rM);
+      goto decode_success;
+   }
+
+   case BITS7(0,1,0,1,1,1,1): {
+      /* ------------- LDRSH Rd, [Rn, Rm] ------------- */
+      /* LDRSH Rd, [Rn + Rm] */
+      UInt    rD = INSN0(2,0);
+      UInt    rN = INSN0(5,3);
+      UInt    rM = INSN0(8,6);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), getIRegT(rM));
+      put_ITSTATE(old_itstate); // backout
+      putIRegT(rD, unop(Iop_16Sto32, loadLE(Ity_I16, ea)),
+                   IRTemp_INVALID);
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("ldrsh r%u, [r%u, r%u]\n", rD, rN, rM);
+      goto decode_success;
+   }
+
+   case BITS7(0,1,0,1,0,1,0):
+   case BITS7(0,1,0,1,1,1,0): {
+      /* ------------- LDRB Rd, [Rn, Rm] ------------- */
+      /* ------------- STRB Rd, [Rn, Rm] ------------- */
+      /* LDRB/STRB Rd, [Rn + Rm] */
+      UInt    rD   = INSN0(2,0);
+      UInt    rN   = INSN0(5,3);
+      UInt    rM   = INSN0(8,6);
+      UInt    isLD = INSN0(11,11);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), getIRegT(rM));
+      put_ITSTATE(old_itstate); // backout
+      if (isLD) {
+         putIRegT(rD, unop(Iop_8Uto32, loadLE(Ity_I8, ea)),
+                  IRTemp_INVALID);
+      } else {
+         storeLE( ea, unop(Iop_32to8, getIRegT(rD)) );
+      }
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("%sb r%u, [r%u, r%u]\n", isLD ? "ldr" : "str", rD, rN, rM);
+      goto decode_success;
+   }
+
+   default:
+      break; /* examine the next shortest prefix */
+
+   }
+
+
+   /* ================ 16-bit 15:11 cases ================ */
+
+   switch (INSN0(15,11)) {
+
+   case BITS5(0,0,1,1,0):
+   case BITS5(0,0,1,1,1): {
+      /* ---------------- ADDS Rn, #uimm8 ---------------- */
+      /* ---------------- SUBS Rn, #uimm8 ---------------- */
+      UInt   isSub = INSN0(11,11);
+      UInt   rN    = INSN0(10,8);
+      UInt   uimm8 = INSN0(7,0);
+      IRTemp argL  = newTemp(Ity_I32);
+      IRTemp argR  = newTemp(Ity_I32);
+      assign( argL, getIRegT(rN) );
+      assign( argR, mkU32(uimm8) );
+      putIRegT( rN, binop(isSub ? Iop_Sub32 : Iop_Add32,
+                          mkexpr(argL), mkexpr(argR)), condT );
+      setFlags_D1_D2( isSub ? ARMG_CC_OP_SUB : ARMG_CC_OP_ADD,
+                      argL, argR, cond_AND_notInIT_T );
+      DIP("%s r%u, #%u\n", isSub ? "subs" : "adds", rN, uimm8);
+      goto decode_success;
+   }
+
+   case BITS5(1,0,1,0,0): {
+      /* ---------------- ADD rD, PC, #imm8 * 4 ---------------- */
+      /* a.k.a. ADR */
+      UInt rD   = INSN0(10,8);
+      UInt imm8 = INSN0(7,0);
+      putIRegT(rD, binop(Iop_Add32, getIRegT(15), mkU32(imm8 * 4)),
+                   condT);
+      DIP("add r%u, pc, #%u\n", rD, imm8 * 4);
+      goto decode_success;
+   }
+
+   case BITS5(1,0,1,0,1): {
+      /* ---------------- ADD rD, SP, #imm8 * 4 ---------------- */
+      UInt rD   = INSN0(10,8);
+      UInt imm8 = INSN0(7,0);
+      putIRegT(rD, binop(Iop_Add32, getIRegT(13), mkU32(imm8 * 4)),
+                   condT);
+      DIP("add r%u, r13, #%u\n", rD, imm8 * 4);
+      goto decode_success;
+   }
+
+   case BITS5(0,0,1,0,1): {
+      /* ---------------- CMP Rn, #uimm8 ---------------- */
+      UInt   rN    = INSN0(10,8);
+      UInt   uimm8 = INSN0(7,0);
+      IRTemp argL  = newTemp(Ity_I32);
+      IRTemp argR  = newTemp(Ity_I32);
+      assign( argL, getIRegT(rN) );
+      assign( argR, mkU32(uimm8) );
+      /* Update flags regardless of whether in an IT block or not. */
+      setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+      DIP("cmp r%u, #%u\n", rN, uimm8);
+      goto decode_success;
+   }
+
+   case BITS5(0,0,1,0,0): {
+      /* -------------- (T1) MOVS Rn, #uimm8 -------------- */
+      UInt   rD    = INSN0(10,8);
+      UInt   uimm8 = INSN0(7,0);
+      IRTemp oldV  = newTemp(Ity_I32);
+      IRTemp oldC  = newTemp(Ity_I32);
+      IRTemp res   = newTemp(Ity_I32);
+      assign( oldV, mk_armg_calculate_flag_v() );
+      assign( oldC, mk_armg_calculate_flag_c() );
+      assign( res, mkU32(uimm8) );
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                         cond_AND_notInIT_T );
+      DIP("movs r%u, #%u\n", rD, uimm8);
+      goto decode_success;
+   }
+
+   case BITS5(0,1,0,0,1): {
+      /* ------------- LDR Rd, [PC, #imm8 * 4] ------------- */
+      /* LDR Rd, [align4(PC) + imm8 * 4] */
+      UInt   rD   = INSN0(10,8);
+      UInt   imm8 = INSN0(7,0);
+      IRTemp ea   = newTemp(Ity_I32);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      assign(ea, binop(Iop_Add32, 
+                       binop(Iop_And32, getIRegT(15), mkU32(~3UL)),
+                       mkU32(imm8 * 4)));
+      put_ITSTATE(old_itstate); // backout
+      putIRegT(rD, loadLE(Ity_I32, mkexpr(ea)),
+                   IRTemp_INVALID);
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("ldr r%u, [pc, #%u]\n", rD, imm8 * 4);
+      goto decode_success;
+   }
+
+   case BITS5(0,1,1,0,0):   /* STR */
+   case BITS5(0,1,1,0,1): { /* LDR */
+      /* ------------- LDR Rd, [Rn, #imm5 * 4] ------------- */
+      /* ------------- STR Rd, [Rn, #imm5 * 4] ------------- */
+      /* LDR/STR Rd, [Rn + imm5 * 4] */
+      UInt    rD   = INSN0(2,0);
+      UInt    rN   = INSN0(5,3);
+      UInt    imm5 = INSN0(10,6);
+      UInt    isLD = INSN0(11,11);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), mkU32(imm5 * 4));
+      put_ITSTATE(old_itstate); // backout
+      if (isLD) {
+         putIRegT(rD, loadLE(Ity_I32, ea), IRTemp_INVALID);
+      } else {
+         storeLE( ea, getIRegT(rD) );
+      }
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("%s r%u, [r%u, #%u]\n", isLD ? "ldr" : "str", rD, rN, imm5 * 4);
+      goto decode_success;
+   }
+
+   case BITS5(1,0,0,0,0):   /* STRH */
+   case BITS5(1,0,0,0,1): { /* LDRH */
+      /* ------------- LDRH Rd, [Rn, #imm5 * 2] ------------- */
+      /* ------------- STRH Rd, [Rn, #imm5 * 2] ------------- */
+      /* LDRH/STRH Rd, [Rn + imm5 * 2] */
+      UInt    rD   = INSN0(2,0);
+      UInt    rN   = INSN0(5,3);
+      UInt    imm5 = INSN0(10,6);
+      UInt    isLD = INSN0(11,11);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), mkU32(imm5 * 2));
+      put_ITSTATE(old_itstate); // backout
+      if (isLD) {
+         putIRegT(rD, unop(Iop_16Uto32, loadLE(Ity_I16, ea)),
+                  IRTemp_INVALID);
+      } else {
+         storeLE( ea, unop(Iop_32to16, getIRegT(rD)) );
+      }
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("%sh r%u, [r%u, #%u]\n", isLD ? "ldr" : "str", rD, rN, imm5 * 2);
+      goto decode_success;
+   }
+
+   case BITS5(0,1,1,1,0):   /* STRB */
+   case BITS5(0,1,1,1,1): { /* LDRB */
+      /* ------------- LDRB Rd, [Rn, #imm5] ------------- */
+      /* ------------- STRB Rd, [Rn, #imm5] ------------- */
+      /* LDRB/STRB Rd, [Rn + imm5] */
+      UInt    rD   = INSN0(2,0);
+      UInt    rN   = INSN0(5,3);
+      UInt    imm5 = INSN0(10,6);
+      UInt    isLD = INSN0(11,11);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), mkU32(imm5));
+      put_ITSTATE(old_itstate); // backout
+      if (isLD) {
+         putIRegT(rD, unop(Iop_8Uto32, loadLE(Ity_I8, ea)),
+                  IRTemp_INVALID);
+      } else {
+         storeLE( ea, unop(Iop_32to8, getIRegT(rD)) );
+      }
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("%sb r%u, [r%u, #%u]\n", isLD ? "ldr" : "str", rD, rN, imm5);
+      goto decode_success;
+   }
+
+   case BITS5(1,0,0,1,0):   /* STR */
+   case BITS5(1,0,0,1,1): { /* LDR */
+      /* ------------- LDR Rd, [SP, #imm8 * 4] ------------- */
+      /* ------------- STR Rd, [SP, #imm8 * 4] ------------- */
+      /* LDR/STR Rd, [SP + imm8 * 4] */
+      UInt rD    = INSN0(10,8);
+      UInt imm8  = INSN0(7,0);
+      UInt isLD  = INSN0(11,11);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(13), mkU32(imm8 * 4));
+      put_ITSTATE(old_itstate); // backout
+      if (isLD) {
+         putIRegT(rD, loadLE(Ity_I32, ea), IRTemp_INVALID);
+      } else {
+         storeLE(ea, getIRegT(rD));
+      }
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("%s r%u, [sp, #%u]\n", isLD ? "ldr" : "str", rD, imm8 * 4);
+      goto decode_success;
+   }
+
+   case BITS5(1,1,0,0,1): {
+      /* ------------- LDMIA Rn!, {reglist} ------------- */
+      Int i, nRegs = 0;
+      UInt rN   = INSN0(10,8);
+      UInt list = INSN0(7,0);
+      /* Empty lists aren't allowed. */
+      if (list != 0) {
+         mk_skip_over_T16_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         put_ITSTATE(old_itstate);
+         // now uncond
+
+         IRTemp oldRn = newTemp(Ity_I32);
+         IRTemp base  = newTemp(Ity_I32);
+         assign(oldRn, getIRegT(rN));
+         assign(base, binop(Iop_And32, mkexpr(oldRn), mkU32(~3UL)));
+         for (i = 0; i < 8; i++) {
+            if (0 == (list & (1 << i)))
+               continue;
+            nRegs++;
+            putIRegT(
+               i, loadLE(Ity_I32,
+                         binop(Iop_Add32, mkexpr(base),
+                                          mkU32(nRegs * 4 - 4))),
+               IRTemp_INVALID
+            );
+         }
+         /* Only do the writeback for rN if it isn't in the list of
+            registers to be transferred. */
+         if (0 == (list & (1 << rN))) {
+            putIRegT(rN,
+                     binop(Iop_Add32, mkexpr(oldRn),
+                                      mkU32(nRegs * 4)),
+                     IRTemp_INVALID
+            );
+         }
+
+         /* Reinstate the ITSTATE update. */
+         put_ITSTATE(new_itstate);
+
+         DIP("ldmia r%u!, {0x%04x}\n", rN, list);
+         goto decode_success;
+      }
+      break;
+   }
+
+   case BITS5(1,1,0,0,0): {
+      /* ------------- STMIA Rn!, {reglist} ------------- */
+      Int i, nRegs = 0;
+      UInt rN   = INSN0(10,8);
+      UInt list = INSN0(7,0);
+      /* Empty lists aren't allowed.  Also, if rN is in the list then
+         it must be the lowest numbered register in the list. */
+      Bool valid = list != 0;
+      if (valid && 0 != (list & (1 << rN))) {
+         for (i = 0; i < rN; i++) {
+            if (0 != (list & (1 << i)))
+               valid = False;
+         }
+      }
+      if (valid) {
+         mk_skip_over_T16_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         put_ITSTATE(old_itstate);
+         // now uncond
+
+         IRTemp oldRn = newTemp(Ity_I32);
+         IRTemp base = newTemp(Ity_I32);
+         assign(oldRn, getIRegT(rN));
+         assign(base, binop(Iop_And32, mkexpr(oldRn), mkU32(~3UL)));
+         for (i = 0; i < 8; i++) {
+            if (0 == (list & (1 << i)))
+               continue;
+            nRegs++;
+            storeLE( binop(Iop_Add32, mkexpr(base), mkU32(nRegs * 4 - 4)),
+                     getIRegT(i) );
+         }
+         /* Always do the writeback. */
+         putIRegT(rN,
+                  binop(Iop_Add32, mkexpr(oldRn),
+                                   mkU32(nRegs * 4)),
+                  IRTemp_INVALID);
+
+         /* Reinstate the ITSTATE update. */
+         put_ITSTATE(new_itstate);
+
+         DIP("stmia r%u!, {0x%04x}\n", rN, list);
+         goto decode_success;
+      }
+      break;
+   }
+
+   case BITS5(0,0,0,0,0):   /* LSLS */
+   case BITS5(0,0,0,0,1):   /* LSRS */
+   case BITS5(0,0,0,1,0): { /* ASRS */
+      /* ---------------- LSLS Rd, Rm, #imm5 ---------------- */
+      /* ---------------- LSRS Rd, Rm, #imm5 ---------------- */
+      /* ---------------- ASRS Rd, Rm, #imm5 ---------------- */
+      UInt   rD   = INSN0(2,0);
+      UInt   rM   = INSN0(5,3);
+      UInt   imm5 = INSN0(10,6);
+      IRTemp res  = newTemp(Ity_I32);
+      IRTemp resC = newTemp(Ity_I32);
+      IRTemp rMt  = newTemp(Ity_I32);
+      IRTemp oldV = newTemp(Ity_I32);
+      HChar* wot  = "???";
+      assign(rMt, getIRegT(rM));
+      assign(oldV, mk_armg_calculate_flag_v());
+      /* Looks like INSN0(12,11) are the standard 'how' encoding.
+         Could compactify if the ROR case later appears. */
+      switch (INSN0(15,11)) {
+         case BITS5(0,0,0,0,0):
+            compute_result_and_C_after_LSL_by_imm5(
+               dis_buf, &res, &resC, rMt, imm5, rM
+            );
+            wot = "lsl";
+            break;
+         case BITS5(0,0,0,0,1):
+            compute_result_and_C_after_LSR_by_imm5(
+               dis_buf, &res, &resC, rMt, imm5, rM
+            );
+            wot = "lsr";
+            break;
+         case BITS5(0,0,0,1,0):
+            compute_result_and_C_after_ASR_by_imm5(
+               dis_buf, &res, &resC, rMt, imm5, rM
+            );
+            wot = "asr";
+            break;
+         default:
+            /*NOTREACHED*/vassert(0);
+      }
+      // not safe to read guest state after this point
+      putIRegT(rD, mkexpr(res), condT);
+      setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, resC, oldV,
+                         cond_AND_notInIT_T );
+      /* ignore buf and roll our own output */
+      DIP("%ss r%u, r%u, #%u\n", wot, rD, rM, imm5);
+      goto decode_success;
+   }
+
+   case BITS5(1,1,1,0,0): {
+      /* ---------------- B #simm11 ---------------- */
+      Int  simm11 = INSN0(10,0);
+           simm11 = (simm11 << 21) >> 20;
+      UInt dst    = simm11 + guest_R15_curr_instr_notENC + 4;
+      /* Only allowed outside or last-in IT block; SIGILL if not so. */
+      gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+      // and skip this insn if not selected; being cleverer is too
+      // difficult
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+      irsb->next     = mkU32( dst | 1 /*CPSR.T*/ );
+      irsb->jumpkind = Ijk_Boring;
+      dres.whatNext  = Dis_StopHere;
+      DIP("b 0x%x\n", dst);
+      goto decode_success;
+   }
+
+   default:
+      break; /* examine the next shortest prefix */
+
+   }
+
+
+   /* ================ 16-bit 15:12 cases ================ */
+
+   switch (INSN0(15,12)) {
+
+   case BITS4(1,1,0,1): {
+      /* ---------------- Bcond #simm8 ---------------- */
+      UInt cond  = INSN0(11,8);
+      Int  simm8 = INSN0(7,0);
+           simm8 = (simm8 << 24) >> 23;
+      UInt dst   = simm8 + guest_R15_curr_instr_notENC + 4;
+      if (cond != ARMCondAL && cond != ARMCondNV) {
+         /* Not allowed in an IT block; SIGILL if so. */
+         gen_SIGILL_T_if_in_ITBlock(old_itstate, new_itstate);
+
+         IRTemp kondT = newTemp(Ity_I32);
+         assign( kondT, mk_armg_calculate_condition(cond) );
+         stmt( IRStmt_Exit( unop(Iop_32to1, mkexpr(kondT)),
+                            Ijk_Boring,
+                            IRConst_U32(dst | 1/*CPSR.T*/) ));
+         irsb->next = mkU32( (guest_R15_curr_instr_notENC + 2) 
+                             | 1 /*CPSR.T*/ );
+         irsb->jumpkind = Ijk_Boring;
+         dres.whatNext  = Dis_StopHere;
+         DIP("b%s 0x%x\n", nCC(cond), dst);
+         goto decode_success;
+      }
+      break;
+   }
+
+   default:
+      break; /* hmm, nothing matched */
+
+   }
+
+   /* ----------------------------------------------------------- */
+   /* --                                                       -- */
+   /* -- Thumb 32-bit integer instructions                     -- */
+   /* --                                                       -- */
+   /* ----------------------------------------------------------- */
+
+#  define INSN1(_bMax,_bMin)  SLICE_UInt(((UInt)insn1), (_bMax), (_bMin))
+
+   /* second 16 bits of the instruction, if any */
+   UShort insn1 = getUShortLittleEndianly( guest_instr+2 );
+
+   anOp   = Iop_INVALID; /* paranoia */
+   anOpNm = NULL;        /* paranoia */
+
+   /* Change result defaults to suit 32-bit insns. */
+   vassert(dres.whatNext   == Dis_Continue);
+   vassert(dres.len        == 2);
+   vassert(dres.continueAt == 0);
+   dres.len = 4;
+
+   /* ---------------- BL/BLX simm22 ---------------- */
+   if (BITS5(1,1,1,1,0) == INSN0(15,11)
+       &&  BITS5(1,1,1,0,1) == (INSN1(15,11) & BITS5(1,1,1,0,1))) {
+      /* Only allowed outside or last-in IT block; SIGILL if not so. */
+      gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+      // and skip this insn if not selected; being cleverer is too
+      // difficult
+      mk_skip_over_T32_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+      UInt isBL = INSN1(12,12);
+      UInt hi11 = INSN0(10,0);
+      UInt lo11 = INSN1(10,0);
+      Int dst = hi11;
+      dst = (dst << 21) >> 21; /* sign extend */
+      dst = (dst << 12) + (lo11 << 1)
+            + guest_R15_curr_instr_notENC + 4;
+      /* We're returning to Thumb code, hence "| 1" */
+      putIRegT( 14, mkU32( (guest_R15_curr_instr_notENC + 4) | 1 ),
+                IRTemp_INVALID);
+      if (isBL) {
+         /* BL: unconditional T -> T call */
+         /* we're calling Thumb code, hence "| 1" */
+         irsb->next = mkU32( dst | 1 );
+         DIP("bl 0x%x (stay in Thumb mode)\n", dst);
+      } else {
+         /* BLX: unconditional T -> A call */
+         /* we're calling ARM code, hence "& 3" to align to a
+            valid ARM insn address */
+         irsb->next = mkU32( dst & ~3 );
+         DIP("bl 0x%x (switch to ARM mode)\n", dst);
+      }
+      irsb->jumpkind = Ijk_Call;
+      dres.whatNext = Dis_StopHere;
+      goto decode_success;
+   }
+
+   /* ---------------- {LD,ST}M{IA,DB} ---------------- */
+   if (0x3a2 == INSN0(15,6) // {LD,ST}MIA
+       || 0x3a4 == INSN0(15,6)) { // {LD,ST}MDB
+      UInt bW      = INSN0(5,5); /* writeback Rn ? */
+      UInt bL      = INSN0(4,4);
+      UInt rN      = INSN0(3,0);
+      UInt bP      = INSN1(15,15); /* reglist entry for r15 */
+      UInt bM      = INSN1(14,14); /* reglist entry for r14 */
+      UInt rLmost  = INSN1(12,0);  /* reglist entry for r0 .. 12 */
+      UInt rL13    = INSN1(13,13); /* must be zero */
+      UInt regList = 0;
+      Bool valid   = True;
+
+      UInt bINC    = 1;
+      UInt bBEFORE = 0;
+      if (INSN0(15,6) == 0x3a4) {
+         bINC    = 0;
+         bBEFORE = 1;
+      }
+
+      /* detect statically invalid cases, and construct the final
+         reglist */
+      if (rL13 == 1)
+         valid = False;
+
+      if (bL == 1) {
+         regList = (bP << 15) | (bM << 14) | rLmost;
+         if (rN == 15)                       valid = False;
+         if (popcount32(regList) < 2)        valid = False;
+         if (bP == 1 && bM == 1)             valid = False;
+         if (bW == 1 && (regList & (1<<rN))) valid = False;
+      } else {
+         regList = (bM << 14) | rLmost;
+         if (bP == 1)                        valid = False;
+         if (rN == 15)                       valid = False;
+         if (popcount32(regList) < 2)        valid = False;
+         if (bW == 1 && (regList & (1<<rN))) valid = False;
+         if (regList & (1<<rN)) {
+            UInt i;
+            /* if Rn is in the list, then it must be the
+               lowest numbered entry */
+            for (i = 0; i < rN; i++) {
+               if (regList & (1<<i))
+                  valid = False;
+            }
+         }
+      }
+
+      if (valid) {
+         if (bL == 1 && bP == 1) {
+            // We'll be writing the PC.  Hence:
+            /* Only allowed outside or last-in IT block; SIGILL if not so. */
+            gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+         }
+
+         /* Go uncond: */
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+
+         /* Generate the IR.  This might generate a write to R15, */
+         mk_ldm_stm(False/*!arm*/, rN, bINC, bBEFORE, bW, bL, regList);
+
+         if (bL == 1 && (regList & (1<<15))) {
+            // If we wrote to R15, we have an interworking return to
+            // deal with.
+            irsb->next     = llGetIReg(15);
+            irsb->jumpkind = Ijk_Ret;
+            dres.whatNext  = Dis_StopHere;
+         }
+
+         DIP("%sm%c%c r%u%s, {0x%04x}\n",
+              bL == 1 ? "ld" : "st", bINC ? 'i' : 'd', bBEFORE ? 'b' : 'a',
+              rN, bW ? "!" : "", regList);
+
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T3) ADD{S}.W Rd, Rn, #constT -------------- */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && INSN0(9,5) == BITS5(0,1,0,0,0)
+       && INSN1(15,15) == 0) {
+      UInt bS = INSN0(4,4);
+      UInt rN = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      Bool valid = !isBadRegT(rN) && !isBadRegT(rD);
+      /* but allow "add.w reg, sp, #constT" */ 
+      if (!valid && rN == 13)
+         valid = True;
+      if (valid) {
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         IRTemp res   = newTemp(Ity_I32);
+         UInt   imm32 = thumbExpandImm_from_I0_I1(NULL, insn0, insn1);
+         assign(argL, getIRegT(rN));
+         assign(argR, mkU32(imm32));
+         assign(res,  binop(Iop_Add32, mkexpr(argL), mkexpr(argR)));
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS == 1)
+            setFlags_D1_D2( ARMG_CC_OP_ADD, argL, argR, condT );
+         DIP("add%s.w r%u, r%u, #%u\n",
+             bS == 1 ? "s" : "", rD, rN, imm32);
+         goto decode_success;
+      }
+   }
+
+   /* ---------------- (T2) CMP.W Rn, #constT ---------------- */
+   // Ditto CMN
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && INSN0(9,4) == BITS6(0,1,1,0,1,1)
+       && INSN1(15,15) == 0
+       && INSN1(11,8) == BITS4(1,1,1,1)) {
+      UInt rN = INSN0(3,0);
+      if (rN != 15) {
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         UInt   imm32 = thumbExpandImm_from_I0_I1(NULL, insn0, insn1);
+         assign(argL, getIRegT(rN));
+         assign(argR, mkU32(imm32));
+         setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+         DIP("cmp.w r%u, #%u\n", rN, imm32);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T1) TST.W Rn, #constT -------------- */
+   // Ditto TEQ
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && INSN0(9,4) == BITS6(0,0,0,0,0,1)
+       && INSN1(15,15) == 0
+       && INSN1(11,8) == BITS4(1,1,1,1)) {
+      UInt rN = INSN0(3,0);
+      if (!isBadRegT(rN)) { // yes, really, it's inconsistent with CMP.W
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         IRTemp res   = newTemp(Ity_I32);
+         IRTemp oldV  = newTemp(Ity_I32);
+         IRTemp oldC  = newTemp(Ity_I32);
+         Bool   updC  = False;
+         UInt   imm32 = thumbExpandImm_from_I0_I1(&updC, insn0, insn1);
+         assign(argL, getIRegT(rN));
+         assign(argR, mkU32(imm32));
+         assign(res,  binop(Iop_And32, mkexpr(argL), mkexpr(argR)));
+         assign( oldV, mk_armg_calculate_flag_v() );
+         assign( oldC, updC 
+                       ? mkU32((imm32 >> 31) & 1)
+                       : mk_armg_calculate_flag_c() );
+         setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV, condT );
+         DIP("tst.w r%u, #%u\n", rN, imm32);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T3) SUB{S}.W Rd, Rn, #constT -------------- */
+   /* -------------- (T3) RSB{S}.W Rd, Rn, #constT -------------- */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && (INSN0(9,5) == BITS5(0,1,1,0,1) // SUB
+           || INSN0(9,5) == BITS5(0,1,1,1,0)) // RSB
+       && INSN1(15,15) == 0) {
+      Bool isRSB = INSN0(9,5) == BITS5(0,1,1,1,0);
+      UInt bS    = INSN0(4,4);
+      UInt rN    = INSN0(3,0);
+      UInt rD    = INSN1(11,8);
+      Bool valid = !isBadRegT(rN) && !isBadRegT(rD);
+      /* but allow "sub.w sp, sp, #constT" */ 
+      if (!valid && !isRSB && rN == 13 && rD == 13)
+         valid = True;
+      if (valid) {
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         IRTemp res   = newTemp(Ity_I32);
+         UInt   imm32 = thumbExpandImm_from_I0_I1(NULL, insn0, insn1);
+         assign(argL, getIRegT(rN));
+         assign(argR, mkU32(imm32));
+         assign(res,  isRSB
+                      ? binop(Iop_Sub32, mkexpr(argR), mkexpr(argL))
+                      : binop(Iop_Sub32, mkexpr(argL), mkexpr(argR)));
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS == 1) {
+            if (isRSB)
+               setFlags_D1_D2( ARMG_CC_OP_SUB, argR, argL, condT );
+            else
+               setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+         }
+         DIP("%s%s.w r%u, r%u, #%u\n",
+             isRSB ? "rsb" : "sub", bS == 1 ? "s" : "", rD, rN, imm32);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T1) ORR{S}.W Rd, Rn, #constT -------------- */
+   /* -------------- (T1) AND{S}.W Rd, Rn, #constT -------------- */
+   /* -------------- (T1) BIC{S}.W Rd, Rn, #constT -------------- */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && (   INSN0(9,5) == BITS5(0,0,0,1,0)  // ORR
+           || INSN0(9,5) == BITS5(0,0,0,0,0)  // AND
+           || INSN0(9,5) == BITS5(0,0,0,0,1)) // BIC
+       && INSN1(15,15) == 0) {
+      UInt bS = INSN0(4,4);
+      UInt rN = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      if (!isBadRegT(rN) && !isBadRegT(rD)) {
+         Bool   isBIC = False;
+         IROp   op    = Iop_INVALID;
+         HChar* nm    = "???";
+         switch (INSN0(9,5)) {
+            case BITS5(0,0,0,0,0): op = Iop_And32; nm = "and"; break;
+            case BITS5(0,0,0,1,0): op = Iop_Or32;  nm = "orr"; break;
+            case BITS5(0,0,0,0,1): op = Iop_And32; nm = "bic";
+                                   isBIC = True; break;
+            default: vassert(0);
+         }
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         IRTemp res   = newTemp(Ity_I32);
+         Bool   updC  = False;
+         UInt   imm32 = thumbExpandImm_from_I0_I1(&updC, insn0, insn1);
+         assign(argL, getIRegT(rN));
+         assign(argR, mkU32(isBIC ? ~imm32 : imm32));
+         assign(res,  binop(op, mkexpr(argL), mkexpr(argR)));
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS) {
+            IRTemp oldV = newTemp(Ity_I32);
+            IRTemp oldC = newTemp(Ity_I32);
+            assign( oldV, mk_armg_calculate_flag_v() );
+            assign( oldC, updC 
+                          ? mkU32((imm32 >> 31) & 1)
+                          : mk_armg_calculate_flag_c() );
+            setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                               condT );
+         }
+         DIP("%s%s.w r%u, r%u, #%u\n",
+             nm, bS == 1 ? "s" : "", rD, rN, imm32);
+         goto decode_success;
+      }
+   }
+
+   /* ---------- (T3) ADD{S}.W Rd, Rn, Rm, {shift} ---------- */
+   /* ---------- (T3) SUB{S}.W Rd, Rn, Rm, {shift} ---------- */
+   /* ---------- (T3) RSB{S}.W Rd, Rn, Rm, {shift} ---------- */
+   if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
+       && (   INSN0(8,5) == BITS4(1,0,0,0)  // add subopc
+           || INSN0(8,5) == BITS4(1,1,0,1)  // sub subopc
+           || INSN0(8,5) == BITS4(1,1,1,0)) // rsb subopc
+       && INSN1(15,15) == 0) {
+      UInt rN = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
+         UInt bS   = INSN0(4,4);
+         UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
+         UInt how  = INSN1(5,4);
+
+         Bool   swap = False;
+         IROp   op   = Iop_INVALID;
+         HChar* nm   = "???";
+         switch (INSN0(8,5)) {
+            case BITS4(1,0,0,0): op = Iop_Add32; nm = "add"; break;
+            case BITS4(1,1,0,1): op = Iop_Sub32; nm = "sub"; break;
+            case BITS4(1,1,1,0): op = Iop_Sub32; nm = "rsb"; 
+                                 swap = True; break;
+            default: vassert(0);
+         }
+
+         IRTemp argL = newTemp(Ity_I32);
+         assign(argL, getIRegT(rN));
+
+         IRTemp rMt = newTemp(Ity_I32);
+         assign(rMt, getIRegT(rM));
+
+         IRTemp argR = newTemp(Ity_I32);
+         compute_result_and_C_after_shift_by_imm5(
+            dis_buf, &argR, NULL, rMt, how, imm5, rM
+         );
+
+         IRTemp res = newTemp(Ity_I32);
+         assign(res, swap 
+                     ? binop(op, mkexpr(argR), mkexpr(argL))
+                     : binop(op, mkexpr(argL), mkexpr(argR)));
+
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS) {
+            switch (op) {
+               case Iop_Add32:
+                  setFlags_D1_D2( ARMG_CC_OP_ADD, argL, argR, condT );
+                  break;
+               case Iop_Sub32:
+                  if (swap)
+                     setFlags_D1_D2( ARMG_CC_OP_SUB, argR, argL, condT );
+                  else
+                     setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+                  break;
+               default:
+                  vassert(0);
+            }
+         }
+
+         DIP("%s%s.w r%u, r%u, %s\n",
+             nm, bS ? "s" : "", rD, rN, dis_buf);
+         goto decode_success;
+      }
+   }
+
+   /* ---------- (T3) AND{S}.W Rd, Rn, Rm, {shift} ---------- */
+   /* ---------- (T3) ORR{S}.W Rd, Rn, Rm, {shift} ---------- */
+   /* ---------- (T3) EOR{S}.W Rd, Rn, Rm, {shift} ---------- */
+   /* ---------- (T3) BIC{S}.W Rd, Rn, Rm, {shift} ---------- */
+   if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
+       && (   INSN0(8,5) == BITS4(0,0,0,0)  // and subopc
+           || INSN0(8,5) == BITS4(0,0,1,0)  // orr subopc
+           || INSN0(8,5) == BITS4(0,1,0,0)  // eor subopc
+           || INSN0(8,5) == BITS4(0,0,0,1)) // bic subopc
+       && INSN1(15,15) == 0) {
+      UInt rN = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
+         Bool isBIC = False;
+         IROp op    = Iop_INVALID;
+         HChar* nm  = "???";
+         switch (INSN0(8,5)) {
+            case BITS4(0,0,0,0): op = Iop_And32; nm = "and"; break;
+            case BITS4(0,0,1,0): op = Iop_Or32;  nm = "orr"; break;
+            case BITS4(0,1,0,0): op = Iop_Xor32; nm = "eor"; break;
+            case BITS4(0,0,0,1): op = Iop_And32; nm = "bic";
+                                 isBIC = True; break;
+            default: vassert(0);
+         }
+         UInt bS   = INSN0(4,4);
+         UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
+         UInt how  = INSN1(5,4);
+
+         IRTemp rNt = newTemp(Ity_I32);
+         assign(rNt, getIRegT(rN));
+
+         IRTemp rMt = newTemp(Ity_I32);
+         assign(rMt, getIRegT(rM));
+
+         IRTemp argR = newTemp(Ity_I32);
+         IRTemp oldC = bS ? newTemp(Ity_I32) : IRTemp_INVALID;
+
+         compute_result_and_C_after_shift_by_imm5(
+            dis_buf, &argR, bS ? &oldC : NULL, rMt, how, imm5, rM
+         );
+
+         IRTemp res = newTemp(Ity_I32);
+         if (isBIC) {
+            vassert(op == Iop_And32);
+            assign(res, binop(op, mkexpr(rNt),
+                                  unop(Iop_Not32, mkexpr(argR))));
+         } else {
+            assign(res, binop(op, mkexpr(rNt), mkexpr(argR)));
+         }
+
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS) {
+            IRTemp oldV = newTemp(Ity_I32);
+            assign( oldV, mk_armg_calculate_flag_v() );
+            setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                               condT );
+         }
+
+         DIP("%s%s.w r%u, r%u, %s\n",
+             nm, bS ? "s" : "", rD, rN, dis_buf);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T?) LSL{S}.W Rd, Rn, Rm -------------- */
+   /* -------------- (T?) LSR{S}.W Rd, Rn, Rm -------------- */
+   /* -------------- (T?) ASR{S}.W Rd, Rn, Rm -------------- */
+   /* -------------- (T?) ROR{S}.W Rd, Rn, Rm -------------- */
+   if (INSN0(15,7) == BITS9(1,1,1,1,1,0,1,0,0)
+       && INSN1(15,12) == BITS4(1,1,1,1)
+       && INSN1(7,4) == BITS4(0,0,0,0)) {
+      UInt how = INSN0(6,5); // standard encoding
+      UInt rN  = INSN0(3,0);
+      UInt rD  = INSN1(11,8);
+      UInt rM  = INSN1(3,0);
+      UInt bS  = INSN0(4,4);
+      Bool valid = !isBadRegT(rN) && !isBadRegT(rM) && !isBadRegT(rD);
+      if (how == 3) valid = False; //ATC
+      if (valid) {
+         IRTemp rNt    = newTemp(Ity_I32);
+         IRTemp rMt    = newTemp(Ity_I32);
+         IRTemp res    = newTemp(Ity_I32);
+         IRTemp oldC   = bS ? newTemp(Ity_I32) : IRTemp_INVALID;
+         IRTemp oldV   = bS ? newTemp(Ity_I32) : IRTemp_INVALID;
+         HChar* nms[4] = { "lsl", "lsr", "asr", "ror" };
+         HChar* nm     = nms[how];
+         assign(rNt, getIRegT(rN));
+         assign(rMt, getIRegT(rM));
+         compute_result_and_C_after_shift_by_reg(
+            dis_buf, &res, bS ? &oldC : NULL,
+            rNt, how, rMt, rN, rM
+         );
+         if (bS)
+            assign(oldV, mk_armg_calculate_flag_v());
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS) {
+            setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                               condT );
+         }
+         DIP("%s%s.w r%u, r%u, r%u\n",
+             nm, bS ? "s" : "", rD, rN, rM);
+         goto decode_success;
+      }
+   }
+
+   /* ------------ (T?) MOV{S}.W Rd, Rn, {shift} ------------ */
+   /* ------------ (T?) MVN{S}.W Rd, Rn, {shift} ------------ */
+   if ((INSN0(15,0) & 0xFFCF) == 0xEA4F
+       && INSN1(15,15) == 0) {
+      UInt rD = INSN1(11,8);
+      UInt rN = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rN)) {
+         UInt bS    = INSN0(4,4);
+         UInt isMVN = INSN0(5,5);
+         UInt imm5  = (INSN1(14,12) << 2) | INSN1(7,6);
+         UInt how   = INSN1(5,4);
+
+         IRTemp rNt = newTemp(Ity_I32);
+         assign(rNt, getIRegT(rN));
+
+         IRTemp oldRn = newTemp(Ity_I32);
+         IRTemp oldC  = bS ? newTemp(Ity_I32) : IRTemp_INVALID;
+         compute_result_and_C_after_shift_by_imm5(
+            dis_buf, &oldRn, bS ? &oldC : NULL, rNt, how, imm5, rN
+         );
+
+         IRTemp res = newTemp(Ity_I32);
+         assign(res, isMVN ? unop(Iop_Not32, mkexpr(oldRn))
+                           : mkexpr(oldRn));
+
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS) {
+            IRTemp oldV = newTemp(Ity_I32);
+            assign( oldV, mk_armg_calculate_flag_v() );
+            setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV, condT);
+         }
+         DIP("%s%s.w r%u, %s\n",
+             isMVN ? "mvn" : "mov", bS ? "s" : "", rD, dis_buf);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T?) TST.W Rn, Rm, {shift} -------------- */
+   // Ditto TEQ
+   if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
+       && INSN0(8,4) == BITS5(0,0,0,0,1) // TEQ: 01001
+       && INSN1(15,15) == 0
+       && INSN1(11,8) == BITS4(1,1,1,1)) {
+      UInt rN = INSN0(3,0);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rN) && !isBadRegT(rM)) {
+         UInt how  = INSN1(5,4);
+         UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
+
+         IRTemp argL = newTemp(Ity_I32);
+         assign(argL, getIRegT(rN));
+
+         IRTemp rMt = newTemp(Ity_I32);
+         assign(rMt, getIRegT(rM));
+
+         IRTemp argR = newTemp(Ity_I32);
+         IRTemp oldC = newTemp(Ity_I32);
+         compute_result_and_C_after_shift_by_imm5(
+            dis_buf, &argR, &oldC, rMt, how, imm5, rM
+         );
+
+         IRTemp oldV = newTemp(Ity_I32);
+         assign( oldV, mk_armg_calculate_flag_v() );
+
+         IRTemp res = newTemp(Ity_I32);
+         assign(res, binop(Iop_And32, mkexpr(argL), mkexpr(argR)));
+
+         setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                            condT );
+         DIP("tst.w r%u, %s\n", rN, dis_buf);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T?) CMP.W Rn, Rm, {shift} -------------- */
+   // Ditto CMN
+   if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
+       && INSN0(8,4) == BITS5(1,1,0,1,1) // CMN: 10001
+       && INSN1(15,15) == 0
+       && INSN1(11,8) == BITS4(1,1,1,1)) {
+      UInt rN = INSN0(3,0);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rN) && !isBadRegT(rM)) {
+         UInt how  = INSN1(5,4);
+         UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
+
+         IRTemp argL = newTemp(Ity_I32);
+         assign(argL, getIRegT(rN));
+
+         IRTemp rMt = newTemp(Ity_I32);
+         assign(rMt, getIRegT(rM));
+
+         IRTemp argR = newTemp(Ity_I32);
+         compute_result_and_C_after_shift_by_imm5(
+            dis_buf, &argR, NULL, rMt, how, imm5, rM
+         );
+
+         setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+
+         DIP("cmp.w r%u, %s\n", rN, dis_buf);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T2) MOV{S}.W Rd, #constT -------------- */
+   /* -------------- (T2) MVN{S}.W Rd, #constT -------------- */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && (   INSN0(9,5) == BITS5(0,0,0,1,0)  // MOV
+           || INSN0(9,5) == BITS5(0,0,0,1,1)) // MVN
+       && INSN0(3,0) == BITS4(1,1,1,1)
+       && INSN1(15,15) == 0) {
+      UInt rD = INSN1(11,8);
+      if (!isBadRegT(rD)) {
+         Bool   updC  = False;
+         UInt   bS    = INSN0(4,4);
+         Bool   isMVN = INSN0(5,5) == 1;
+         UInt   imm32 = thumbExpandImm_from_I0_I1(&updC, insn0, insn1);
+         IRTemp res   = newTemp(Ity_I32);
+         assign(res, mkU32(isMVN ? ~imm32 : imm32));
+         putIRegT(rD, mkexpr(res), condT);
+         if (bS) {
+            IRTemp oldV = newTemp(Ity_I32);
+            IRTemp oldC = newTemp(Ity_I32);
+            assign( oldV, mk_armg_calculate_flag_v() );
+            assign( oldC, updC 
+                          ? mkU32((imm32 >> 31) & 1)
+                          : mk_armg_calculate_flag_c() );
+            setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
+                               condT );
+         }
+         DIP("%s%s.w r%u, #%u\n",
+             isMVN ? "mvn" : "mov", bS ? "s" : "", rD, imm32);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T3) MOVW Rd, #imm16 -------------- */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && INSN0(9,4) == BITS6(1,0,0,1,0,0)
+       && INSN1(15,15) == 0) {
+      UInt rD = INSN1(11,8);
+      if (!isBadRegT(rD)) {
+         UInt imm16 = (INSN0(3,0) << 12) | (INSN0(10,10) << 11)
+                      | (INSN1(14,12) << 8) | INSN1(7,0);
+         putIRegT(rD, mkU32(imm16), condT);
+         DIP("movw r%u, #%u\n", rD, imm16);
+         goto decode_success;
+      }
+   }
+
+   /* ---------------- MOVT Rd, #imm16 ---------------- */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && INSN0(9,4) == BITS6(1,0,1,1,0,0)
+       && INSN1(15,15) == 0) {
+      UInt rD = INSN1(11,8);
+      if (!isBadRegT(rD)) {
+         UInt imm16 = (INSN0(3,0) << 12) | (INSN0(10,10) << 11)
+                      | (INSN1(14,12) << 8) | INSN1(7,0);
+         IRTemp res = newTemp(Ity_I32);
+         assign(res,
+                binop(Iop_Or32,
+                      binop(Iop_And32, getIRegT(rD), mkU32(0xFFFF)),
+                      mkU32(imm16 << 16)));
+         putIRegT(rD, mkexpr(res), condT);
+         DIP("movt r%u, #%u\n", rD, imm16);
+         goto decode_success;
+      }
+   }
+
+   /* ---------------- LD/ST reg+/-#imm8 ---------------- */
+   /* Loads and stores of the form:
+         op  Rt, [Rn, #-imm8]      or
+         op  Rt, [Rn], #+/-imm8    or
+         op  Rt, [Rn, #+/-imm8]!  
+      where op is one of
+         ldrb ldrh ldr  ldrsb ldrsh
+         strb strh str
+   */
+   if (INSN0(15,9) == BITS7(1,1,1,1,1,0,0) && INSN1(11,11) == 1) {
+      Bool   valid  = True;
+      Bool   syned  = False;
+      Bool   isST   = False;
+      IRType ty     = Ity_I8;
+      HChar* nm     = "???";
+
+      switch (INSN0(8,4)) {
+         case BITS5(0,0,0,0,0):   // strb
+            nm = "strb"; isST = True; break;
+         case BITS5(0,0,0,0,1):   // ldrb
+            nm = "ldrb"; break;
+         case BITS5(1,0,0,0,1):   // ldrsb
+            nm = "ldrsb"; syned = True; break;
+         case BITS5(0,0,0,1,0):   // strh
+            nm = "strh"; ty = Ity_I16; isST = True; break;
+         case BITS5(0,0,0,1,1):   // ldrh
+            nm = "ldrh"; ty = Ity_I16; break;
+         case BITS5(1,0,0,1,1):   // ldrsh
+            nm = "ldrsh"; ty = Ity_I16; syned = True; break;
+         case BITS5(0,0,1,0,0):   // str
+            nm = "str"; ty = Ity_I32; isST = True; break;
+         case BITS5(0,0,1,0,1):
+            nm = "ldr"; ty = Ity_I32; break;  // ldr
+         default:
+            valid = False; break;
+      }
+
+      UInt rN      = INSN0(3,0);
+      UInt rT      = INSN1(15,12);
+      UInt bP      = INSN1(10,10);
+      UInt bU      = INSN1(9,9);
+      UInt bW      = INSN1(8,8);
+      UInt imm8    = INSN1(7,0);
+      Bool loadsPC = False;
+
+      if (valid) {
+         if (bP == 1 && bU == 1 && bW == 0)
+            valid = False;
+         if (bP == 0 && bW == 0)
+            valid = False;
+         if (rN == 15)
+            valid = False;
+         if (bW == 1 && rN == rT)
+            valid = False;
+         if (ty == Ity_I8 || ty == Ity_I16) {
+            if (isBadRegT(rT))
+               valid = False;
+         } else {
+            /* ty == Ity_I32 */
+            if (isST && rT == 15)
+               valid = False;
+            if (!isST && rT == 15)
+               loadsPC = True;
+         }
+      }
+
+      if (valid) {
+         // if it's a branch, it can't happen in the middle of an IT block
+         if (loadsPC)
+            gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+         // go uncond
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+
+         IRTemp preAddr = newTemp(Ity_I32);
+         assign(preAddr, getIRegT(rN));
+
+         IRTemp postAddr = newTemp(Ity_I32);
+         assign(postAddr, binop(bU == 1 ? Iop_Add32 : Iop_Sub32,
+                                mkexpr(preAddr), mkU32(imm8)));
+
+         IRTemp transAddr = bP == 1 ? postAddr : preAddr;
+
+         if (isST) {
+            IRTemp oldRt = newTemp(Ity_I32);
+            assign(oldRt, getIRegT(rT));
+            switch (ty) {
+               case Ity_I8:
+                  storeLE(mkexpr(transAddr),
+                                 unop(Iop_32to8, mkexpr(oldRt)));
+                  break;
+               case Ity_I16:
+                  storeLE(mkexpr(transAddr),
+                          unop(Iop_32to16, mkexpr(oldRt)));
+                  break;
+              case Ity_I32:
+                  storeLE(mkexpr(transAddr), mkexpr(oldRt));
+                  break;
+              default:
+                 vassert(0);
+            }
+         } else {
+            IRTemp newRt = newTemp(Ity_I32);
+            IROp   widen = Iop_INVALID;
+            switch (ty) {
+               case Ity_I8:
+                  widen = syned ? Iop_8Sto32 : Iop_8Uto32; break;
+               case Ity_I16:
+                  widen = syned ? Iop_16Sto32 : Iop_16Uto32; break;
+               case Ity_I32:
+                  break;
+               default:
+                  vassert(0);
+            }
+            if (widen == Iop_INVALID) {
+               assign(newRt, loadLE(ty, mkexpr(transAddr)));
+            } else {
+               assign(newRt, unop(widen, loadLE(ty, mkexpr(transAddr))));
+            }
+            putIRegT(rT, mkexpr(newRt), IRTemp_INVALID);
+
+            if (loadsPC) {
+               /* Presumably this is an interworking branch. */
+               irsb->next = mkexpr(newRt);
+               irsb->jumpkind = Ijk_Boring;  /* or _Ret ? */
+               dres.whatNext  = Dis_StopHere;
+            }
+         }
+
+         if (bW == 1) {
+            putIRegT(rN, mkexpr(postAddr), IRTemp_INVALID);
+         }
+
+         if (bP == 1 && bW == 0) {
+            DIP("%s.w r%u, [r%u, #%c%u]\n",
+                nm, rT, rN, bU ? '+' : '-', imm8);
+         }
+         else if (bP == 1 && bW == 1) {
+            DIP("%s.w r%u, [r%u, #%c%u]!\n",
+                nm, rT, rN, bU ? '+' : '-', imm8);
+         }
+         else {
+            vassert(bP == 0 && bW == 1);
+            DIP("%s.w r%u, [r%u], #%c%u\n",
+                nm, rT, rN, bU ? '+' : '-', imm8);
+         }
+
+         goto decode_success;
+      }
+   }
+
+   /* ------------- LD/ST reg+(reg<<imm2) ------------- */
+   /* Loads and stores of the form:
+         op  Rt, [Rn, Rm, LSL #imm8]
+      where op is one of
+         ldrb ldrh ldr  ldrsb ldrsh
+         strb strh str
+   */
+   if (INSN0(15,9) == BITS7(1,1,1,1,1,0,0)
+       && INSN1(11,6) == BITS6(0,0,0,0,0,0)) {
+      Bool   valid  = True;
+      Bool   syned  = False;
+      Bool   isST   = False;
+      IRType ty     = Ity_I8;
+      HChar* nm     = "???";
+
+      switch (INSN0(8,4)) {
+         case BITS5(0,0,0,0,0):   // strb
+            nm = "strb"; isST = True; break;
+         case BITS5(0,0,0,0,1):   // ldrb
+            nm = "ldrb"; break;
+         case BITS5(1,0,0,0,1):   // ldrsb
+            nm = "ldrsb"; syned = True; break;
+         case BITS5(0,0,0,1,0):   // strh
+            nm = "strh"; ty = Ity_I16; isST = True; break;
+         case BITS5(0,0,0,1,1):   // ldrh
+            nm = "ldrh"; ty = Ity_I16; break;
+         case BITS5(1,0,0,1,1):   // ldrsh
+            nm = "ldrsh"; ty = Ity_I16; syned = True; break;
+         case BITS5(0,0,1,0,0):   // str
+            nm = "str"; ty = Ity_I32; isST = True; break;
+         case BITS5(0,0,1,0,1):
+            nm = "ldr"; ty = Ity_I32; break;  // ldr
+         default:
+            valid = False; break;
+      }
+
+      UInt rN      = INSN0(3,0);
+      UInt rM      = INSN1(3,0);
+      UInt rT      = INSN1(15,12);
+      UInt imm2    = INSN1(5,4);
+      Bool loadsPC = False;
+
+      if (ty == Ity_I8 || ty == Ity_I16) {
+         /* all 8- and 16-bit load and store cases have the
+            same exclusion set. */
+         if (rN == 15 || isBadRegT(rT) || isBadRegT(rM))
+            valid = False;
+      } else {
+         vassert(ty == Ity_I32);
+         if (rN == 15 || isBadRegT(rM))
+            valid = False;
+         if (isST && rT == 15)
+            valid = False;
+         /* If it is a load and rT is 15, that's only allowable if we
+            not in an IT block, or are the last in it.  Need to insert
+            a dynamic check for that. */
+         if (!isST && rT == 15)
+            loadsPC = True;
+      }
+
+      if (valid) {
+         // if it's a branch, it can't happen in the middle of an IT block
+         if (loadsPC)
+            gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+         // go uncond
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+
+         IRTemp transAddr = newTemp(Ity_I32);
+         assign(transAddr,
+                binop( Iop_Add32,
+                       getIRegT(rN),
+                       binop(Iop_Shl32, getIRegT(rM), mkU8(imm2)) ));
+
+         if (isST) {
+            IRTemp oldRt = newTemp(Ity_I32);
+            assign(oldRt, getIRegT(rT));
+            switch (ty) {
+               case Ity_I8:
+                  storeLE(mkexpr(transAddr),
+                                 unop(Iop_32to8, mkexpr(oldRt)));
+                  break;
+               case Ity_I16:
+                  storeLE(mkexpr(transAddr),
+                          unop(Iop_32to16, mkexpr(oldRt)));
+                  break;
+              case Ity_I32:
+                  storeLE(mkexpr(transAddr), mkexpr(oldRt));
+                  break;
+              default:
+                 vassert(0);
+            }
+         } else {
+            IRTemp newRt = newTemp(Ity_I32);
+            IROp   widen = Iop_INVALID;
+            switch (ty) {
+               case Ity_I8:
+                  widen = syned ? Iop_8Sto32 : Iop_8Uto32; break;
+               case Ity_I16:
+                  widen = syned ? Iop_16Sto32 : Iop_16Uto32; break;
+               case Ity_I32:
+                  break;
+               default:
+                  vassert(0);
+            }
+            if (widen == Iop_INVALID) {
+               assign(newRt, loadLE(ty, mkexpr(transAddr)));
+            } else {
+               assign(newRt, unop(widen, loadLE(ty, mkexpr(transAddr))));
+            }
+
+            /* If we're loading the PC, putIRegT will assert.  So go
+               direct via llPutIReg.  In all other cases use putIRegT
+               as it is safer (although could simply use llPutIReg for
+               _all_ cases here.) */
+            if (loadsPC) {
+               vassert(rT == 15);
+               llPutIReg(rT, mkexpr(newRt));
+            } else {
+               putIRegT(rT, mkexpr(newRt), IRTemp_INVALID);
+            }
+
+            if (loadsPC) {
+               /* Presumably this is an interworking branch. */
+               irsb->next = mkexpr(newRt);
+               irsb->jumpkind = Ijk_Boring;  /* or _Ret ? */
+               dres.whatNext  = Dis_StopHere;
+            }
+         }
+
+         DIP("%s.w r%u, [r%u, r%u, LSL #%u]\n",
+             nm, rT, rN, rM, imm2);
+
+         goto decode_success;
+      }
+   }
+
+   /* --------------- LD/ST reg+imm12 --------------- */
+   /* Loads and stores of the form:
+         op  Rt, [Rn, +#imm12]
+      where op is one of
+         ldrb ldrh ldr  ldrsb ldrsh
+         strb strh str
+   */
+   if (INSN0(15,9) == BITS7(1,1,1,1,1,0,0)) {
+      Bool   valid  = True;
+      Bool   syned  = False;
+      Bool   isST   = False;
+      IRType ty     = Ity_I8;
+      HChar* nm     = "???";
+
+      switch (INSN0(8,4)) {
+         case BITS5(0,1,0,0,0):   // strb
+            nm = "strb"; isST = True; break;
+         case BITS5(0,1,0,0,1):   // ldrb
+            nm = "ldrb"; break;
+         case BITS5(1,1,0,0,1):   // ldrsb
+            nm = "ldrsb"; syned = True; break;
+         case BITS5(0,1,0,1,0):   // strh
+            nm = "strh"; ty = Ity_I16; isST = True; break;
+         case BITS5(0,1,0,1,1):   // ldrh
+            nm = "ldrh"; ty = Ity_I16; break;
+         case BITS5(1,1,0,1,1):   // ldrsh
+            nm = "ldrsh"; ty = Ity_I16; syned = True; break;
+         case BITS5(0,1,1,0,0):   // str
+            nm = "str"; ty = Ity_I32; isST = True; break;
+         case BITS5(0,1,1,0,1):
+            nm = "ldr"; ty = Ity_I32; break;  // ldr
+         default:
+            valid = False; break;
+      }
+
+      UInt rN      = INSN0(3,0);
+      UInt rT      = INSN1(15,12);
+      UInt imm12   = INSN1(11,0);
+      Bool loadsPC = False;
+
+      if (ty == Ity_I8 || ty == Ity_I16) {
+         /* all 8- and 16-bit load and store cases have the
+            same exclusion set. */
+         if (rN == 15 || isBadRegT(rT))
+            valid = False;
+      } else {
+         vassert(ty == Ity_I32);
+         if (isST) {
+            if (rN == 15 || rT == 15)
+               valid = False;
+         } else {
+            /* For a 32-bit load, rT == 15 is only allowable if we not
+               in an IT block, or are the last in it.  Need to insert
+               a dynamic check for that.  Also, in this particular
+               case, rN == 15 is allowable.  In this case however, the
+               value obtained for rN is (apparently)
+               "word-align(address of current insn + 4)". */
+            if (rT == 15)
+               loadsPC = True;
+         }
+      }
+
+      if (valid) {
+         // if it's a branch, it can't happen in the middle of an IT block
+         if (loadsPC)
+            gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+         // go uncond
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+
+         IRTemp rNt = newTemp(Ity_I32);
+         if (rN == 15) {
+            vassert(ty == Ity_I32 && !isST);
+            assign(rNt, binop(Iop_And32, getIRegT(rN), mkU32(~3)));
+         } else {
+            assign(rNt, getIRegT(rN));
+         }
+
+         IRTemp transAddr = newTemp(Ity_I32);
+         assign(transAddr,
+                binop( Iop_Add32, mkexpr(rNt), mkU32(imm12) ));
+
+         if (isST) {
+            IRTemp oldRt = newTemp(Ity_I32);
+            assign(oldRt, getIRegT(rT));
+            switch (ty) {
+               case Ity_I8:
+                  storeLE(mkexpr(transAddr),
+                                 unop(Iop_32to8, mkexpr(oldRt)));
+                  break;
+               case Ity_I16:
+                  storeLE(mkexpr(transAddr),
+                          unop(Iop_32to16, mkexpr(oldRt)));
+                  break;
+              case Ity_I32:
+                  storeLE(mkexpr(transAddr), mkexpr(oldRt));
+                  break;
+              default:
+                 vassert(0);
+            }
+         } else {
+            IRTemp newRt = newTemp(Ity_I32);
+            IROp   widen = Iop_INVALID;
+            switch (ty) {
+               case Ity_I8:
+                  widen = syned ? Iop_8Sto32 : Iop_8Uto32; break;
+               case Ity_I16:
+                  widen = syned ? Iop_16Sto32 : Iop_16Uto32; break;
+               case Ity_I32:
+                  break;
+               default:
+                  vassert(0);
+            }
+            if (widen == Iop_INVALID) {
+               assign(newRt, loadLE(ty, mkexpr(transAddr)));
+            } else {
+               assign(newRt, unop(widen, loadLE(ty, mkexpr(transAddr))));
+            }
+            putIRegT(rT, mkexpr(newRt), IRTemp_INVALID);
+
+            if (loadsPC) {
+               /* Presumably this is an interworking branch. */
+               irsb->next = mkexpr(newRt);
+               irsb->jumpkind = Ijk_Boring;  /* or _Ret ? */
+               dres.whatNext  = Dis_StopHere;
+            }
+         }
+
+         DIP("%s.w r%u, [r%u, +#%u]\n", nm, rT, rN, imm12);
+
+         goto decode_success;
+      }
+   }
+
+   /* -------------- LDRD/STRD reg+/-#imm8 -------------- */
+   /* Doubleword loads and stores of the form:
+         ldrd/strd  Rt, Rt2, [Rn, #-imm8]      or
+         ldrd/strd  Rt, Rt2, [Rn], #+/-imm8    or
+         ldrd/strd  Rt, Rt2, [Rn, #+/-imm8]!  
+   */
+   if (INSN0(15,9) == BITS7(1,1,1,0,1,0,0) && INSN0(6,6) == 1) {
+      UInt bP   = INSN0(8,8);
+      UInt bU   = INSN0(7,7);
+      UInt bW   = INSN0(5,5);
+      UInt bL   = INSN0(4,4);  // 1: load  0: store
+      UInt rN   = INSN0(3,0);
+      UInt rT   = INSN1(15,12);
+      UInt rT2  = INSN1(11,8);
+      UInt imm8 = INSN1(7,0);
+
+      Bool valid = True;
+      if (bP == 0 && bW == 0)                 valid = False;
+      if (bW == 1 && (rN == rT || rN == rT2)) valid = False;
+      if (isBadRegT(rT) || isBadRegT(rT2))    valid = False;
+      if (rN == 15)                           valid = False;
+      if (bL == 1 && rT == rT2)               valid = False;
+
+      if (valid) {
+         // go uncond
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+
+         IRTemp preAddr = newTemp(Ity_I32);
+         assign(preAddr, getIRegT(rN));
+
+         IRTemp postAddr = newTemp(Ity_I32);
+         assign(postAddr, binop(bU == 1 ? Iop_Add32 : Iop_Sub32,
+                                mkexpr(preAddr), mkU32(imm8 << 2)));
+
+         IRTemp transAddr = bP == 1 ? postAddr : preAddr;
+
+         if (bL == 0) {
+            IRTemp oldRt  = newTemp(Ity_I32);
+            IRTemp oldRt2 = newTemp(Ity_I32);
+            assign(oldRt,  getIRegT(rT));
+            assign(oldRt2, getIRegT(rT2));
+            storeLE(mkexpr(transAddr),
+                    mkexpr(oldRt));
+            storeLE(binop(Iop_Add32, mkexpr(transAddr), mkU32(4)),
+                    mkexpr(oldRt2));
+         } else {
+            IRTemp newRt  = newTemp(Ity_I32);
+            IRTemp newRt2 = newTemp(Ity_I32);
+            assign(newRt,
+                   loadLE(Ity_I32,
+                          mkexpr(transAddr)));
+            assign(newRt2,
+                   loadLE(Ity_I32,
+                          binop(Iop_Add32, mkexpr(transAddr), mkU32(4))));
+            putIRegT(rT,  mkexpr(newRt), IRTemp_INVALID);
+            putIRegT(rT2, mkexpr(newRt2), IRTemp_INVALID);
+         }
+
+         if (bW == 1) {
+            putIRegT(rN, mkexpr(postAddr), IRTemp_INVALID);
+         }
+
+         HChar* nm = bL ? "ldrd" : "strd";
+
+         if (bP == 1 && bW == 0) {
+            DIP("%s.w r%u, r%u, [r%u, #%c%u]\n",
+                nm, rT, rT2, rN, bU ? '+' : '-', imm8 << 2);
+         }
+         else if (bP == 1 && bW == 1) {
+            DIP("%s.w r%u, r%u, [r%u, #%c%u]!\n",
+                nm, rT, rT2, rN, bU ? '+' : '-', imm8 << 2);
+         }
+         else {
+            vassert(bP == 0 && bW == 1);
+            DIP("%s.w r%u, r%u, [r%u], #%c%u\n",
+                nm, rT, rT2, rN, bU ? '+' : '-', imm8 << 2);
+         }
+
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T3) Bcond.W label -------------- */
+   /* This variant carries its own condition, so can't be part of an
+      IT block ... */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && INSN1(15,14) == BITS2(1,0)
+       && INSN1(12,12) == 0) {
+      UInt cond = INSN0(9,6);
+      if (cond != ARMCondAL && cond != ARMCondNV) {
+         Int simm21
+            =   (INSN0(10,10) << (1 + 1 + 6 + 11 + 1))
+              | (INSN1(11,11) << (1 + 6 + 11 + 1))
+              | (INSN1(13,13) << (6 + 11 + 1))
+              | (INSN0(5,0)   << (11 + 1))
+              | (INSN1(10,0)  << 1);
+         simm21 = (simm21 << 11) >> 11;
+
+         vassert(0 == (guest_R15_curr_instr_notENC & 1));
+         UInt dst = simm21 + guest_R15_curr_instr_notENC + 4;
+
+         /* Not allowed in an IT block; SIGILL if so. */
+         gen_SIGILL_T_if_in_ITBlock(old_itstate, new_itstate);
+
+         IRTemp kondT = newTemp(Ity_I32);
+         assign( kondT, mk_armg_calculate_condition(cond) );
+         stmt( IRStmt_Exit( unop(Iop_32to1, mkexpr(kondT)),
+                            Ijk_Boring,
+                            IRConst_U32(dst | 1/*CPSR.T*/) ));
+         irsb->next = mkU32( (guest_R15_curr_instr_notENC + 4) 
+                             | 1 /*CPSR.T*/ );
+         irsb->jumpkind = Ijk_Boring;
+         dres.whatNext  = Dis_StopHere;
+         DIP("b%s.w 0x%x\n", nCC(cond), dst);
+         goto decode_success;
+      }
+   }
+
+   /* ---------------- (T4) B.W label ---------------- */
+   /* ... whereas this variant doesn't carry its own condition, so it
+      has to be either unconditional or the conditional by virtue of
+      being the last in an IT block.  The upside is that there's 4
+      more bits available for the jump offset, so it has a 16-times
+      greater branch range than the T3 variant. */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && INSN1(15,14) == BITS2(1,0)
+       && INSN1(12,12) == 1) {
+      if (1) {
+         UInt bS  = INSN0(10,10);
+         UInt bJ1 = INSN1(13,13);
+         UInt bJ2 = INSN1(11,11);
+         UInt bI1 = 1 ^ (bJ1 ^ bS);
+         UInt bI2 = 1 ^ (bJ2 ^ bS);
+         Int simm25
+            =   (bS          << (1 + 1 + 10 + 11 + 1))
+              | (bI1         << (1 + 10 + 11 + 1))
+              | (bI2         << (10 + 11 + 1))
+              | (INSN0(9,0)  << (11 + 1))
+              | (INSN1(10,0) << 1);
+         simm25 = (simm25 << 7) >> 7;
+
+         vassert(0 == (guest_R15_curr_instr_notENC & 1));
+         UInt dst = simm25 + guest_R15_curr_instr_notENC + 4;
+
+         /* If in an IT block, must be the last insn. */
+         gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+
+         // go uncond
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+
+         // branch to dst
+         irsb->next = mkU32( dst | 1 /*CPSR.T*/ );
+         irsb->jumpkind = Ijk_Boring;
+         dres.whatNext  = Dis_StopHere;
+         DIP("b.w 0x%x\n", dst);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------ TBB, TBH ------------------ */
+   if (INSN0(15,4) == 0xE8D && INSN1(15,5) == 0x780) {
+      UInt rN = INSN0(3,0);
+      UInt rM = INSN1(3,0);
+      UInt bH = INSN1(4,4);
+      if (bH/*ATC*/ || (rN != 13 && !isBadRegT(rM))) {
+         /* Must be last or not-in IT block */
+         gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+         /* Go uncond */
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+
+         IRExpr* ea
+             = binop(Iop_Add32,
+                     getIRegT(rN),
+                     bH ? binop(Iop_Shl32, getIRegT(rM), mkU8(1))
+                        : getIRegT(rM));
+
+         IRTemp delta = newTemp(Ity_I32);
+         if (bH) {
+            assign(delta, unop(Iop_16Uto32, loadLE(Ity_I16, ea)));
+         } else {
+            assign(delta, unop(Iop_8Uto32, loadLE(Ity_I8, ea)));
+         }
+
+         irsb->next
+            = binop(Iop_Or32,
+                    binop(Iop_Add32,
+                          getIRegT(15),
+                          binop(Iop_Shl32, mkexpr(delta), mkU8(1))
+                    ),
+                    mkU32(1)
+              );
+         irsb->jumpkind = Ijk_Boring;
+         dres.whatNext = Dis_StopHere;
+         DIP("tb%c [r%u, r%u%s]\n",
+             bH ? 'h' : 'b', rN, rM, bH ? ", LSL #1" : "");
+         goto decode_success;
+      }
+   }
+
+   /* ------------------ UBFX ------------------ */
+   /* There's also ARM versions of same, but it doesn't seem worth the
+      hassle to common up the handling (it's only a couple of C
+      statements). */
+   if (INSN0(15,4) == 0xF3C && INSN1(15,15) == 0 && INSN1(5,5) == 0) {
+      UInt rN  = INSN0(3,0);
+      UInt rD  = INSN1(11,8);
+      UInt lsb = (INSN1(14,12) << 2) | INSN1(7,6);
+      UInt wm1 = INSN1(4,0);
+      UInt msb =  lsb + wm1;
+      if (!isBadRegT(rD) && !isBadRegT(rN) && msb <= 31) {
+         Bool isU = True;
+         IRTemp src  = newTemp(Ity_I32);
+         IRTemp tmp  = newTemp(Ity_I32);
+         IRTemp res  = newTemp(Ity_I32);
+         UInt   mask = ((1 << wm1) - 1) + (1 << wm1);
+         vassert(msb >= 0 && msb <= 31);
+         vassert(mask != 0); // guaranteed by msb being in 0 .. 31 inclusive
+
+         assign(src, getIRegT(rN));
+         assign(tmp, binop(Iop_And32,
+                           binop(Iop_Shr32, mkexpr(src), mkU8(lsb)),
+                           mkU32(mask)));
+         assign(res, binop(isU ? Iop_Shr32 : Iop_Sar32,
+                           binop(Iop_Shl32, mkexpr(tmp), mkU8(31-wm1)),
+                           mkU8(31-wm1)));
+
+         putIRegT(rD, mkexpr(res), condT);
+
+         DIP("%s r%u, r%u, #%u, #%u\n",
+             isU ? "ubfx" : "sbfx", rD, rN, lsb, wm1 + 1);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------ UXTB ------------------ */
+   if (INSN0(15,0) == 0xFA5F
+       && INSN1(15,12) == BITS4(1,1,1,1)
+       && INSN1(7,6) == BITS2(1,0)) {
+      UInt rD = INSN1(11,8);
+      UInt rM = INSN1(3,0);
+      UInt rot = INSN1(5,4);
+      if (!isBadRegT(rD) && !isBadRegT(rM)) {
+         IRTemp srcT = newTemp(Ity_I32);
+         IRTemp rotT = newTemp(Ity_I32);
+         IRTemp dstT = newTemp(Ity_I32);
+         assign(srcT, getIRegT(rM));
+         assign(rotT, genROR32(srcT, 8 * rot));
+         assign(dstT, unop(Iop_8Uto32, unop(Iop_32to8, mkexpr(rotT))));
+         putIRegT(rD, mkexpr(dstT), condT);
+         DIP("uxtb r%u, r%u, ror #%u\n", rD, rM, 8 * rot);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- MUL.W Rd, Rn, Rm -------------- */
+   if (INSN0(15,4) == 0xFB0
+       && (INSN1(15,0) & 0xF0F0) == 0xF000) {
+      UInt rN = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
+         IRTemp res = newTemp(Ity_I32);
+         assign(res, binop(Iop_Mul32, getIRegT(rN), getIRegT(rM)));
+         putIRegT(rD, mkexpr(res), condT);
+         DIP("mul.w r%u, r%u, r%u\n", rD, rN, rM);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------ {U,S}MULL ------------------ */
+   if ((INSN0(15,4) == 0xFB8 || INSN0(15,4) == 0xFBA)
+       && INSN1(7,4) == BITS4(0,0,0,0)) {
+      UInt isU  = INSN0(5,5);
+      UInt rN   = INSN0(3,0);
+      UInt rDlo = INSN1(15,12);
+      UInt rDhi = INSN1(11,8);
+      UInt rM   = INSN1(3,0);
+      if (!isBadRegT(rDhi) && !isBadRegT(rDlo)
+          && !isBadRegT(rN) && !isBadRegT(rM) && rDlo != rDhi) {
+         IRTemp res   = newTemp(Ity_I64);
+         assign(res, binop(isU ? Iop_MullU32 : Iop_MullS32,
+                           getIRegT(rN), getIRegT(rM)));
+         putIRegT( rDhi, unop(Iop_64HIto32, mkexpr(res)), condT );
+         putIRegT( rDlo, unop(Iop_64to32, mkexpr(res)), condT );
+         DIP("%cmull r%u, r%u, r%u, r%u\n",
+             isU ? 'u' : 's', rDlo, rDhi, rN, rM);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------ ML{A,S} ------------------ */
+   if (INSN0(15,4) == 0xFB0
+       && INSN1(7,4) == BITS4(0,0,0,0)) { // MLS: 0001
+      UInt rN = INSN0(3,0);
+      UInt rA = INSN1(15,12);
+      UInt rD = INSN1(11,8);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rN)
+          && !isBadRegT(rM) && !isBadRegT(rA)) {
+         IRTemp res = newTemp(Ity_I32);
+         assign(res,
+                binop(Iop_Add32, getIRegT(rA),
+                      binop(Iop_Mul32, getIRegT(rN), getIRegT(rM))));
+         putIRegT(rD, mkexpr(res), condT);
+         DIP("%s r%u, r%u, r%u, r%u\n", "mla", rD, rN, rM, rA);
+         goto decode_success;
+      }
+   }
+
+   /* ----------------------------------------------------------- */
+   /* -- Undecodable                                           -- */
+   /* ----------------------------------------------------------- */
+
+   goto decode_failure;
+   /*NOTREACHED*/
+
+  decode_failure:
+   /* All decode failures end up here. */
+   vex_printf("disInstr(thumb): unhandled instruction: "
+              "0x%x\n", (UInt)insn0);
+
+   /* Back up ITSTATE to the initial value for this instruction.
+      If we don't do that, any subsequent restart of the instruction
+      will restart with the wrong value. */
+   put_ITSTATE(old_itstate);
+   /* Tell the dispatcher that this insn cannot be decoded, and so has
+      not been executed, and (is currently) the next to be executed.
+      R15 should be up-to-date since it made so at the start of each
+      insn, but nevertheless be paranoid and update it again right
+      now. */
+   vassert(0 == (guest_R15_curr_instr_notENC & 1));
+   llPutIReg( 15, mkU32(guest_R15_curr_instr_notENC | 1) );
+   irsb->next     = mkU32(guest_R15_curr_instr_notENC | 1 /* CPSR.T */);
+   irsb->jumpkind = Ijk_NoDecode;
+   dres.whatNext  = Dis_StopHere;
+   dres.len       = 0;
+   return dres;
+
+  decode_success:
+   /* All decode successes end up here. */
+   DIP("\n");
+
+   vassert(dres.len == 2 || dres.len == 4);
+
+#if 0
+   // XXX is this necessary on Thumb?
+   /* Now then.  Do we have an implicit jump to r15 to deal with? */
+   if (r15written) {
+      /* If we get jump to deal with, we assume that there's been no
+         other competing branch stuff previously generated for this
+         insn.  That's reasonable, in the sense that the ARM insn set
+         appears to declare as "Unpredictable" any instruction which
+         generates more than one possible new value for r15.  Hence
+         just assert.  The decoders themselves should check against
+         all such instructions which are thusly Unpredictable, and
+         decline to decode them.  Hence we should never get here if we
+         have competing new values for r15, and hence it is safe to
+         assert here. */
+      vassert(dres.whatNext == Dis_Continue);
+      vassert(irsb->next == NULL);
+      vassert(irsb->jumpkind = Ijk_Boring);
+      /* If r15 is unconditionally written, terminate the block by
+         jumping to it.  If it's conditionally written, still
+         terminate the block (a shame, but we can't do side exits to
+         arbitrary destinations), but first jump to the next
+         instruction if the condition doesn't hold. */
+      /* We can't use getIRegT(15) to get the destination, since that
+         will produce r15+4, which isn't what we want.  Must use
+         llGetIReg(15) instead. */
+      if (r15guard == IRTemp_INVALID) {
+         /* unconditional */
+      } else {
+         /* conditional */
+         stmt( IRStmt_Exit(
+                  unop(Iop_32to1,
+                       binop(Iop_Xor32,
+                             mkexpr(r15guard), mkU32(1))),
+                  r15kind,
+                  IRConst_U32(guest_R15_curr_instr_notENC + 4)
+         ));
+      }
+      irsb->next     = llGetIReg(15);
+      irsb->jumpkind = r15kind;
+      dres.whatNext  = Dis_StopHere;
+   }
+#endif
+
+   return dres;
+
+#  undef INSN0
+#  undef INSN1
 }
 
 #undef DIP
@@ -4846,25 +8393,39 @@ DisResult disInstr_ARM ( IRSB*        irsb_IN,
                          Bool         resteerCisOk,
                          void*        callback_opaque,
                          UChar*       guest_code_IN,
-                         Long         delta,
-                         Addr64       guest_IP,
+                         Long         delta_ENCODED,
+                         Addr64       guest_IP_ENCODED,
                          VexArch      guest_arch,
                          VexArchInfo* archinfo,
                          VexAbiInfo*  abiinfo,
                          Bool         host_bigendian_IN )
 {
    DisResult dres;
+   Bool isThumb = (Bool)(guest_IP_ENCODED & 1);
 
    /* Set globals (see top of this file) */
    vassert(guest_arch == VexArchARM);
-   irsb                 = irsb_IN;
-   host_is_bigendian    = host_bigendian_IN;
-   guest_R15_curr_instr = (Addr32)guest_IP;
 
-   dres = disInstr_ARM_WRK ( put_IP, resteerOkFn,
-                             resteerCisOk, callback_opaque,
-                             &guest_code_IN[delta],
-                             archinfo, abiinfo );
+   irsb              = irsb_IN;
+   host_is_bigendian = host_bigendian_IN;
+
+   if (isThumb) {
+      guest_R15_curr_instr_notENC = (Addr32)guest_IP_ENCODED - 1;
+   } else {
+      guest_R15_curr_instr_notENC = (Addr32)guest_IP_ENCODED;
+   }
+
+   if (isThumb) {
+      dres = disInstr_THUMB_WRK ( put_IP, resteerOkFn,
+                                  resteerCisOk, callback_opaque,
+                                  &guest_code_IN[delta_ENCODED - 1],
+                                  archinfo, abiinfo );
+   } else {
+      dres = disInstr_ARM_WRK ( put_IP, resteerOkFn,
+                                resteerCisOk, callback_opaque,
+                                &guest_code_IN[delta_ENCODED],
+                                archinfo, abiinfo );
+   }
 
    return dres;
 }
