@@ -6566,9 +6566,12 @@ DisResult disInstr_THUMB_WRK (
    case BITS5(1,0,1,0,0): {
       /* ---------------- ADD rD, PC, #imm8 * 4 ---------------- */
       /* a.k.a. ADR */
+      /* rD = align4(PC) + imm8 * 4 */
       UInt rD   = INSN0(10,8);
       UInt imm8 = INSN0(7,0);
-      putIRegT(rD, binop(Iop_Add32, getIRegT(15), mkU32(imm8 * 4)),
+      putIRegT(rD, binop(Iop_Add32, 
+                         binop(Iop_And32, getIRegT(15), mkU32(~3UL)),
+                         mkU32(imm8 * 4)),
                    condT);
       DIP("add r%u, pc, #%u\n", rD, imm8 * 4);
       goto decode_success;
@@ -7201,7 +7204,8 @@ DisResult disInstr_THUMB_WRK (
    if (INSN0(15,11) == BITS5(1,1,1,1,0)
        && (   INSN0(9,5) == BITS5(0,0,0,1,0)  // ORR
            || INSN0(9,5) == BITS5(0,0,0,0,0)  // AND
-           || INSN0(9,5) == BITS5(0,0,0,0,1)) // BIC
+           || INSN0(9,5) == BITS5(0,0,0,0,1)  // BIC
+           || INSN0(9,5) == BITS5(0,0,1,0,0)) // EOR
        && INSN1(15,15) == 0) {
       UInt bS = INSN0(4,4);
       UInt rN = INSN0(3,0);
@@ -7211,10 +7215,11 @@ DisResult disInstr_THUMB_WRK (
          IROp   op    = Iop_INVALID;
          HChar* nm    = "???";
          switch (INSN0(9,5)) {
-            case BITS5(0,0,0,0,0): op = Iop_And32; nm = "and"; break;
             case BITS5(0,0,0,1,0): op = Iop_Or32;  nm = "orr"; break;
+            case BITS5(0,0,0,0,0): op = Iop_And32; nm = "and"; break;
             case BITS5(0,0,0,0,1): op = Iop_And32; nm = "bic";
                                    isBIC = True; break;
+            case BITS5(0,0,1,0,0): op = Iop_Xor32;  nm = "eor"; break;
             default: vassert(0);
          }
          IRTemp argL  = newTemp(Ity_I32);
@@ -7300,6 +7305,59 @@ DisResult disInstr_THUMB_WRK (
                default:
                   vassert(0);
             }
+         }
+
+         DIP("%s%s.w r%u, r%u, %s\n",
+             nm, bS ? "s" : "", rD, rN, dis_buf);
+         goto decode_success;
+      }
+   }
+
+   /* ---------- (T3) ADC{S}.W Rd, Rn, Rm, {shift} ---------- */
+   // also SBC
+   if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
+       && (   INSN0(8,5) == BITS4(1,0,1,0)  // adc subopc
+           /* || INSN0(8,5) == BITS4(?,?,?,?*/ )  // sbc subopc
+       && INSN1(15,15) == 0) {
+      /* ADC:  Rd = Rn + shifter_operand + oldC */
+      /* SBC:  Rd = Rn - shifter_operand - (oldC ^ 1) */
+      UInt rN = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
+         UInt bS   = INSN0(4,4);
+         UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
+         UInt how  = INSN1(5,4);
+
+         IRTemp argL = newTemp(Ity_I32);
+         assign(argL, getIRegT(rN));
+
+         IRTemp rMt = newTemp(Ity_I32);
+         assign(rMt, getIRegT(rM));
+
+         IRTemp argR = newTemp(Ity_I32);
+         IRTemp oldC = newTemp(Ity_I32);
+         compute_result_and_C_after_shift_by_imm5(
+            dis_buf, &argR, &oldC, rMt, how, imm5, rM
+         );
+
+         HChar* nm  = "???";
+         IRTemp res = newTemp(Ity_I32);
+         switch (INSN0(8,5)) {
+            case BITS4(1,0,1,0): // ADC
+               nm = "adc";
+               assign(res,
+                      binop(Iop_Add32,
+                            binop(Iop_Add32, mkexpr(argL), mkexpr(argR)),
+                            mkexpr(oldC) ));
+               putIRegT(rD, mkexpr(res), condT);
+               if (bS)
+                  setFlags_D1_D2_ND( ARMG_CC_OP_ADC,
+                                     argL, argR, oldC, condT );
+
+               break;
+            default:
+               vassert(0);
          }
 
          DIP("%s%s.w r%u, r%u, %s\n",
@@ -8248,21 +8306,35 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* ------------------ UXTB ------------------ */
-   if (INSN0(15,0) == 0xFA5F
+   if ((INSN0(15,0) == 0xFA5F || INSN0(15,0) == 0xFA1F)
        && INSN1(15,12) == BITS4(1,1,1,1)
        && INSN1(7,6) == BITS2(1,0)) {
       UInt rD = INSN1(11,8);
       UInt rM = INSN1(3,0);
       UInt rot = INSN1(5,4);
       if (!isBadRegT(rD) && !isBadRegT(rM)) {
+         HChar* nm = "???";
          IRTemp srcT = newTemp(Ity_I32);
          IRTemp rotT = newTemp(Ity_I32);
          IRTemp dstT = newTemp(Ity_I32);
          assign(srcT, getIRegT(rM));
          assign(rotT, genROR32(srcT, 8 * rot));
-         assign(dstT, unop(Iop_8Uto32, unop(Iop_32to8, mkexpr(rotT))));
+         switch (INSN0(15,0)) {
+            case 0xFA5F: // UXTB
+               nm = "uxtb";
+               assign(dstT, unop(Iop_8Uto32,
+                                 unop(Iop_32to8, mkexpr(rotT))));
+               break;
+            case 0xFA1F: // UXTH
+               nm = "uxth";
+               assign(dstT, unop(Iop_16Uto32,
+                                 unop(Iop_32to16, mkexpr(rotT))));
+               break;
+            default:
+               vassert(0);
+         }
          putIRegT(rD, mkexpr(dstT), condT);
-         DIP("uxtb r%u, r%u, ror #%u\n", rD, rM, 8 * rot);
+         DIP("%s r%u, r%u, ror #%u\n", nm, rD, rM, 8 * rot);
          goto decode_success;
       }
    }
