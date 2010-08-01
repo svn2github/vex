@@ -32,7 +32,18 @@
    that all cases where putIRegT writes r15, we generate a jump.
 
    All uses of newTemp assign to an IRTemp and not a UInt
- */
+
+
+   XXXX thumb to do: improve the ITSTATE-zeroing optimisation by
+   taking into account the number of insns guarded by an IT.
+
+   remove the nasty hack, in the spechelper, of looking for Or32(...,
+   0xE0) in as the first arg to armg_calculate_condition, and instead
+   use Slice44 as specified in comments in the spechelper.
+
+   add specialisations for armg_calculate_flag_c and _v, as they
+   are moderately often needed in Thumb code.
+*/
 
 /* Limitations, etc
 
@@ -5613,7 +5624,26 @@ DisResult disInstr_THUMB_WRK (
       that would not otherwise have happened.  The saving grace is
       that such skipping is pretty rare -- it only happens,
       statistically, 18/4096ths of the time, so is judged unlikely to
-      be a performance problems. */
+      be a performance problems.
+
+      FIXME: do better.  Take into account the number of insns covered
+      by any IT insns we find, to rule out cases where an IT clearly
+      cannot cover this instruction.  This would improve behaviour for
+      branch targets immediately following an IT-guarded group that is
+      not of full length.  Eg, (and completely ignoring issues of 16-
+      vs 32-bit insn length):
+
+             ite cond
+             insn1
+             insn2
+      label: insn3
+             insn4
+
+      The 'it' only conditionalises insn1 and insn2.  However, the
+      current analysis is conservative and considers insn3 and insn4
+      also possibly guarded.  Hence if 'label:' is the start of a hot
+      loop we will get a big performance hit.
+   */
    {
       /* Summary result of this analysis: False == safe but
          suboptimal. */

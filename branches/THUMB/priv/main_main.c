@@ -183,7 +183,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
    HInstrArray* (*iselSB)       ( IRSB*, VexArch, VexArchInfo*, 
                                                   VexAbiInfo* );
    Int          (*emit)         ( UChar*, Int, HInstr*, Bool, void* );
-   IRExpr*      (*specHelper)   ( HChar*, IRExpr** );
+   IRExpr*      (*specHelper)   ( HChar*, IRExpr**, IRStmt**, Int );
    Bool         (*preciseMemExnsFn) ( Int, Int );
 
    DisOneInstrFn disInstrFn;
@@ -501,7 +501,8 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
 
    /* Clean it up, hopefully a lot. */
    irsb = do_iropt_BB ( irsb, specHelper, preciseMemExnsFn, 
-                              vta->guest_bytes_addr );
+                              vta->guest_bytes_addr,
+                              vta->arch_guest );
    sanityCheckIRSB( irsb, "after initial iropt", 
                     True/*must be flat*/, guest_word_type );
 

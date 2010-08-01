@@ -2196,8 +2196,10 @@ static Bool isOneU1 ( IRExpr* e )
 /*---------------------------------------------------------------*/
 
 static 
-IRSB* spec_helpers_BB ( IRSB* bb,
-                        IRExpr* (*specHelper) ( HChar*, IRExpr**) )   
+IRSB* spec_helpers_BB(
+         IRSB* bb,
+         IRExpr* (*specHelper) (HChar*, IRExpr**, IRStmt**, Int)
+      )
 {
    Int     i;
    IRStmt* st;
@@ -2212,7 +2214,8 @@ IRSB* spec_helpers_BB ( IRSB* bb,
          continue;
 
       ex = (*specHelper)( st->Ist.WrTmp.data->Iex.CCall.cee->name,
-                          st->Ist.WrTmp.data->Iex.CCall.args );
+                          st->Ist.WrTmp.data->Iex.CCall.args,
+                          &bb->stmts[0], i );
       if (!ex)
         /* the front end can't think of a suitable replacement */
         continue;
@@ -4358,7 +4361,7 @@ static Bool iropt_verbose = False; /* True; */
 static 
 IRSB* cheap_transformations ( 
          IRSB* bb,
-         IRExpr* (*specHelper) (HChar*, IRExpr**),
+         IRExpr* (*specHelper) (HChar*, IRExpr**, IRStmt**, Int),
          Bool (*preciseMemExnsFn)(Int,Int)
       )
 {
@@ -4509,10 +4512,13 @@ static void considerExpensives ( /*OUT*/Bool* hasGetIorPutI,
 */
 
 
-IRSB* do_iropt_BB ( IRSB* bb0,
-                    IRExpr* (*specHelper) (HChar*, IRExpr**),
-                    Bool (*preciseMemExnsFn)(Int,Int),
-                    Addr64 guest_addr )
+IRSB* do_iropt_BB(
+         IRSB* bb0,
+         IRExpr* (*specHelper) (HChar*, IRExpr**, IRStmt**, Int),
+         Bool (*preciseMemExnsFn)(Int,Int),
+         Addr64 guest_addr,
+         VexArch guest_arch
+      )
 {
    static Int n_total     = 0;
    static Int n_expensive = 0;
@@ -4542,6 +4548,15 @@ IRSB* do_iropt_BB ( IRSB* bb0,
       cleanup pass. */
 
    bb = cheap_transformations( bb, specHelper, preciseMemExnsFn );
+
+   if (guest_arch == VexArchARM) {
+      /* Translating Thumb2 code produces a lot of chaff.  We have to
+         work extra hard to get rid of it. */
+      bb = cprop_BB(bb);
+      bb = spec_helpers_BB ( bb, specHelper );
+      redundant_put_removal_BB ( bb, preciseMemExnsFn );
+      do_deadcode_BB( bb );
+   }
 
    if (vex_control.iropt_level > 1) {
 

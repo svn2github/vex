@@ -55,8 +55,10 @@ DisResult disInstr_ARM ( IRSB*        irbb,
 
 /* Used by the optimiser to specialise calls to helpers. */
 extern
-IRExpr* guest_arm_spechelper ( HChar* function_name,
-                               IRExpr** args );
+IRExpr* guest_arm_spechelper ( HChar*   function_name,
+                               IRExpr** args,
+                               IRStmt** precedingStmts,
+                               Int      n_precedingStmts );
 
 /* Describes to the optimser which part of the guest state require
    precise memory exceptions.  This is logically part of the guest
