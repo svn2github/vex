@@ -11707,6 +11707,19 @@ DisResult disInstr_THUMB_WRK (
       goto decode_success;
    }
 
+   case 0x2C8: {
+      /* ---------------- SXTH Rd, Rm ---------------- */
+      /* Rd = 16Sto32(Rm) */
+      UInt rM = INSN0(5,3);
+      UInt rD = INSN0(2,0);
+      putIRegT(rD, binop(Iop_Sar32,
+                         binop(Iop_Shl32, getIRegT(rM), mkU8(16)),
+                         mkU8(16)),
+                   condT);
+      DIP("sxth r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
    case 0x102:   // LSLS
    case 0x103:   // LSRS
    case 0x104:   // ASRS
@@ -12980,6 +12993,7 @@ DisResult disInstr_THUMB_WRK (
    /* -------------- (T1) ORR{S}.W Rd, Rn, #constT -------------- */
    /* -------------- (T1) AND{S}.W Rd, Rn, #constT -------------- */
    /* -------------- (T1) BIC{S}.W Rd, Rn, #constT -------------- */
+   /* -------------- (T1) EOR{S}.W Rd, Rn, #constT -------------- */
    if (INSN0(15,11) == BITS5(1,1,1,1,0)
        && (   INSN0(9,5) == BITS5(0,0,0,1,0)  // ORR
            || INSN0(9,5) == BITS5(0,0,0,0,0)  // AND
@@ -13093,10 +13107,10 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* ---------- (T3) ADC{S}.W Rd, Rn, Rm, {shift} ---------- */
-   // also SBC
+   /* ---------- (T2) SBC{S}.W Rd, Rn, Rm, {shift} ---------- */
    if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
-       && (   INSN0(8,5) == BITS4(1,0,1,0)  // adc subopc
-           /* || INSN0(8,5) == BITS4(?,?,?,?*/ )  // sbc subopc
+       && (   INSN0(8,5) == BITS4(1,0,1,0)   // adc subopc
+           || INSN0(8,5) == BITS4(1,0,1,1))  // sbc subopc
        && INSN1(15,15) == 0) {
       /* ADC:  Rd = Rn + shifter_operand + oldC */
       /* SBC:  Rd = Rn - shifter_operand - (oldC ^ 1) */
@@ -13133,7 +13147,16 @@ DisResult disInstr_THUMB_WRK (
                if (bS)
                   setFlags_D1_D2_ND( ARMG_CC_OP_ADC,
                                      argL, argR, oldC, condT );
-
+               break;
+            case BITS4(1,0,1,1): // SBC
+               nm = "sbc";
+               assign(res,
+                      binop(Iop_Sub32,
+                            binop(Iop_Sub32, mkexpr(argL), mkexpr(argR)),
+                            binop(Iop_Xor32, mkexpr(oldC), mkU32(1)) ));
+               if (bS)
+                  setFlags_D1_D2_ND( ARMG_CC_OP_SBB,
+                                     argL, argR, oldC, condT );
                break;
             default:
                vassert(0);
@@ -14050,17 +14073,20 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* ------------------ UBFX ------------------ */
+   /* ------------------ SBFX ------------------ */
    /* There's also ARM versions of same, but it doesn't seem worth the
       hassle to common up the handling (it's only a couple of C
       statements). */
-   if (INSN0(15,4) == 0xF3C && INSN1(15,15) == 0 && INSN1(5,5) == 0) {
+   if ((INSN0(15,4) == 0xF3C // UBFX
+        || INSN0(15,4) == 0xF34) // SBFX
+       && INSN1(15,15) == 0 && INSN1(5,5) == 0) {
       UInt rN  = INSN0(3,0);
       UInt rD  = INSN1(11,8);
       UInt lsb = (INSN1(14,12) << 2) | INSN1(7,6);
       UInt wm1 = INSN1(4,0);
       UInt msb =  lsb + wm1;
       if (!isBadRegT(rD) && !isBadRegT(rN) && msb <= 31) {
-         Bool isU = True;
+         Bool   isU  = INSN0(15,4) == 0xF3C;
          IRTemp src  = newTemp(Ity_I32);
          IRTemp tmp  = newTemp(Ity_I32);
          IRTemp res  = newTemp(Ity_I32);
@@ -14085,6 +14111,7 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* ------------------ UXTB ------------------ */
+   /* ------------------ UXTH ------------------ */
    if ((INSN0(15,0) == 0xFA5F || INSN0(15,0) == 0xFA1F)
        && INSN1(15,12) == BITS4(1,1,1,1)
        && INSN1(7,6) == BITS2(1,0)) {
@@ -14186,6 +14213,49 @@ DisResult disInstr_THUMB_WRK (
                             mkU32(imm32)),
                       condT);
          DIP("add r%u, pc, #%u\n", rD, imm32);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------- (T1) BFI ------------------- */
+   /* ------------------- (T1) BFC ------------------- */
+   if (INSN0(15,4) == 0xF36 && INSN1(15,15) == 0 && INSN1(5,5) == 0) {
+      UInt rD  = INSN1(11,8);
+      UInt rN  = INSN0(3,0);
+      UInt msb = INSN1(4,0);
+      UInt lsb = (INSN1(14,12) << 2) | INSN1(7,6);
+      if (isBadRegT(rD) || rN == 13 || msb < lsb) {
+         /* undecodable; fall through */
+      } else {
+         IRTemp src    = newTemp(Ity_I32);
+         IRTemp olddst = newTemp(Ity_I32);
+         IRTemp newdst = newTemp(Ity_I32);
+         UInt   mask = 1 << (msb - lsb);
+         mask = (mask - 1) + mask;
+         vassert(mask != 0); // guaranteed by "msb < lsb" check above
+         mask <<= lsb;
+
+         assign(src, rN == 15 ? mkU32(0) : getIRegT(rN));
+         assign(olddst, getIRegT(rD));
+         assign(newdst,
+                binop(Iop_Or32,
+                   binop(Iop_And32,
+                         binop(Iop_Shl32, mkexpr(src), mkU8(lsb)), 
+                         mkU32(mask)),
+                   binop(Iop_And32,
+                         mkexpr(olddst),
+                         mkU32(~mask)))
+               );
+
+         putIRegT(rD, mkexpr(newdst), condT);
+
+         if (rN == 15) {
+            DIP("bfc r%u, #%u, #%u\n",
+                rD, lsb, msb-lsb+1);
+         } else {
+            DIP("bfi r%u, r%u, #%u, #%u\n",
+                rD, rN, lsb, msb-lsb+1);
+         }
          goto decode_success;
       }
    }
