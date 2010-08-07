@@ -102,6 +102,12 @@ UInt armg_calculate_condition ( UInt cond_n_op /* ARMCondcode << 4 | cc_op */,
                                 UInt cc_dep1,
                                 UInt cc_dep2, UInt cc_dep3 );
 
+/* Calculate the QC flag from the thunk components, in the lowest bit
+   of the word (bit 0). */
+extern 
+UInt armg_calculate_flag_qc ( UInt resL1, UInt resL2,
+                              UInt resR1, UInt resR2 );
+
 
 /*---------------------------------------------------------*/
 /*--- Condition code stuff                              ---*/

@@ -9,6 +9,8 @@
 
    Copyright (C) 2004-2010 OpenWorks LLP
       info@open-works.net
+   Copyright (C) 2010-2010 Dmitry Zhurikhin
+      zhur@ispras.ru
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License as
@@ -238,6 +240,11 @@ static UInt setbit32 ( UInt x, Int ix, UInt b )
 /*--- Helper bits and pieces for creating IR fragments.    ---*/
 /*------------------------------------------------------------*/
 
+static IRExpr* mkU64 ( ULong i )
+{
+   return IRExpr_Const(IRConst_U64(i));
+}
+
 static IRExpr* mkU32 ( UInt i )
 {
    return IRExpr_Const(IRConst_U32(i));
@@ -316,6 +323,11 @@ static IRExpr* genROR32( IRTemp src, Int rot )
             binop(Iop_Shr32, mkexpr(src), mkU8(rot)));
 }
 
+static IRExpr* mkU128 ( ULong i )
+{
+   return binop(Iop_64HLtoV128, mkU64(i), mkU64(i));
+}
+
 
 /*------------------------------------------------------------*/
 /*--- Helpers for accessing guest registers.               ---*/
@@ -360,6 +372,22 @@ static IRExpr* genROR32( IRTemp src, Int rot )
 #define OFFB_D13      offsetof(VexGuestARMState,guest_D13)
 #define OFFB_D14      offsetof(VexGuestARMState,guest_D14)
 #define OFFB_D15      offsetof(VexGuestARMState,guest_D15)
+#define OFFB_D16      offsetof(VexGuestARMState,guest_D16)
+#define OFFB_D17      offsetof(VexGuestARMState,guest_D17)
+#define OFFB_D18      offsetof(VexGuestARMState,guest_D18)
+#define OFFB_D19      offsetof(VexGuestARMState,guest_D19)
+#define OFFB_D20      offsetof(VexGuestARMState,guest_D20)
+#define OFFB_D21      offsetof(VexGuestARMState,guest_D21)
+#define OFFB_D22      offsetof(VexGuestARMState,guest_D22)
+#define OFFB_D23      offsetof(VexGuestARMState,guest_D23)
+#define OFFB_D24      offsetof(VexGuestARMState,guest_D24)
+#define OFFB_D25      offsetof(VexGuestARMState,guest_D25)
+#define OFFB_D26      offsetof(VexGuestARMState,guest_D26)
+#define OFFB_D27      offsetof(VexGuestARMState,guest_D27)
+#define OFFB_D28      offsetof(VexGuestARMState,guest_D28)
+#define OFFB_D29      offsetof(VexGuestARMState,guest_D29)
+#define OFFB_D30      offsetof(VexGuestARMState,guest_D30)
+#define OFFB_D31      offsetof(VexGuestARMState,guest_D31)
 
 #define OFFB_FPSCR    offsetof(VexGuestARMState,guest_FPSCR)
 #define OFFB_TPIDRURO offsetof(VexGuestARMState,guest_TPIDRURO)
@@ -544,6 +572,22 @@ static Int doubleGuestRegOffset ( UInt dregNo )
       case 13: return OFFB_D13;
       case 14: return OFFB_D14;
       case 15: return OFFB_D15;
+      case 16: return OFFB_D16;
+      case 17: return OFFB_D17;
+      case 18: return OFFB_D18;
+      case 19: return OFFB_D19;
+      case 20: return OFFB_D20;
+      case 21: return OFFB_D21;
+      case 22: return OFFB_D22;
+      case 23: return OFFB_D23;
+      case 24: return OFFB_D24;
+      case 25: return OFFB_D25;
+      case 26: return OFFB_D26;
+      case 27: return OFFB_D27;
+      case 28: return OFFB_D28;
+      case 29: return OFFB_D29;
+      case 30: return OFFB_D30;
+      case 31: return OFFB_D31;
       default: vassert(0);
    }
 }
@@ -551,7 +595,7 @@ static Int doubleGuestRegOffset ( UInt dregNo )
 /* Plain ("low level") read from a VFP Dreg. */
 static IRExpr* llGetDReg ( UInt dregNo )
 {
-   vassert(dregNo < 16);
+   vassert(dregNo < 32);
    return IRExpr_Get( doubleGuestRegOffset(dregNo), Ity_F64 );
 }
 
@@ -563,7 +607,7 @@ static IRExpr* getDReg ( UInt dregNo ) {
 /* Plain ("low level") write to a VFP Dreg. */
 static void llPutDReg ( UInt dregNo, IRExpr* e )
 {
-   vassert(dregNo < 16);
+   vassert(dregNo < 32);
    vassert(typeOfIRExpr(irsb->tyenv, e) == Ity_F64);
    stmt( IRStmt_Put(doubleGuestRegOffset(dregNo), e) );
 }
@@ -584,6 +628,113 @@ static void putDReg ( UInt    dregNo,
       llPutDReg( dregNo,
                  IRExpr_Mux0X( unop(Iop_32to8, mkexpr(guardT)),
                                llGetDReg(dregNo),
+                               e ));
+   }
+}
+
+/* Plain ("low level") read from a Neon Integer Dreg. */
+static IRExpr* llGetDRegI ( UInt dregNo )
+{
+   vassert(dregNo < 32);
+   return IRExpr_Get( doubleGuestRegOffset(dregNo), Ity_I64 );
+}
+
+/* Architected read from a Neon Integer Dreg. */
+static IRExpr* getDRegI ( UInt dregNo ) {
+   return llGetDRegI( dregNo );
+}
+
+/* Plain ("low level") write to a Neon Integer Dreg. */
+static void llPutDRegI ( UInt dregNo, IRExpr* e )
+{
+   vassert(dregNo < 32);
+   vassert(typeOfIRExpr(irsb->tyenv, e) == Ity_I64);
+   stmt( IRStmt_Put(doubleGuestRegOffset(dregNo), e) );
+}
+
+/* Architected write to a Neon Integer Dreg.  Handles conditional writes to
+   the register: if guardT == IRTemp_INVALID then the write is
+   unconditional. */
+static void putDRegI ( UInt    dregNo,
+                       IRExpr* e,
+                       IRTemp  guardT /* :: Ity_I32, 0 or 1 */)
+{
+   /* So, generate either an unconditional or a conditional write to
+      the reg. */
+   if (guardT == IRTemp_INVALID) {
+      /* unconditional write */
+      llPutDRegI( dregNo, e );
+   } else {
+      llPutDRegI( dregNo,
+                  IRExpr_Mux0X( unop(Iop_32to8, mkexpr(guardT)),
+                                llGetDRegI(dregNo),
+                                e ));
+   }
+}
+
+/* ---------------- Quad registers ---------------- */
+
+static Int quadGuestRegOffset ( UInt dregNo )
+{
+   /* Do we care about endianness here?  Probably do if we ever get
+      into the situation of dealing with the 64 bit Neon registers. */
+   switch (dregNo) {
+      case 0:  return OFFB_D0;
+      case 1:  return OFFB_D2;
+      case 2:  return OFFB_D4;
+      case 3:  return OFFB_D6;
+      case 4:  return OFFB_D8;
+      case 5:  return OFFB_D10;
+      case 6:  return OFFB_D12;
+      case 7:  return OFFB_D14;
+      case 8:  return OFFB_D16;
+      case 9:  return OFFB_D18;
+      case 10: return OFFB_D20;
+      case 11: return OFFB_D22;
+      case 12: return OFFB_D24;
+      case 13: return OFFB_D26;
+      case 14: return OFFB_D28;
+      case 15: return OFFB_D30;
+      default: vassert(0);
+   }
+}
+
+/* Plain ("low level") read from a Neon Qreg. */
+static IRExpr* llGetQReg ( UInt dregNo )
+{
+   vassert(dregNo < 16);
+   return IRExpr_Get( quadGuestRegOffset(dregNo), Ity_V128 );
+}
+
+/* Architected read from a Neon Qreg. */
+static IRExpr* getQReg ( UInt dregNo ) {
+   return llGetQReg( dregNo );
+}
+
+/* Plain ("low level") write to a Neon Qreg. */
+static void llPutQReg ( UInt dregNo, IRExpr* e )
+{
+   vassert(dregNo < 16);
+   vassert(typeOfIRExpr(irsb->tyenv, e) == Ity_V128);
+   stmt( IRStmt_Put(quadGuestRegOffset(dregNo), e) );
+}
+
+/* Architected write to a Neon Qreg.  Handles conditional writes to the
+   register: if guardT == IRTemp_INVALID then the write is
+   unconditional. */
+static void putQReg ( UInt    dregNo,
+                      IRExpr* e,
+                      IRTemp  guardT /* :: Ity_I32, 0 or 1 */)
+{
+   /* So, generate either an unconditional or a conditional write to
+      the reg. */
+   if (guardT == IRTemp_INVALID) {
+      /* unconditional write */
+      llPutQReg( dregNo, e );
+   } else {
+      llPutQReg( dregNo,
+                 IRExpr_Mux0X( unop(Iop_32to8, mkexpr(guardT)),
+                               llGetQReg(dregNo),
                                e ));
    }
 }
@@ -889,6 +1040,94 @@ static IRExpr* mk_armg_calculate_flags_nzcv ( void )
    return call;
 }
 
+static IRExpr* mk_armg_calculate_flag_qc ( IRExpr* resL, IRExpr* resR, Bool Q )
+{
+   IRExpr** args1;
+   IRExpr** args2;
+   IRExpr *call1, *call2, *res;
+
+   if (Q) {
+      args1 = mkIRExprVec_4 ( binop(Iop_GetElem32x4, resL, mkU8(0)),
+                              binop(Iop_GetElem32x4, resL, mkU8(1)),
+                              binop(Iop_GetElem32x4, resR, mkU8(0)),
+                              binop(Iop_GetElem32x4, resR, mkU8(1)) );
+      args2 = mkIRExprVec_4 ( binop(Iop_GetElem32x4, resL, mkU8(2)),
+                              binop(Iop_GetElem32x4, resL, mkU8(3)),
+                              binop(Iop_GetElem32x4, resR, mkU8(2)),
+                              binop(Iop_GetElem32x4, resR, mkU8(3)) );
+   } else {
+      args1 = mkIRExprVec_4 ( binop(Iop_GetElem32x2, resL, mkU8(0)),
+                              binop(Iop_GetElem32x2, resL, mkU8(1)),
+                              binop(Iop_GetElem32x2, resR, mkU8(0)),
+                              binop(Iop_GetElem32x2, resR, mkU8(1)) );
+   }
+
+#if 1
+   call1 = mkIRExprCCall(
+             Ity_I32,
+             0/*regparm*/, 
+             "armg_calculate_flag_qc", &armg_calculate_flag_qc,
+             args1
+          );
+   if (Q) {
+      call2 = mkIRExprCCall(
+                Ity_I32,
+                0/*regparm*/, 
+                "armg_calculate_flag_qc", &armg_calculate_flag_qc,
+                args2
+             );
+   }
+   if (Q) {
+      res = binop(Iop_Or32, call1, call2);
+   } else {
+      res = call1;
+   }
+#else
+   if (Q) {
+      res = unop(Iop_1Uto32,
+                 binop(Iop_CmpNE32,
+                       binop(Iop_Or32,
+                             binop(Iop_Or32,
+                                   binop(Iop_Xor32,
+                                         args1[0],
+                                         args1[2]),
+                                   binop(Iop_Xor32,
+                                         args1[1],
+                                         args1[3])),
+                             binop(Iop_Or32,
+                                   binop(Iop_Xor32,
+                                         args2[0],
+                                         args2[2]),
+                                   binop(Iop_Xor32,
+                                         args2[1],
+                                         args2[3]))),
+                       mkU32(0)));
+   } else {
+      res = unop(Iop_1Uto32,
+                 binop(Iop_CmpNE32,
+                       binop(Iop_Or32,
+                             binop(Iop_Xor32,
+                                   args1[0],
+                                   args1[2]),
+                             binop(Iop_Xor32,
+                                   args1[1],
+                                   args1[3])),
+                       mkU32(0)));
+   }
+#endif
+   return res;
+}
+
+static void setFlag_QC ( IRExpr* resL, IRExpr* resR, Bool Q )
+{
+   putMiscReg32 (OFFB_FPSCR,
+                 binop(Iop_Or32,
+                       IRExpr_Get(OFFB_FPSCR, Ity_I32),
+                       binop(Iop_Shl32,
+                             mk_armg_calculate_flag_qc(resL, resR, Q),
+                             mkU8(27))),
+                 IRTemp_INVALID);
+}
 
 /* Build IR to conditionally set the flags thunk.  As with putIReg, if
    guard is IRTemp_INVALID then it's unconditional, else it holds a
@@ -2055,6 +2294,5353 @@ static Bool compute_ITSTATE ( /*OUT*/UInt*  itstate,
    return False;
 }
 
+/*------------------------------------------------------------*/
+/*--- Advanced SIMD (NEON) isntructions disassemble        ---*/
+/*------------------------------------------------------------*/
+
+static inline
+UInt get_neon_d_regno(UInt theInstr)
+{
+   UInt x = ((theInstr >> 18) & 0x10) | ((theInstr >> 12) & 0xF);
+   if (theInstr & 0x40) {
+      if (x & 1) {
+         x = x + 0x100;
+      } else {
+         x = x >> 1;
+      }
+   }
+   return x;
+}
+
+static inline
+UInt get_neon_n_regno(UInt theInstr)
+{
+   UInt x = ((theInstr >> 3) & 0x10) | ((theInstr >> 16) & 0xF);
+   if (theInstr & 0x40) {
+      if (x & 1) {
+         x = x + 0x100;
+      } else {
+         x = x >> 1;
+      }
+   }
+   return x;
+}
+
+static inline
+UInt get_neon_m_regno(UInt theInstr)
+{
+   UInt x = ((theInstr >> 1) & 0x10) | (theInstr & 0xF);
+   if (theInstr & 0x40) {
+      if (x & 1) {
+         x = x + 0x100;
+      } else {
+         x = x >> 1;
+      }
+   }
+   return x;
+}
+
+static
+Bool dis_neon_vext(UInt theInstr)
+{
+   UInt dreg = get_neon_d_regno(theInstr);
+   UInt mreg = get_neon_m_regno(theInstr);
+   UInt nreg = get_neon_n_regno(theInstr);
+   UInt imm4 = (theInstr >> 8) & 0xf;
+   UInt Q = (theInstr >> 6) & 1;
+   char reg_t = Q ? 'q' : 'd';
+
+   if (Q) {
+      putQReg(dreg, triop(Iop_ExtractV128, getQReg(nreg),
+               getQReg(mreg), mkU8(imm4)), IRTemp_INVALID);
+   } else {
+      putDRegI(dreg, triop(Iop_Extract64, getDRegI(nreg),
+               getDRegI(mreg), mkU8(imm4)), IRTemp_INVALID);
+   }
+   DIP("vext.8 %c%d, %c%d, %c%d, #%d\n", reg_t, dreg, reg_t, nreg,
+                                         reg_t, mreg, imm4);
+   return True;
+}
+
+/* VTBL, VTBX */
+static
+Bool dis_neon_vtb(UInt theInstr)
+{
+   UInt op = (theInstr >> 6) & 1;
+   UInt dreg = get_neon_d_regno(theInstr & ~(1 << 6));
+   UInt nreg = get_neon_n_regno(theInstr & ~(1 << 6));
+   UInt mreg = get_neon_m_regno(theInstr & ~(1 << 6));
+   UInt len = (theInstr >> 8) & 3;
+   int i;
+   IROp cmp;
+   ULong imm;
+   IRTemp arg_l;
+   IRTemp old_mask, new_mask, cur_mask;
+   IRTemp old_res, new_res;
+   IRTemp old_arg, new_arg;
+
+   if (dreg >= 0x100 || mreg >= 0x100 || nreg >= 0x100)
+      return False;
+   if (nreg + len > 31)
+      return False;
+
+   cmp = Iop_CmpGT8Ux8;
+
+   old_mask = newTemp(Ity_I64);
+   old_res = newTemp(Ity_I64);
+   old_arg = newTemp(Ity_I64);
+   assign(old_mask, mkU64(0));
+   assign(old_res, mkU64(0));
+   assign(old_arg, getDRegI(mreg));
+   imm = 8;
+   imm = (imm <<  8) | imm;
+   imm = (imm << 16) | imm;
+   imm = (imm << 32) | imm;
+
+   for (i = 0; i <= len; i++) {
+      arg_l = newTemp(Ity_I64);
+      new_mask = newTemp(Ity_I64);
+      cur_mask = newTemp(Ity_I64);
+      new_res = newTemp(Ity_I64);
+      new_arg = newTemp(Ity_I64);
+      assign(arg_l, getDRegI(nreg+i));
+      assign(new_arg, binop(Iop_Sub8x8, mkexpr(old_arg), mkU64(imm)));
+      assign(cur_mask, binop(cmp, mkU64(imm), mkexpr(old_arg)));
+      assign(new_mask, binop(Iop_Or64, mkexpr(old_mask), mkexpr(cur_mask)));
+      assign(new_res, binop(Iop_Or64,
+                            mkexpr(old_res),
+                            binop(Iop_And64,
+                                  binop(Iop_Perm8x8,
+                                        mkexpr(arg_l),
+                                        binop(Iop_And64,
+                                              mkexpr(old_arg),
+                                              mkexpr(cur_mask))),
+                                  mkexpr(cur_mask))));
+
+      old_arg = new_arg;
+      old_mask = new_mask;
+      old_res = new_res;
+   }
+   if (op) {
+      new_res = newTemp(Ity_I64);
+      assign(new_res, binop(Iop_Or64,
+                            binop(Iop_And64,
+                                  getDRegI(dreg),
+                                  unop(Iop_Not64, mkexpr(old_mask))),
+                            mkexpr(old_res)));
+      old_res = new_res;
+   }
+
+   putDRegI(dreg, mkexpr(old_res), IRTemp_INVALID);
+   DIP("vtb%c.8 d%u, {", op ? 'x' : 'l', dreg);
+   if (len > 0) {
+      DIP("d%u-d%u", nreg, nreg + len);
+   } else {
+      DIP("d%u", nreg);
+   }
+   DIP("}, d%u\n", mreg);
+   return True;
+}
+
+/* VDUP (scalar)  */
+static
+Bool dis_neon_vdup(UInt theInstr)
+{
+   UInt Q = (theInstr >> 6) & 1;
+   UInt dreg = ((theInstr >> 18) & 0x10) | ((theInstr >> 12) & 0xF);
+   UInt mreg = ((theInstr >> 1) & 0x10) | (theInstr & 0xF);
+   UInt imm4 = (theInstr >> 16) & 0xF;
+   UInt index;
+   UInt size;
+   IRTemp arg_m;
+   IRTemp res;
+   IROp op, op2;
+
+   if ((imm4 == 0) || (imm4 == 8))
+      return False;
+   if ((Q == 1) && ((dreg & 1) == 1))
+      return False;
+   if (Q)
+      dreg >>= 1;
+   arg_m = newTemp(Ity_I64);
+   assign(arg_m, getDRegI(mreg));
+   if (Q)
+      res = newTemp(Ity_V128);
+   else
+      res = newTemp(Ity_I64);
+   if ((imm4 & 1) == 1) {
+      op = Q ? Iop_Dup8x16 : Iop_Dup8x8;
+      op2 = Iop_GetElem8x8;
+      index = imm4 >> 1;
+      size = 8;
+   } else if ((imm4 & 3) == 2) {
+      op = Q ? Iop_Dup16x8 : Iop_Dup16x4;
+      op2 = Iop_GetElem16x4;
+      index = imm4 >> 2;
+      size = 16;
+   } else if ((imm4 & 7) == 4) {
+      op = Q ? Iop_Dup32x4 : Iop_Dup32x2;
+      op2 = Iop_GetElem32x2;
+      index = imm4 >> 3;
+      size = 32;
+   }
+   assign(res, unop(op, binop(op2, mkexpr(arg_m), mkU8(index))));
+   if (Q) {
+      putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+   } else {
+      putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+   }
+   DIP("vdup.%d %c%d, d%d[%d]\n", size, Q ? 'q' : 'd', dreg, mreg, index);
+   return True;
+}
+
+/* A7.4.1 Three registers of the same length */
+static
+Bool dis_neon_data_3same(UInt theInstr)
+{
+   UInt Q = (theInstr >> 6) & 1;
+   UInt dreg = get_neon_d_regno(theInstr);
+   UInt nreg = get_neon_n_regno(theInstr);
+   UInt mreg = get_neon_m_regno(theInstr);
+   UInt A = (theInstr >> 8) & 0xF;
+   UInt B = (theInstr >> 4) & 1;
+   UInt C = (theInstr >> 20) & 0x3;
+   UInt U = (theInstr >> 24) & 1;
+   UInt size = C;
+
+   IRTemp arg_n;
+   IRTemp arg_m;
+   IRTemp res;
+
+   if (Q) {
+      arg_n = newTemp(Ity_V128);
+      arg_m = newTemp(Ity_V128);
+      res = newTemp(Ity_V128);
+      assign(arg_n, getQReg(nreg));
+      assign(arg_m, getQReg(mreg));
+   } else {
+      arg_n = newTemp(Ity_I64);
+      arg_m = newTemp(Ity_I64);
+      res = newTemp(Ity_I64);
+      assign(arg_n, getDRegI(nreg));
+      assign(arg_m, getDRegI(mreg));
+   }
+
+   switch(A) {
+      case 0:
+         if (B == 0) {
+            /* VHADD */
+            ULong imm = 0;
+            IRExpr *imm_val;
+            IROp addOp;
+            IROp andOp;
+            IROp shOp;
+            char regType = Q ? 'q' : 'd';
+
+            if (size == 3)
+               return False;
+            switch(size) {
+               case 0: imm = 0x101010101010101LL; break;
+               case 1: imm = 0x1000100010001LL; break;
+               case 2: imm = 0x100000001LL; break;
+               default: vassert(0);
+            }
+            if (Q) {
+               imm_val = binop(Iop_64HLtoV128, mkU64(imm), mkU64(imm));
+               andOp = Iop_AndV128;
+            } else {
+               imm_val = mkU64(imm);
+               andOp = Iop_And64;
+            }
+            if (U) {
+               switch(size) {
+                  case 0:
+                     addOp = Q ? Iop_Add8x16 : Iop_Add8x8;
+                     shOp = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     break;
+                  case 1:
+                     addOp = Q ? Iop_Add16x8 : Iop_Add16x4;
+                     shOp = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     break;
+                  case 2:
+                     addOp = Q ? Iop_Add32x4 : Iop_Add32x2;
+                     shOp = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch(size) {
+                  case 0:
+                     addOp = Q ? Iop_Add8x16 : Iop_Add8x8;
+                     shOp = Q ? Iop_SarN8x16 : Iop_SarN8x8;
+                     break;
+                  case 1:
+                     addOp = Q ? Iop_Add16x8 : Iop_Add16x4;
+                     shOp = Q ? Iop_SarN16x8 : Iop_SarN16x4;
+                     break;
+                  case 2:
+                     addOp = Q ? Iop_Add32x4 : Iop_Add32x2;
+                     shOp = Q ? Iop_SarN32x4 : Iop_SarN32x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            assign(res,
+                   binop(addOp,
+                         binop(addOp,
+                               binop(shOp, mkexpr(arg_m), mkU8(1)),
+                               binop(shOp, mkexpr(arg_n), mkU8(1))),
+                         binop(shOp,
+                               binop(addOp,
+                                     binop(andOp, mkexpr(arg_m), imm_val),
+                                     binop(andOp, mkexpr(arg_n), imm_val)),
+                               mkU8(1))));
+            DIP("vhadd.%c%d %c%d, %c%d, %c%d\n",
+                U ? 'u' : 's', 8 << size, regType,
+                dreg, regType, nreg, regType, mreg);
+         } else {
+            /* VQADD */
+            IROp op, op2;
+            IRTemp tmp;
+            char reg_t = Q ? 'q' : 'd';
+            if (Q) {
+               switch (size) {
+                  case 0:
+                     op = U ? Iop_QAdd8Ux16 : Iop_QAdd8Sx16;
+                     op2 = Iop_Add8x16;
+                     break;
+                  case 1:
+                     op = U ? Iop_QAdd16Ux8 : Iop_QAdd16Sx8;
+                     op2 = Iop_Add16x8;
+                     break;
+                  case 2:
+                     op = U ? Iop_QAdd32Ux4 : Iop_QAdd32Sx4;
+                     op2 = Iop_Add32x4;
+                     break;
+                  case 3:
+                     op = U ? Iop_QAdd64Ux2 : Iop_QAdd64Sx2;
+                     op2 = Iop_Add64x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op = U ? Iop_QAdd8Ux8 : Iop_QAdd8Sx8;
+                     op2 = Iop_Add8x8;
+                     break;
+                  case 1:
+                     op = U ? Iop_QAdd16Ux4 : Iop_QAdd16Sx4;
+                     op2 = Iop_Add16x4;
+                     break;
+                  case 2:
+                     op = U ? Iop_QAdd32Ux2 : Iop_QAdd32Sx2;
+                     op2 = Iop_Add32x2;
+                     break;
+                  case 3:
+                     op = U ? Iop_QAdd64Ux1 : Iop_QAdd64Sx1;
+                     op2 = Iop_Add64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q) {
+               tmp = newTemp(Ity_V128);
+            } else {
+               tmp = newTemp(Ity_I64);
+            }
+            assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+            assign(tmp, binop(op2, mkexpr(arg_n), mkexpr(arg_m)));
+            setFlag_QC(mkexpr(res), mkexpr(tmp), Q);
+#endif
+            DIP("vqadd.%c%d %c%d, %c%d, %c%d\n",
+                U ? 'u' : 's',
+                8 << size, reg_t, dreg, reg_t, nreg, reg_t, mreg);
+         }
+         break;
+      case 1:
+         if (B == 0) {
+            /* VRHADD */
+            /* VRHADD C, A, B ::=
+                 C = (A >> 1) + (B >> 1) + (((A & 1) + (B & 1) + 1) >> 1) */
+            IROp shift_op, add_op;
+            IRTemp cc;
+            ULong one = 1;
+            char reg_t = Q ? 'q' : 'd';
+            switch (size) {
+               case 0: one = (one <<  8) | one; /* fall through */
+               case 1: one = (one << 16) | one; /* fall through */
+               case 2: one = (one << 32) | one; break;
+               case 3: return False;
+               default: vassert(0);
+            }
+            if (Q) {
+               switch (size) {
+                  case 0:
+                     shift_op = U ? Iop_ShrN8x16 : Iop_SarN8x16;
+                     add_op = Iop_Add8x16;
+                     break;
+                  case 1:
+                     shift_op = U ? Iop_ShrN16x8 : Iop_SarN16x8;
+                     add_op = Iop_Add16x8;
+                     break;
+                  case 2:
+                     shift_op = U ? Iop_ShrN32x4 : Iop_SarN32x4;
+                     add_op = Iop_Add32x4;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     shift_op = U ? Iop_ShrN8x8 : Iop_SarN8x8;
+                     add_op = Iop_Add8x8;
+                     break;
+                  case 1:
+                     shift_op = U ? Iop_ShrN16x4 : Iop_SarN16x4;
+                     add_op = Iop_Add16x4;
+                     break;
+                  case 2:
+                     shift_op = U ? Iop_ShrN32x2 : Iop_SarN32x2;
+                     add_op = Iop_Add32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q) {
+               cc = newTemp(Ity_V128);
+               assign(cc, binop(shift_op,
+                                binop(add_op,
+                                      binop(add_op,
+                                            binop(Iop_AndV128,
+                                                  mkexpr(arg_n),
+                                                  binop(Iop_64HLtoV128,
+                                                        mkU64(one),
+                                                        mkU64(one))),
+                                            binop(Iop_AndV128,
+                                                  mkexpr(arg_m),
+                                                  binop(Iop_64HLtoV128,
+                                                        mkU64(one),
+                                                        mkU64(one)))),
+                                      binop(Iop_64HLtoV128,
+                                            mkU64(one),
+                                            mkU64(one))),
+                                mkU8(1)));
+               assign(res, binop(add_op,
+                                 binop(add_op,
+                                       binop(shift_op,
+                                             mkexpr(arg_n),
+                                             mkU8(1)),
+                                       binop(shift_op,
+                                             mkexpr(arg_m),
+                                             mkU8(1))),
+                                 mkexpr(cc)));
+            } else {
+               cc = newTemp(Ity_I64);
+               assign(cc, binop(shift_op,
+                                binop(add_op,
+                                      binop(add_op,
+                                            binop(Iop_And64,
+                                                  mkexpr(arg_n),
+                                                  mkU64(one)),
+                                            binop(Iop_And64,
+                                                  mkexpr(arg_m),
+                                                  mkU64(one))),
+                                      mkU64(one)),
+                                mkU8(1)));
+               assign(res, binop(add_op,
+                                 binop(add_op,
+                                       binop(shift_op,
+                                             mkexpr(arg_n),
+                                             mkU8(1)),
+                                       binop(shift_op,
+                                             mkexpr(arg_m),
+                                             mkU8(1))),
+                                 mkexpr(cc)));
+            }
+            DIP("vrhadd.%c%d %c%d, %c%d, %c%d\n",
+                U ? 'u' : 's',
+                8 << size, reg_t, dreg, reg_t, nreg, reg_t, mreg);
+         } else {
+            if (U == 0)  {
+               switch(C) {
+                  case 0: {
+                     /* VAND  */
+                     char reg_t = Q ? 'q' : 'd';
+                     if (Q) {
+                        assign(res, binop(Iop_AndV128, mkexpr(arg_n), 
+                                                       mkexpr(arg_m)));
+                     } else {
+                        assign(res, binop(Iop_And64, mkexpr(arg_n),
+                                                     mkexpr(arg_m)));
+                     }
+                     DIP("vand %c%d, %c%d, %c%d\n",
+                         reg_t, dreg, reg_t, nreg, reg_t, mreg);
+                     break;
+                  }
+                  case 1: {
+                     /* VBIC  */
+                     char reg_t = Q ? 'q' : 'd';
+                     if (Q) {
+                        assign(res, binop(Iop_AndV128,mkexpr(arg_n),
+                               unop(Iop_NotV128, mkexpr(arg_m))));
+                     } else {
+                        assign(res, binop(Iop_And64, mkexpr(arg_n),
+                               unop(Iop_Not64, mkexpr(arg_m))));
+                     }
+                     DIP("vbic %c%d, %c%d, %c%d\n",
+                         reg_t, dreg, reg_t, nreg, reg_t, mreg);
+                     break;
+                  }
+                  case 2:
+                     if ( nreg != mreg) {
+                        /* VORR  */
+                        char reg_t = Q ? 'q' : 'd';
+                        if (Q) {
+                           assign(res, binop(Iop_OrV128, mkexpr(arg_n),
+                                                         mkexpr(arg_m)));
+                        } else {
+                           assign(res, binop(Iop_Or64, mkexpr(arg_n),
+                                                       mkexpr(arg_m)));
+                        }
+                        DIP("vorr %c%d, %c%d, %c%d\n",
+                            reg_t, dreg, reg_t, nreg, reg_t, mreg);
+                     } else {
+                        /* VMOV  */
+                        char reg_t = Q ? 'q' : 'd';
+                        assign(res, mkexpr(arg_m));
+                        DIP("vmov %c%d, %c%d\n", reg_t, dreg, reg_t, mreg);
+                     }
+                     break;
+                  case 3:{
+                     /* VORN  */
+                     char reg_t = Q ? 'q' : 'd';
+                     if (Q) {
+                        assign(res, binop(Iop_OrV128,mkexpr(arg_n),
+                               unop(Iop_NotV128, mkexpr(arg_m))));
+                     } else {
+                        assign(res, binop(Iop_Or64, mkexpr(arg_n),
+                               unop(Iop_Not64, mkexpr(arg_m))));
+                     }
+                     DIP("vorn %c%d, %c%d, %c%d\n",
+                         reg_t, dreg, reg_t, nreg, reg_t, mreg);
+                     break;
+                  }
+               }
+            } else {
+               switch(C) {
+                  case 0:
+                     /* VEOR (XOR)  */
+                     if (Q) {
+                        assign(res, binop(Iop_XorV128, mkexpr(arg_n),
+                                                       mkexpr(arg_m)));
+                     } else {
+                        assign(res, binop(Iop_Xor64, mkexpr(arg_n),
+                                                     mkexpr(arg_m)));
+                     }
+                     DIP("veor %c%u, %c%u, %c%u\n", Q ? 'q' : 'd', dreg,
+                           Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+                     break;
+                  case 1:
+                     /* VBSL  */
+                     if (Q) {
+                        IRTemp reg_d = newTemp(Ity_V128);
+                        assign(reg_d, getQReg(dreg));
+                        assign(res,
+                               binop(Iop_OrV128,
+                                     binop(Iop_AndV128, mkexpr(arg_n),
+                                                        mkexpr(reg_d)),
+                                     binop(Iop_AndV128,
+                                           mkexpr(arg_m),
+                                           unop(Iop_NotV128,
+                                                 mkexpr(reg_d)) ) ) );
+                     } else {
+                        IRTemp reg_d = newTemp(Ity_I64);
+                        assign(reg_d, getDRegI(dreg));
+                        assign(res,
+                               binop(Iop_Or64,
+                                     binop(Iop_And64, mkexpr(arg_n),
+                                                      mkexpr(reg_d)),
+                                     binop(Iop_And64,
+                                           mkexpr(arg_m),
+                                           unop(Iop_Not64, mkexpr(reg_d)))));
+                     }
+                     DIP("vbsl %c%u, %c%u, %c%u\n",
+                         Q ? 'q' : 'd', dreg,
+                         Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+                     break;
+                  case 2:
+                     /* VBIT  */
+                     if (Q) {
+                        IRTemp reg_d = newTemp(Ity_V128);
+                        assign(reg_d, getQReg(dreg));
+                        assign(res,
+                               binop(Iop_OrV128,
+                                     binop(Iop_AndV128, mkexpr(arg_n), 
+                                                        mkexpr(arg_m)),
+                                     binop(Iop_AndV128,
+                                           mkexpr(reg_d),
+                                           unop(Iop_NotV128, mkexpr(arg_m)))));
+                     } else {
+                        IRTemp reg_d = newTemp(Ity_I64);
+                        assign(reg_d, getDRegI(dreg));
+                        assign(res,
+                               binop(Iop_Or64,
+                                     binop(Iop_And64, mkexpr(arg_n),
+                                                      mkexpr(arg_m)),
+                                     binop(Iop_And64,
+                                           mkexpr(reg_d),
+                                           unop(Iop_Not64, mkexpr(arg_m)))));
+                     }
+                     DIP("vbit %c%u, %c%u, %c%u\n",
+                         Q ? 'q' : 'd', dreg,
+                         Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+                     break;
+                  case 3:
+                     /* VBIF  */
+                     if (Q) {
+                        IRTemp reg_d = newTemp(Ity_V128);
+                        assign(reg_d, getQReg(dreg));
+                        assign(res,
+                               binop(Iop_OrV128,
+                                     binop(Iop_AndV128, mkexpr(reg_d),
+                                                        mkexpr(arg_m)),
+                                     binop(Iop_AndV128,
+                                           mkexpr(arg_n),
+                                           unop(Iop_NotV128, mkexpr(arg_m)))));
+                     } else {
+                        IRTemp reg_d = newTemp(Ity_I64);
+                        assign(reg_d, getDRegI(dreg));
+                        assign(res,
+                               binop(Iop_Or64,
+                                     binop(Iop_And64, mkexpr(reg_d),
+                                                      mkexpr(arg_m)),
+                                     binop(Iop_And64,
+                                           mkexpr(arg_n),
+                                           unop(Iop_Not64, mkexpr(arg_m)))));
+                     }
+                     DIP("vbif %c%u, %c%u, %c%u\n",
+                         Q ? 'q' : 'd', dreg,
+                         Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+                     break;
+               }
+            }
+         }
+         break;
+      case 2:
+         if (B == 0) {
+            /* VHSUB */
+            /* (A >> 1) - (B >> 1) - (NOT (A) & B & 1)   */
+            ULong imm = 0;
+            IRExpr *imm_val;
+            IROp subOp;
+            IROp notOp;
+            IROp andOp;
+            IROp shOp;
+            if (size == 3)
+               return False;
+            switch(size) {
+               case 0: imm = 0x101010101010101LL; break;
+               case 1: imm = 0x1000100010001LL; break;
+               case 2: imm = 0x100000001LL; break;
+               default: vassert(0);
+            }
+            if (Q) {
+               imm_val = binop(Iop_64HLtoV128, mkU64(imm), mkU64(imm));
+               andOp = Iop_AndV128;
+               notOp = Iop_NotV128;
+            } else {
+               imm_val = mkU64(imm);
+               andOp = Iop_And64;
+               notOp = Iop_Not64;
+            }
+            if (U) {
+               switch(size) {
+                  case 0:
+                     subOp = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     shOp = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     break;
+                  case 1:
+                     subOp = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     shOp = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     break;
+                  case 2:
+                     subOp = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     shOp = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch(size) {
+                  case 0:
+                     subOp = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     shOp = Q ? Iop_SarN8x16 : Iop_SarN8x8;
+                     break;
+                  case 1:
+                     subOp = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     shOp = Q ? Iop_SarN16x8 : Iop_SarN16x4;
+                     break;
+                  case 2:
+                     subOp = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     shOp = Q ? Iop_SarN32x4 : Iop_SarN32x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            assign(res,
+                   binop(subOp,
+                         binop(subOp,
+                               binop(shOp, mkexpr(arg_n), mkU8(1)),
+                               binop(shOp, mkexpr(arg_m), mkU8(1))),
+                         binop(andOp,
+                               binop(andOp,
+                                     unop(notOp, mkexpr(arg_n)),
+                                     mkexpr(arg_m)),
+                               imm_val)));
+            DIP("vhsub.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         } else {
+            /* VQSUB */
+            IROp op, op2;
+            IRTemp tmp;
+            if (Q) {
+               switch (size) {
+                  case 0:
+                     op = U ? Iop_QSub8Ux16 : Iop_QSub8Sx16;
+                     op2 = Iop_Sub8x16;
+                     break;
+                  case 1:
+                     op = U ? Iop_QSub16Ux8 : Iop_QSub16Sx8;
+                     op2 = Iop_Sub16x8;
+                     break;
+                  case 2:
+                     op = U ? Iop_QSub32Ux4 : Iop_QSub32Sx4;
+                     op2 = Iop_Sub32x4;
+                     break;
+                  case 3:
+                     op = U ? Iop_QSub64Ux2 : Iop_QSub64Sx2;
+                     op2 = Iop_Sub64x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op = U ? Iop_QSub8Ux8 : Iop_QSub8Sx8;
+                     op2 = Iop_Sub8x8;
+                     break;
+                  case 1:
+                     op = U ? Iop_QSub16Ux4 : Iop_QSub16Sx4;
+                     op2 = Iop_Sub16x4;
+                     break;
+                  case 2:
+                     op = U ? Iop_QSub32Ux2 : Iop_QSub32Sx2;
+                     op2 = Iop_Sub32x2;
+                     break;
+                  case 3:
+                     op = U ? Iop_QSub64Ux1 : Iop_QSub64Sx1;
+                     op2 = Iop_Sub64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q)
+               tmp = newTemp(Ity_V128);
+            else
+               tmp = newTemp(Ity_I64);
+            assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+            assign(tmp, binop(op2, mkexpr(arg_n), mkexpr(arg_m)));
+            setFlag_QC(mkexpr(res), mkexpr(tmp), Q);
+#endif
+            DIP("vqsub.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         }
+         break;
+      case 3: {
+            IROp op;
+            if (Q) {
+               switch (size) {
+                  case 0: op = U ? Iop_CmpGT8Ux16 : Iop_CmpGT8Sx16; break;
+                  case 1: op = U ? Iop_CmpGT16Ux8 : Iop_CmpGT16Sx8; break;
+                  case 2: op = U ? Iop_CmpGT32Ux4 : Iop_CmpGT32Sx4; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0: op = U ? Iop_CmpGT8Ux8 : Iop_CmpGT8Sx8; break;
+                  case 1: op = U ? Iop_CmpGT16Ux4 : Iop_CmpGT16Sx4; break;
+                  case 2: op = U ? Iop_CmpGT32Ux2: Iop_CmpGT32Sx2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+            }
+            if (B == 0) {
+               /* VCGT  */
+               assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+               DIP("vcgt.%c%u %c%u, %c%u, %c%u\n",
+                   U ? 'u' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                   mreg);
+            } else {
+               /* VCGE  */
+               /* VCGE res, argn, argm
+                    is equal to
+                  VCGT tmp, argm, argn
+                  VNOT res, tmp */
+               assign(res,
+                      unop(Q ? Iop_NotV128 : Iop_Not64,
+                           binop(op, mkexpr(arg_m), mkexpr(arg_n))));
+               DIP("vcge.%c%u %c%u, %c%u, %c%u\n",
+                   U ? 'u' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                   mreg);
+            }
+         }
+         break;
+      case 4:
+         if (B == 0) {
+            /* VSHL */
+            IROp op, sub_op;
+            IRTemp tmp;
+            if (U) {
+               switch (size) {
+                  case 0: op = Q ? Iop_Shl8x16 : Iop_Shl8x8; break;
+                  case 1: op = Q ? Iop_Shl16x8 : Iop_Shl16x4; break;
+                  case 2: op = Q ? Iop_Shl32x4 : Iop_Shl32x2; break;
+                  case 3: op = Q ? Iop_Shl64x2 : Iop_Shl64; break;
+                  default: vassert(0);
+               }
+            } else {
+               tmp = newTemp(Q ? Ity_V128 : Ity_I64);
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Sar8x16 : Iop_Sar8x8;
+                     sub_op = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_Sar16x8 : Iop_Sar16x4;
+                     sub_op = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_Sar32x4 : Iop_Sar32x2;
+                     sub_op = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_Sar64x2 : Iop_Sar64;
+                     sub_op = Q ? Iop_Sub64x2 : Iop_Sub64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (U) {
+               if (!Q && (size == 3))
+                  assign(res, binop(op, mkexpr(arg_m),
+                                        unop(Iop_64to8, mkexpr(arg_n))));
+               else
+                  assign(res, binop(op, mkexpr(arg_m), mkexpr(arg_n)));
+            } else {
+               if (Q)
+                  assign(tmp, binop(sub_op,
+                                    binop(Iop_64HLtoV128, mkU64(0), mkU64(0)),
+                                    mkexpr(arg_n)));
+               else
+                  assign(tmp, binop(sub_op, mkU64(0), mkexpr(arg_n)));
+               if (!Q && (size == 3))
+                  assign(res, binop(op, mkexpr(arg_m),
+                                        unop(Iop_64to8, mkexpr(tmp))));
+               else
+                  assign(res, binop(op, mkexpr(arg_m), mkexpr(tmp)));
+            }
+            DIP("vshl.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, Q ? 'q' : 'd',
+                nreg);
+         } else {
+            /* VQSHL */
+            IROp op, op_rev, op_shrn, op_shln, cmp_neq, cmp_gt;
+            IRTemp tmp, shval, mask, old_shval;
+            UInt i;
+            ULong esize;
+            cmp_neq = Q ? Iop_CmpNEZ8x16 : Iop_CmpNEZ8x8;
+            cmp_gt = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8;
+            if (U) {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_QShl8x16 : Iop_QShl8x8;
+                     op_rev = Q ? Iop_Shr8x16 : Iop_Shr8x8;
+                     op_shrn = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     op_shln = Q ? Iop_ShlN8x16 : Iop_ShlN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_QShl16x8 : Iop_QShl16x4;
+                     op_rev = Q ? Iop_Shr16x8 : Iop_Shr16x4;
+                     op_shrn = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     op_shln = Q ? Iop_ShlN16x8 : Iop_ShlN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QShl32x4 : Iop_QShl32x2;
+                     op_rev = Q ? Iop_Shr32x4 : Iop_Shr32x2;
+                     op_shrn = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     op_shln = Q ? Iop_ShlN32x4 : Iop_ShlN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_QShl64x2 : Iop_QShl64x1;
+                     op_rev = Q ? Iop_Shr64x2 : Iop_Shr64;
+                     op_shrn = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     op_shln = Q ? Iop_ShlN64x2 : Iop_Shl64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_QSal8x16 : Iop_QSal8x8;
+                     op_rev = Q ? Iop_Sar8x16 : Iop_Sar8x8;
+                     op_shrn = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     op_shln = Q ? Iop_ShlN8x16 : Iop_ShlN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_QSal16x8 : Iop_QSal16x4;
+                     op_rev = Q ? Iop_Sar16x8 : Iop_Sar16x4;
+                     op_shrn = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     op_shln = Q ? Iop_ShlN16x8 : Iop_ShlN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QSal32x4 : Iop_QSal32x2;
+                     op_rev = Q ? Iop_Sar32x4 : Iop_Sar32x2;
+                     op_shrn = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     op_shln = Q ? Iop_ShlN32x4 : Iop_ShlN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_QSal64x2 : Iop_QSal64x1;
+                     op_rev = Q ? Iop_Sar64x2 : Iop_Sar64;
+                     op_shrn = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     op_shln = Q ? Iop_ShlN64x2 : Iop_Shl64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q) {
+               tmp = newTemp(Ity_V128);
+               shval = newTemp(Ity_V128);
+               mask = newTemp(Ity_V128);
+            } else {
+               tmp = newTemp(Ity_I64);
+               shval = newTemp(Ity_I64);
+               mask = newTemp(Ity_I64);
+            }
+            assign(res, binop(op, mkexpr(arg_m), mkexpr(arg_n)));
+#ifndef DISABLE_QC_FLAG
+            /* Only least significant byte from second argument is used.
+               Copy this byte to the whole vector element. */
+            assign(shval, binop(op_shrn,
+                                binop(op_shln,
+                                       mkexpr(arg_n),
+                                       mkU8((8 << size) - 8)),
+                                mkU8((8 << size) - 8)));
+            for(i = 0; i < size; i++) {
+               old_shval = shval;
+               shval = newTemp(Q ? Ity_V128 : Ity_I64);
+               assign(shval, binop(Q ? Iop_OrV128 : Iop_Or64,
+                                   mkexpr(old_shval),
+                                   binop(op_shln,
+                                         mkexpr(old_shval),
+                                         mkU8(8 << i))));
+            }
+            /* If shift is greater or equal to the element size and
+               element is non-zero, then QC flag should be set. */
+            esize = (8 << size) - 1;
+            esize = (esize <<  8) | esize;
+            esize = (esize << 16) | esize;
+            esize = (esize << 32) | esize;
+            setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                             binop(cmp_gt, mkexpr(shval),
+                                           Q ? mkU128(esize) : mkU64(esize)),
+                             unop(cmp_neq, mkexpr(arg_m))),
+                       Q ? mkU128(0) : mkU64(0),
+                       Q);
+            /* Othervise QC flag should be set if shift value is positive and
+               result beign rightshifted the same value is not equal to left
+               argument. */
+            assign(mask, binop(cmp_gt, mkexpr(shval),
+                                       Q ? mkU128(0) : mkU64(0)));
+            if (!Q && size == 3)
+               assign(tmp, binop(op_rev, mkexpr(res),
+                                         unop(Iop_64to8, mkexpr(arg_n))));
+            else
+               assign(tmp, binop(op_rev, mkexpr(res), mkexpr(arg_n)));
+            setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                             mkexpr(tmp), mkexpr(mask)),
+                       binop(Q ? Iop_AndV128 : Iop_And64,
+                             mkexpr(arg_m), mkexpr(mask)),
+                       Q);
+#endif
+            DIP("vqshl.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, Q ? 'q' : 'd',
+                nreg);
+         }
+         break;
+      case 5:
+         if (B == 0) {
+            /* VRSHL */
+            IROp op, op_shrn, op_shln, cmp_gt, op_sub, op_add;
+            IRTemp shval, old_shval, imm_val, round;
+            UInt i;
+            ULong imm;
+            cmp_gt = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8;
+            imm = 1L;
+            switch (size) {
+               case 0: imm = (imm <<  8) | imm; /* fall through */
+               case 1: imm = (imm << 16) | imm; /* fall through */
+               case 2: imm = (imm << 32) | imm; /* fall through */
+               case 3: break;
+               default: vassert(0);
+            }
+            imm_val = newTemp(Q ? Ity_V128 : Ity_I64);
+            round = newTemp(Q ? Ity_V128 : Ity_I64);
+            assign(imm_val, Q ? mkU128(imm) : mkU64(imm));
+            if (U) {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Shl8x16 : Iop_Shl8x8;
+                     op_sub = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     op_add = Q ? Iop_Add8x16 : Iop_Add8x8;
+                     op_shrn = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     op_shln = Q ? Iop_ShlN8x16 : Iop_ShlN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_Shl16x8 : Iop_Shl16x4;
+                     op_sub = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     op_add = Q ? Iop_Add16x8 : Iop_Add16x4;
+                     op_shrn = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     op_shln = Q ? Iop_ShlN16x8 : Iop_ShlN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_Shl32x4 : Iop_Shl32x2;
+                     op_sub = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     op_add = Q ? Iop_Add32x4 : Iop_Add32x2;
+                     op_shrn = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     op_shln = Q ? Iop_ShlN32x4 : Iop_ShlN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_Shl64x2 : Iop_Shl64;
+                     op_sub = Q ? Iop_Sub64x2 : Iop_Sub64;
+                     op_add = Q ? Iop_Add64x2 : Iop_Add64;
+                     op_shrn = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     op_shln = Q ? Iop_ShlN64x2 : Iop_Shl64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Sal8x16 : Iop_Sal8x8;
+                     op_sub = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     op_add = Q ? Iop_Add8x16 : Iop_Add8x8;
+                     op_shrn = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     op_shln = Q ? Iop_ShlN8x16 : Iop_ShlN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_Sal16x8 : Iop_Sal16x4;
+                     op_sub = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     op_add = Q ? Iop_Add16x8 : Iop_Add16x4;
+                     op_shrn = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     op_shln = Q ? Iop_ShlN16x8 : Iop_ShlN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_Sal32x4 : Iop_Sal32x2;
+                     op_sub = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     op_add = Q ? Iop_Add32x4 : Iop_Add32x2;
+                     op_shrn = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     op_shln = Q ? Iop_ShlN32x4 : Iop_ShlN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_Sal64x2 : Iop_Sal64x1;
+                     op_sub = Q ? Iop_Sub64x2 : Iop_Sub64;
+                     op_add = Q ? Iop_Add64x2 : Iop_Add64;
+                     op_shrn = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     op_shln = Q ? Iop_ShlN64x2 : Iop_Shl64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q) {
+               shval = newTemp(Ity_V128);
+            } else {
+               shval = newTemp(Ity_I64);
+            }
+            /* Only least significant byte from second argument is used.
+               Copy this byte to the whole vector element. */
+            assign(shval, binop(op_shrn,
+                                binop(op_shln,
+                                       mkexpr(arg_n),
+                                       mkU8((8 << size) - 8)),
+                                mkU8((8 << size) - 8)));
+            for(i = 0; i < size; i++) {
+               old_shval = shval;
+               shval = newTemp(Q ? Ity_V128 : Ity_I64);
+               assign(shval, binop(Q ? Iop_OrV128 : Iop_Or64,
+                                   mkexpr(old_shval),
+                                   binop(op_shln,
+                                         mkexpr(old_shval),
+                                         mkU8(8 << i))));
+            }
+            /* Compute the result */
+            if (!Q && size == 3 && U) {
+               assign(round, binop(Q ? Iop_AndV128 : Iop_And64,
+                                   binop(op,
+                                         mkexpr(arg_m),
+                                         unop(Iop_64to8,
+                                              binop(op_sub,
+                                                    mkexpr(arg_n),
+                                                    mkexpr(imm_val)))),
+                                   binop(Q ? Iop_AndV128 : Iop_And64,
+                                         mkexpr(imm_val),
+                                         binop(cmp_gt,
+                                               Q ? mkU128(0) : mkU64(0),
+                                               mkexpr(arg_n)))));
+               assign(res, binop(op_add,
+                                 binop(op,
+                                       mkexpr(arg_m),
+                                       unop(Iop_64to8, mkexpr(arg_n))),
+                                 mkexpr(round)));
+            } else {
+               assign(round, binop(Q ? Iop_AndV128 : Iop_And64,
+                                   binop(op,
+                                         mkexpr(arg_m),
+                                         binop(op_add,
+                                               mkexpr(arg_n),
+                                               mkexpr(imm_val))),
+                                   binop(Q ? Iop_AndV128 : Iop_And64,
+                                         mkexpr(imm_val),
+                                         binop(cmp_gt,
+                                               Q ? mkU128(0) : mkU64(0),
+                                               mkexpr(arg_n)))));
+               assign(res, binop(op_add,
+                                 binop(op, mkexpr(arg_m), mkexpr(arg_n)),
+                                 mkexpr(round)));
+            }
+            DIP("vrshl.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, Q ? 'q' : 'd',
+                nreg);
+         } else {
+            /* VQRSHL */
+            IROp op, op_rev, op_shrn, op_shln, cmp_neq, cmp_gt, op_sub, op_add;
+            IRTemp tmp, shval, mask, old_shval, imm_val, round;
+            UInt i;
+            ULong esize, imm;
+            cmp_neq = Q ? Iop_CmpNEZ8x16 : Iop_CmpNEZ8x8;
+            cmp_gt = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8;
+            imm = 1L;
+            switch (size) {
+               case 0: imm = (imm <<  8) | imm; /* fall through */
+               case 1: imm = (imm << 16) | imm; /* fall through */
+               case 2: imm = (imm << 32) | imm; /* fall through */
+               case 3: break;
+               default: vassert(0);
+            }
+            imm_val = newTemp(Q ? Ity_V128 : Ity_I64);
+            round = newTemp(Q ? Ity_V128 : Ity_I64);
+            assign(imm_val, Q ? mkU128(imm) : mkU64(imm));
+            if (U) {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_QShl8x16 : Iop_QShl8x8;
+                     op_sub = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     op_add = Q ? Iop_Add8x16 : Iop_Add8x8;
+                     op_rev = Q ? Iop_Shr8x16 : Iop_Shr8x8;
+                     op_shrn = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     op_shln = Q ? Iop_ShlN8x16 : Iop_ShlN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_QShl16x8 : Iop_QShl16x4;
+                     op_sub = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     op_add = Q ? Iop_Add16x8 : Iop_Add16x4;
+                     op_rev = Q ? Iop_Shr16x8 : Iop_Shr16x4;
+                     op_shrn = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     op_shln = Q ? Iop_ShlN16x8 : Iop_ShlN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QShl32x4 : Iop_QShl32x2;
+                     op_sub = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     op_add = Q ? Iop_Add32x4 : Iop_Add32x2;
+                     op_rev = Q ? Iop_Shr32x4 : Iop_Shr32x2;
+                     op_shrn = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     op_shln = Q ? Iop_ShlN32x4 : Iop_ShlN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_QShl64x2 : Iop_QShl64x1;
+                     op_sub = Q ? Iop_Sub64x2 : Iop_Sub64;
+                     op_add = Q ? Iop_Add64x2 : Iop_Add64;
+                     op_rev = Q ? Iop_Shr64x2 : Iop_Shr64;
+                     op_shrn = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     op_shln = Q ? Iop_ShlN64x2 : Iop_Shl64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_QSal8x16 : Iop_QSal8x8;
+                     op_sub = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     op_add = Q ? Iop_Add8x16 : Iop_Add8x8;
+                     op_rev = Q ? Iop_Sar8x16 : Iop_Sar8x8;
+                     op_shrn = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     op_shln = Q ? Iop_ShlN8x16 : Iop_ShlN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_QSal16x8 : Iop_QSal16x4;
+                     op_sub = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     op_add = Q ? Iop_Add16x8 : Iop_Add16x4;
+                     op_rev = Q ? Iop_Sar16x8 : Iop_Sar16x4;
+                     op_shrn = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     op_shln = Q ? Iop_ShlN16x8 : Iop_ShlN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QSal32x4 : Iop_QSal32x2;
+                     op_sub = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     op_add = Q ? Iop_Add32x4 : Iop_Add32x2;
+                     op_rev = Q ? Iop_Sar32x4 : Iop_Sar32x2;
+                     op_shrn = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     op_shln = Q ? Iop_ShlN32x4 : Iop_ShlN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_QSal64x2 : Iop_QSal64x1;
+                     op_sub = Q ? Iop_Sub64x2 : Iop_Sub64;
+                     op_add = Q ? Iop_Add64x2 : Iop_Add64;
+                     op_rev = Q ? Iop_Sar64x2 : Iop_Sar64;
+                     op_shrn = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     op_shln = Q ? Iop_ShlN64x2 : Iop_Shl64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q) {
+               tmp = newTemp(Ity_V128);
+               shval = newTemp(Ity_V128);
+               mask = newTemp(Ity_V128);
+            } else {
+               tmp = newTemp(Ity_I64);
+               shval = newTemp(Ity_I64);
+               mask = newTemp(Ity_I64);
+            }
+            /* Only least significant byte from second argument is used.
+               Copy this byte to the whole vector element. */
+            assign(shval, binop(op_shrn,
+                                binop(op_shln,
+                                       mkexpr(arg_n),
+                                       mkU8((8 << size) - 8)),
+                                mkU8((8 << size) - 8)));
+            for(i = 0; i < size; i++) {
+               old_shval = shval;
+               shval = newTemp(Q ? Ity_V128 : Ity_I64);
+               assign(shval, binop(Q ? Iop_OrV128 : Iop_Or64,
+                                   mkexpr(old_shval),
+                                   binop(op_shln,
+                                         mkexpr(old_shval),
+                                         mkU8(8 << i))));
+            }
+            /* Compute the result */
+            assign(round, binop(Q ? Iop_AndV128 : Iop_And64,
+                                binop(op,
+                                      mkexpr(arg_m),
+                                      binop(op_add,
+                                            mkexpr(arg_n),
+                                            mkexpr(imm_val))),
+                                binop(Q ? Iop_AndV128 : Iop_And64,
+                                      mkexpr(imm_val),
+                                      binop(cmp_gt,
+                                            Q ? mkU128(0) : mkU64(0),
+                                            mkexpr(arg_n)))));
+            assign(res, binop(op_add,
+                              binop(op, mkexpr(arg_m), mkexpr(arg_n)),
+                              mkexpr(round)));
+#ifndef DISABLE_QC_FLAG
+            /* If shift is greater or equal to the element size and element is
+               non-zero, then QC flag should be set. */
+            esize = (8 << size) - 1;
+            esize = (esize <<  8) | esize;
+            esize = (esize << 16) | esize;
+            esize = (esize << 32) | esize;
+            setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                             binop(cmp_gt, mkexpr(shval),
+                                           Q ? mkU128(esize) : mkU64(esize)),
+                             unop(cmp_neq, mkexpr(arg_m))),
+                       Q ? mkU128(0) : mkU64(0),
+                       Q);
+            /* Othervise QC flag should be set if shift value is positive and
+               result beign rightshifted the same value is not equal to left
+               argument. */
+            assign(mask, binop(cmp_gt, mkexpr(shval),
+                               Q ? mkU128(0) : mkU64(0)));
+            if (!Q && size == 3)
+               assign(tmp, binop(op_rev, mkexpr(res),
+                                         unop(Iop_64to8, mkexpr(arg_n))));
+            else
+               assign(tmp, binop(op_rev, mkexpr(res), mkexpr(arg_n)));
+            setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                             mkexpr(tmp), mkexpr(mask)),
+                       binop(Q ? Iop_AndV128 : Iop_And64,
+                             mkexpr(arg_m), mkexpr(mask)),
+                       Q);
+#endif
+            DIP("vqrshl.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, Q ? 'q' : 'd',
+                nreg);
+         }
+         break;
+      case 6:
+         /* VMAX, VMIN  */
+         if (B == 0) {
+            /* VMAX */
+            IROp op;
+            if (U == 0) {
+               switch (size) {
+                  case 0: op = Q ? Iop_Max8Sx16 : Iop_Max8Sx8; break;
+                  case 1: op = Q ? Iop_Max16Sx8 : Iop_Max16Sx4; break;
+                  case 2: op = Q ? Iop_Max32Sx4 : Iop_Max32Sx2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0: op = Q ? Iop_Max8Ux16 : Iop_Max8Ux8; break;
+                  case 1: op = Q ? Iop_Max16Ux8 : Iop_Max16Ux4; break;
+                  case 2: op = Q ? Iop_Max32Ux4 : Iop_Max32Ux2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+            }
+            assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+            DIP("vmax.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         } else {
+            /* VMIN */
+            IROp op;
+            if (U == 0) {
+               switch (size) {
+                  case 0: op = Q ? Iop_Min8Sx16 : Iop_Min8Sx8; break;
+                  case 1: op = Q ? Iop_Min16Sx8 : Iop_Min16Sx4; break;
+                  case 2: op = Q ? Iop_Min32Sx4 : Iop_Min32Sx2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0: op = Q ? Iop_Min8Sx16 : Iop_Min8Sx8; break;
+                  case 1: op = Q ? Iop_Min16Sx8 : Iop_Min16Sx4; break;
+                  case 2: op = Q ? Iop_Min32Sx4 : Iop_Min32Sx2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+            }
+            assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+            DIP("vmin.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         }
+         break;
+      case 7:
+         if (B == 0) {
+            /* VABD */
+            IROp op_cmp, op_sub;
+            IRTemp cond;
+            if ((theInstr >> 23) & 1) {
+               vpanic("VABDL should not be in dis_neon_data_3same\n");
+            }
+            if (Q) {
+               switch (size) {
+                  case 0:
+                     op_cmp = U ? Iop_CmpGT8Ux16 : Iop_CmpGT8Sx16;
+                     op_sub = Iop_Sub8x16;
+                     break;
+                  case 1:
+                     op_cmp = U ? Iop_CmpGT16Ux8 : Iop_CmpGT16Sx8;
+                     op_sub = Iop_Sub16x8;
+                     break;
+                  case 2:
+                     op_cmp = U ? Iop_CmpGT32Ux4 : Iop_CmpGT32Sx4;
+                     op_sub = Iop_Sub32x4;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op_cmp = U ? Iop_CmpGT8Ux8 : Iop_CmpGT8Sx8;
+                     op_sub = Iop_Sub8x8;
+                     break;
+                  case 1:
+                     op_cmp = U ? Iop_CmpGT16Ux4 : Iop_CmpGT16Sx4;
+                     op_sub = Iop_Sub16x4;
+                     break;
+                  case 2:
+                     op_cmp = U ? Iop_CmpGT32Ux2 : Iop_CmpGT32Sx2;
+                     op_sub = Iop_Sub32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q) {
+               cond = newTemp(Ity_V128);
+            } else {
+               cond = newTemp(Ity_I64);
+            }
+            assign(cond, binop(op_cmp, mkexpr(arg_n), mkexpr(arg_m)));
+            assign(res, binop(Q ? Iop_OrV128 : Iop_Or64,
+                              binop(Q ? Iop_AndV128 : Iop_And64,
+                                    binop(op_sub, mkexpr(arg_n),
+                                                  mkexpr(arg_m)),
+                                    mkexpr(cond)),
+                              binop(Q ? Iop_AndV128 : Iop_And64,
+                                    binop(op_sub, mkexpr(arg_m),
+                                                  mkexpr(arg_n)),
+                                    unop(Q ? Iop_NotV128 : Iop_Not64,
+                                         mkexpr(cond)))));
+            DIP("vabd.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         } else {
+            /* VABA */
+            IROp op_cmp, op_sub, op_add;
+            IRTemp cond, acc, tmp;
+            if ((theInstr >> 23) & 1) {
+               vpanic("VABAL should not be in dis_neon_data_3same");
+            }
+            if (Q) {
+               switch (size) {
+                  case 0:
+                     op_cmp = U ? Iop_CmpGT8Ux16 : Iop_CmpGT8Sx16;
+                     op_sub = Iop_Sub8x16;
+                     op_add = Iop_Add8x16;
+                     break;
+                  case 1:
+                     op_cmp = U ? Iop_CmpGT16Ux8 : Iop_CmpGT16Sx8;
+                     op_sub = Iop_Sub16x8;
+                     op_add = Iop_Add16x8;
+                     break;
+                  case 2:
+                     op_cmp = U ? Iop_CmpGT32Ux4 : Iop_CmpGT32Sx4;
+                     op_sub = Iop_Sub32x4;
+                     op_add = Iop_Add32x4;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op_cmp = U ? Iop_CmpGT8Ux8 : Iop_CmpGT8Sx8;
+                     op_sub = Iop_Sub8x8;
+                     op_add = Iop_Add8x8;
+                     break;
+                  case 1:
+                     op_cmp = U ? Iop_CmpGT16Ux4 : Iop_CmpGT16Sx4;
+                     op_sub = Iop_Sub16x4;
+                     op_add = Iop_Add16x4;
+                     break;
+                  case 2:
+                     op_cmp = U ? Iop_CmpGT32Ux2 : Iop_CmpGT32Sx2;
+                     op_sub = Iop_Sub32x2;
+                     op_add = Iop_Add32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            }
+            if (Q) {
+               cond = newTemp(Ity_V128);
+               acc = newTemp(Ity_V128);
+               tmp = newTemp(Ity_V128);
+               assign(acc, getQReg(dreg));
+            } else {
+               cond = newTemp(Ity_I64);
+               acc = newTemp(Ity_I64);
+               tmp = newTemp(Ity_I64);
+               assign(acc, getDRegI(dreg));
+            }
+            assign(cond, binop(op_cmp, mkexpr(arg_n), mkexpr(arg_m)));
+            assign(tmp, binop(Q ? Iop_OrV128 : Iop_Or64,
+                              binop(Q ? Iop_AndV128 : Iop_And64,
+                                    binop(op_sub, mkexpr(arg_n),
+                                                  mkexpr(arg_m)),
+                                    mkexpr(cond)),
+                              binop(Q ? Iop_AndV128 : Iop_And64,
+                                    binop(op_sub, mkexpr(arg_m),
+                                                  mkexpr(arg_n)),
+                                    unop(Q ? Iop_NotV128 : Iop_Not64,
+                                         mkexpr(cond)))));
+            assign(res, binop(op_add, mkexpr(acc), mkexpr(tmp)));
+            DIP("vaba.%c%u %c%u, %c%u, %c%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         }
+         break;
+      case 8:
+         if (B == 0) {
+            IROp op;
+            if (U == 0) {
+               /* VADD  */
+               switch (size) {
+                  case 0: op = Q ? Iop_Add8x16 : Iop_Add8x8; break;
+                  case 1: op = Q ? Iop_Add16x8 : Iop_Add16x4; break;
+                  case 2: op = Q ? Iop_Add32x4 : Iop_Add32x2; break;
+                  case 3: op = Q ? Iop_Add64x2 : Iop_Add64; break;
+                  default: vassert(0);
+               }
+               DIP("vadd.i%u %c%u, %c%u, %c%u\n",
+                   8 << size, Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            } else {
+               /* VSUB  */
+               switch (size) {
+                  case 0: op = Q ? Iop_Sub8x16 : Iop_Sub8x8; break;
+                  case 1: op = Q ? Iop_Sub16x8 : Iop_Sub16x4; break;
+                  case 2: op = Q ? Iop_Sub32x4 : Iop_Sub32x2; break;
+                  case 3: op = Q ? Iop_Sub64x2 : Iop_Sub64; break;
+                  default: vassert(0);
+               }
+               DIP("vsub.i%u %c%u, %c%u, %c%u\n",
+                   8 << size, Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            }
+            assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+         } else {
+            IROp op;
+            switch (size) {
+               case 0: op = Q ? Iop_CmpNEZ8x16 : Iop_CmpNEZ8x8; break;
+               case 1: op = Q ? Iop_CmpNEZ16x8 : Iop_CmpNEZ16x4; break;
+               case 2: op = Q ? Iop_CmpNEZ32x4 : Iop_CmpNEZ32x2; break;
+               case 3: op = Q ? Iop_CmpNEZ64x2 : Iop_CmpwNEZ64; break;
+               default: vassert(0);
+            }
+            if (U == 0) {
+               /* VTST  */
+               assign(res, unop(op, binop(Q ? Iop_AndV128 : Iop_And64,
+                                          mkexpr(arg_n),
+                                          mkexpr(arg_m))));
+               DIP("vtst.%u %c%u, %c%u, %c%u\n",
+                   8 << size, Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            } else {
+               /* VCEQ  */
+               assign(res, unop(Q ? Iop_NotV128 : Iop_Not64,
+                                unop(op,
+                                     binop(Q ? Iop_XorV128 : Iop_Xor64,
+                                           mkexpr(arg_n),
+                                           mkexpr(arg_m)))));
+               DIP("vceq.i%u %c%u, %c%u, %c%u\n",
+                   8 << size, Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            }
+         }
+         break;
+      case 9:
+         if (B == 0) {
+            /* VMLA, VMLS (integer) */
+            IROp op, op2;
+            UInt P = (theInstr >> 24) & 1;
+            if (P) {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Mul8x16 : Iop_Mul8x8;
+                     op2 = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_Mul16x8 : Iop_Mul16x4;
+                     op2 = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_Mul32x4 : Iop_Mul32x2;
+                     op2 = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Mul8x16 : Iop_Mul8x8;
+                     op2 = Q ? Iop_Add8x16 : Iop_Add8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_Mul16x8 : Iop_Mul16x4;
+                     op2 = Q ? Iop_Add16x8 : Iop_Add16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_Mul32x4 : Iop_Mul32x2;
+                     op2 = Q ? Iop_Add32x4 : Iop_Add32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            }
+            assign(res, binop(op2,
+                              Q ? getQReg(dreg) : getDRegI(dreg),
+                              binop(op, mkexpr(arg_n), mkexpr(arg_m))));
+            DIP("vml%c.i%u %c%u, %c%u, %c%u\n",
+                P ? 's' : 'a', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         } else {
+            /* VMUL */
+            IROp op;
+            UInt P = (theInstr >> 24) & 1;
+            if (P) {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_PolynomialMul8x16 : Iop_PolynomialMul8x8;
+                     break;
+                  case 1: case 2: case 3: return False;
+                  default: vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0: op = Q ? Iop_Mul8x16 : Iop_Mul8x8; break;
+                  case 1: op = Q ? Iop_Mul16x8 : Iop_Mul16x4; break;
+                  case 2: op = Q ? Iop_Mul32x4 : Iop_Mul32x2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+            }
+            assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+            DIP("vmul.%c%u %c%u, %c%u, %c%u\n",
+                P ? 'p' : 'i', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd',
+                mreg);
+         }
+         break;
+      case 10: {
+         /* VPMAX, VPMIN  */
+         UInt P = (theInstr >> 4) & 1;
+         IROp op;
+         if (Q)
+            return False;
+         if (P) {
+            switch (size) {
+               case 0: op = U ? Iop_PwMin8Ux8  : Iop_PwMin8Sx8; break;
+               case 1: op = U ? Iop_PwMin16Ux4 : Iop_PwMin16Sx4; break;
+               case 2: op = U ? Iop_PwMin32Ux2 : Iop_PwMin32Sx2; break;
+               case 3: return False;
+               default: vassert(0);
+            }
+         } else {
+            switch (size) {
+               case 0: op = U ? Iop_PwMax8Ux8  : Iop_PwMax8Sx8; break;
+               case 1: op = U ? Iop_PwMax16Ux4 : Iop_PwMax16Sx4; break;
+               case 2: op = U ? Iop_PwMax32Ux2 : Iop_PwMax32Sx2; break;
+               case 3: return False;
+               default: vassert(0);
+            }
+         }
+         assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+         DIP("vp%s.%c%u %c%u, %c%u, %c%u\n",
+             P ? "min" : "max", U ? 'u' : 's',
+             8 << size, Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg,
+             Q ? 'q' : 'd', mreg);
+         break;
+      }
+      case 11:
+         if (B == 0) {
+            if (U == 0) {
+               /* VQDMULH  */
+               IROp op ,op2;
+               ULong imm;
+               switch (size) {
+                  case 0: case 3:
+                     return False;
+                  case 1:
+                     op = Q ? Iop_QDMulHi16Sx8 : Iop_QDMulHi16Sx4;
+                     op2 = Q ? Iop_CmpEQ16x8 : Iop_CmpEQ16x4;
+                     imm = 1LL << 15;
+                     imm = (imm << 16) | imm;
+                     imm = (imm << 32) | imm;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QDMulHi32Sx4 : Iop_QDMulHi32Sx2;
+                     op2 = Q ? Iop_CmpEQ32x4 : Iop_CmpEQ32x2;
+                     imm = 1LL << 31;
+                     imm = (imm << 32) | imm;
+                     break;
+                  default:
+                     vassert(0);
+               }
+               assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+               setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                                binop(op2, mkexpr(arg_n),
+                                           Q ? mkU128(imm) : mkU64(imm)),
+                                binop(op2, mkexpr(arg_m),
+                                           Q ? mkU128(imm) : mkU64(imm))),
+                          Q ? mkU128(0) : mkU64(0), Q);
+#endif
+               DIP("vqdmulh.s%u %c%u, %c%u, %c%u\n",
+                   8 << size, Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            } else {
+               /* VQRDMULH */
+               IROp op ,op2;
+               ULong imm;
+               switch(size) {
+                  case 0: case 3:
+                     return False;
+                  case 1:
+                     imm = 1LL << 15;
+                     imm = (imm << 16) | imm;
+                     imm = (imm << 32) | imm;
+                     op = Q ? Iop_QRDMulHi16Sx8 : Iop_QRDMulHi16Sx4;
+                     op2 = Q ? Iop_CmpEQ16x8 : Iop_CmpEQ16x4;
+                     break;
+                  case 2:
+                     imm = 1LL << 31;
+                     imm = (imm << 32) | imm;
+                     op = Q ? Iop_QRDMulHi32Sx4 : Iop_QRDMulHi32Sx2;
+                     op2 = Q ? Iop_CmpEQ32x4 : Iop_CmpEQ32x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+               assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+               setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                                binop(op2, mkexpr(arg_n),
+                                           Q ? mkU128(imm) : mkU64(imm)),
+                                binop(op2, mkexpr(arg_m),
+                                           Q ? mkU128(imm) : mkU64(imm))),
+                          Q ? mkU128(0) : mkU64(0), Q);
+#endif
+               DIP("vqrdmulh.s%u %c%u, %c%u, %c%u\n",
+                   8 << size, Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            }
+         } else {
+            if (U == 0) {
+               /* VPADD */
+               IROp op;
+               if (Q)
+                  return False;
+               switch (size) {
+                  case 0: op = Q ? Iop_PwAdd8x16 : Iop_PwAdd8x8;  break;
+                  case 1: op = Q ? Iop_PwAdd16x8 : Iop_PwAdd16x4; break;
+                  case 2: op = Q ? Iop_PwAdd32x4 : Iop_PwAdd32x2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+               assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+               DIP("vpadd.i%d %c%u, %c%u, %c%u\n",
+                   8 << size, Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            }
+         }
+         break;
+      /* Starting from here these are FP SIMD cases */
+      case 13:
+         if (B == 0) {
+            IROp op;
+            if (U == 0) {
+               if ((C >> 1) == 0) {
+                  /* VADD  */
+                  op = Q ? Iop_Add32Fx4 : Iop_Add32Fx2 ;
+                  DIP("vadd.f32 %c%u, %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               } else {
+                  /* VSUB  */
+                  op = Q ? Iop_Sub32Fx4 : Iop_Sub32Fx2 ;
+                  DIP("vsub.f32 %c%u, %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               }
+            } else {
+               if ((C >> 1) == 0) {
+                  /* VPADD */
+                  if (Q)
+                     return False;
+                  op = Iop_PwAdd32Fx2;
+                  DIP("vpadd.f32 d%u, d%u, d%u\n", dreg, nreg, mreg);
+               } else {
+                  /* VABD  */
+                  if (Q) {
+                     assign(res, unop(Iop_Abs32Fx4,
+                                      binop(Iop_Sub32Fx4,
+                                            mkexpr(arg_n),
+                                            mkexpr(arg_m))));
+                  } else {
+                     assign(res, unop(Iop_Abs32Fx2,
+                                      binop(Iop_Sub32Fx2,
+                                            mkexpr(arg_n),
+                                            mkexpr(arg_m))));
+                  }
+                  DIP("vabd.f32 %c%u, %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+                  break;
+               }
+            }
+            assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+         } else {
+            if (U == 0) {
+               /* VMLA, VMLS  */
+               IROp op, op2;
+               UInt P = (theInstr >> 21) & 1;
+               if (P) {
+                  switch (size & 1) {
+                     case 0:
+                        op = Q ? Iop_Mul32Fx4 : Iop_Mul32Fx2;
+                        op2 = Q ? Iop_Sub32Fx4 : Iop_Sub32Fx2;
+                        break;
+                     case 1: return False;
+                     default: vassert(0);
+                  }
+               } else {
+                  switch (size & 1) {
+                     case 0:
+                        op = Q ? Iop_Mul32Fx4 : Iop_Mul32Fx2;
+                        op2 = Q ? Iop_Add32Fx4 : Iop_Add32Fx2;
+                        break;
+                     case 1: return False;
+                     default: vassert(0);
+                  }
+               }
+               assign(res, binop(op2,
+                                 Q ? getQReg(dreg) : getDRegI(dreg),
+                                 binop(op, mkexpr(arg_n), mkexpr(arg_m))));
+
+               DIP("vml%c.f32 %c%u, %c%u, %c%u\n",
+                   P ? 's' : 'a', Q ? 'q' : 'd',
+                   dreg, Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            } else {
+               /* VMUL  */
+               IROp op;
+               if ((C >> 1) != 0)
+                  return False;
+               op = Q ? Iop_Mul32Fx4 : Iop_Mul32Fx2 ;
+               assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+               DIP("vmul.f32 %c%u, %c%u, %c%u\n",
+                   Q ? 'q' : 'd', dreg,
+                   Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+            }
+         }
+         break;
+      case 14:
+         if (B == 0) {
+            if (U == 0) {
+               if ((C >> 1) == 0) {
+                  /* VCEQ  */
+                  IROp op;
+                  if ((theInstr >> 20) & 1)
+                     return False;
+                  op = Q ? Iop_CmpEQ32Fx4 : Iop_CmpEQ32Fx2;
+                  assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+                  DIP("vceq.f32 %c%u, %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               } else {
+                  return False;
+               }
+            } else {
+               if ((C >> 1) == 0) {
+                  /* VCGE  */
+                  IROp op;
+                  if ((theInstr >> 20) & 1)
+                     return False;
+                  op = Q ? Iop_CmpGE32Fx4 : Iop_CmpGE32Fx2;
+                  assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+                  DIP("vcge.f32 %c%u, %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               } else {
+                  /* VCGT  */
+                  IROp op;
+                  if ((theInstr >> 20) & 1)
+                     return False;
+                  op = Q ? Iop_CmpGT32Fx4 : Iop_CmpGT32Fx2;
+                  assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+                  DIP("vcgt.f32 %c%u, %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               }
+            }
+         } else {
+            if (U == 1) {
+               /* VACGE, VACGT */
+               UInt op_bit = (theInstr >> 21) & 1;
+               IROp op, op2;
+               op2 = Q ? Iop_Abs32Fx4 : Iop_Abs32Fx2;
+               if (op_bit) {
+                  op = Q ? Iop_CmpGT32Fx4 : Iop_CmpGT32Fx2;
+                  assign(res, binop(op,
+                                    unop(op2, mkexpr(arg_n)),
+                                    unop(op2, mkexpr(arg_m))));
+               } else {
+                  op = Q ? Iop_CmpGE32Fx4 : Iop_CmpGE32Fx2;
+                  assign(res, binop(op,
+                                    unop(op2, mkexpr(arg_n)),
+                                    unop(op2, mkexpr(arg_m))));
+               }
+               DIP("vacg%c.f32 %c%u, %c%u, %c%u\n", op_bit ? 't' : 'e',
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg,
+                   Q ? 'q' : 'd', mreg);
+            }
+         }
+         break;
+      case 15:
+         if (B == 0) {
+            if (U == 0) {
+               /* VMAX, VMIN  */
+               IROp op;
+               if ((theInstr >> 20) & 1)
+                  return False;
+               if ((theInstr >> 21) & 1) {
+                  op = Q ? Iop_Min32Fx4 : Iop_Min32Fx2;
+                  DIP("vmin.f32 %c%u, %c%u, %c%u\n", Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               } else {
+                  op = Q ? Iop_Max32Fx4 : Iop_Max32Fx2;
+                  DIP("vmax.f32 %c%u, %c%u, %c%u\n", Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               }
+               assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+            } else {
+               /* VPMAX, VPMIN   */
+               IROp op;
+               if (Q)
+                  return False;
+               if ((theInstr >> 20) & 1)
+                  return False;
+               if ((theInstr >> 21) & 1) {
+                  op = Iop_PwMin32Fx2;
+                  DIP("vpmin.f32 d%u, d%u, d%u\n", dreg, nreg, mreg);
+               } else {
+                  op = Iop_PwMax32Fx2;
+                  DIP("vpmax.f32 d%u, d%u, d%u\n", dreg, nreg, mreg);
+               }
+               assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+            }
+         } else {
+            if (U == 0) {
+               if ((C >> 1) == 0) {
+                  /* VRECPS */
+                  if ((theInstr >> 20) & 1)
+                     return False;
+                  assign(res, binop(Q ? Iop_Recps32Fx4 : Iop_Recps32Fx2,
+                                    mkexpr(arg_n),
+                                    mkexpr(arg_m)));
+                  DIP("vrecps.f32 %c%u, %c%u, %c%u\n", Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               } else {
+                  /* VRSQRTS  */
+                  if ((theInstr >> 20) & 1)
+                     return False;
+                  assign(res, binop(Q ? Iop_Rsqrts32Fx4 : Iop_Rsqrts32Fx2,
+                                    mkexpr(arg_n),
+                                    mkexpr(arg_m)));
+                  DIP("vrsqrts.f32 %c%u, %c%u, %c%u\n", Q ? 'q' : 'd', dreg,
+                      Q ? 'q' : 'd', nreg, Q ? 'q' : 'd', mreg);
+               }
+            }
+         }
+         break;
+   }
+
+   if (Q) {
+      putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+   } else {
+      putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+   }
+
+   return True;
+}
+
+/* A7.4.2 Three registers of different length */
+static
+Bool dis_neon_data_3diff(UInt theInstr)
+{
+   UInt A = (theInstr >> 8) & 0xf;
+   UInt B = (theInstr >> 20) & 3;
+   UInt U = (theInstr >> 24) & 1;
+   UInt P = (theInstr >> 9) & 1;
+   UInt mreg = get_neon_m_regno(theInstr);
+   UInt nreg = get_neon_n_regno(theInstr);
+   UInt dreg = get_neon_d_regno(theInstr);
+   UInt size = B;
+   ULong imm;
+   IRTemp res, arg_m, arg_n, cond, tmp;
+   IROp cvt, cvt2, cmp, op, op2, sh, add;
+   switch (A) {
+      case 0: case 1: case 2: case 3:
+         /* VADDL, VADDW, VSUBL, VSUBW */
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         size = B;
+         switch (size) {
+            case 0:
+               cvt = U ? Iop_Longen8Ux8 : Iop_Longen8Sx8;
+               op = (A & 2) ? Iop_Sub16x8 : Iop_Add16x8;
+               break;
+            case 1:
+               cvt = U ? Iop_Longen16Ux4 : Iop_Longen16Sx4;
+               op = (A & 2) ? Iop_Sub32x4 : Iop_Add32x4;
+               break;
+            case 2:
+               cvt = U ? Iop_Longen32Ux2 : Iop_Longen32Sx2;
+               op = (A & 2) ? Iop_Sub64x2 : Iop_Add64x2;
+               break;
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         arg_n = newTemp(Ity_V128);
+         arg_m = newTemp(Ity_V128);
+         if (A & 1) {
+            if (nreg & 1)
+               return False;
+            nreg >>= 1;
+            assign(arg_n, getQReg(nreg));
+         } else {
+            assign(arg_n, unop(cvt, getDRegI(nreg)));
+         }
+         assign(arg_m, unop(cvt, getDRegI(mreg)));
+         putQReg(dreg, binop(op, mkexpr(arg_n), mkexpr(arg_m)),
+                       IRTemp_INVALID);
+         DIP("v%s%c.%c%u q%u, %c%u, d%u\n", (A & 2) ? "sub" : "add",
+             (A & 1) ? 'w' : 'l', U ? 'u' : 's', 8 << size, dreg,
+             (A & 1) ? 'q' : 'd', nreg, mreg);
+         return True;
+      case 4:
+         /* VADDHN, VRADDHN */
+         if (mreg & 1)
+            return False;
+         mreg >>= 1;
+         if (nreg & 1)
+            return False;
+         nreg >>= 1;
+         size = B;
+         switch (size) {
+            case 0:
+               op = Iop_Add16x8;
+               cvt = Iop_Shorten16x8;
+               sh = Iop_ShrN16x8;
+               imm = 1U << 7;
+               imm = (imm << 16) | imm;
+               imm = (imm << 32) | imm;
+               break;
+            case 1:
+               op = Iop_Add32x4;
+               cvt = Iop_Shorten32x4;
+               sh = Iop_ShrN32x4;
+               imm = 1U << 15;
+               imm = (imm << 32) | imm;
+               break;
+            case 2:
+               op = Iop_Add64x2;
+               cvt = Iop_Shorten64x2;
+               sh = Iop_ShrN64x2;
+               imm = 1U << 31;
+               break;
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         tmp = newTemp(Ity_V128);
+         res = newTemp(Ity_V128);
+         assign(tmp, binop(op, getQReg(nreg), getQReg(mreg)));
+         if (U) {
+            /* VRADDHN */
+            assign(res, binop(op, mkexpr(tmp),
+                     binop(Iop_64HLtoV128, mkU64(imm), mkU64(imm))));
+         } else {
+            assign(res, mkexpr(tmp));
+         }
+         putDRegI(dreg, unop(cvt, binop(sh, mkexpr(res), mkU8(8 << size))),
+                  IRTemp_INVALID);
+         DIP("v%saddhn.i%u d%u, q%u, q%u\n", U ? "r" : "", 16 << size, dreg,
+             nreg, mreg);
+         return True;
+      case 5:
+         /* VABAL */
+         if (!((theInstr >> 23) & 1)) {
+            vpanic("VABA should not be in dis_neon_data_3diff\n");
+         }
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         switch (size) {
+            case 0:
+               cmp = U ? Iop_CmpGT8Ux8 : Iop_CmpGT8Sx8;
+               cvt = U ? Iop_Longen8Ux8 : Iop_Longen8Sx8;
+               cvt2 = Iop_Longen8Sx8;
+               op = Iop_Sub16x8;
+               op2 = Iop_Add16x8;
+               break;
+            case 1:
+               cmp = U ? Iop_CmpGT16Ux4 : Iop_CmpGT16Sx4;
+               cvt = U ? Iop_Longen16Ux4 : Iop_Longen16Sx4;
+               cvt2 = Iop_Longen16Sx4;
+               op = Iop_Sub32x4;
+               op2 = Iop_Add32x4;
+               break;
+            case 2:
+               cmp = U ? Iop_CmpGT32Ux2 : Iop_CmpGT32Sx2;
+               cvt = U ? Iop_Longen32Ux2 : Iop_Longen32Sx2;
+               cvt2 = Iop_Longen32Sx2;
+               op = Iop_Sub64x2;
+               op2 = Iop_Add64x2;
+               break;
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         arg_n = newTemp(Ity_V128);
+         arg_m = newTemp(Ity_V128);
+         cond = newTemp(Ity_V128);
+         res = newTemp(Ity_V128);
+         assign(arg_n, unop(cvt, getDRegI(nreg)));
+         assign(arg_m, unop(cvt, getDRegI(mreg)));
+         assign(cond, unop(cvt2, binop(cmp, getDRegI(nreg), getDRegI(mreg))));
+         assign(res, binop(op2,
+                           binop(Iop_OrV128,
+                                 binop(Iop_AndV128,
+                                       binop(op, mkexpr(arg_n), mkexpr(arg_m)),
+                                       mkexpr(cond)),
+                                 binop(Iop_AndV128,
+                                       binop(op, mkexpr(arg_m), mkexpr(arg_n)),
+                                       unop(Iop_NotV128, mkexpr(cond)))),
+                           getQReg(dreg)));
+         putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+         DIP("vabal.%c%u q%u, d%u, d%u\n", U ? 'u' : 's', 8 << size, dreg,
+             nreg, mreg);
+         return True;
+      case 6:
+         /* VSUBHN, VRSUBHN */
+         if (mreg & 1)
+            return False;
+         mreg >>= 1;
+         if (nreg & 1)
+            return False;
+         nreg >>= 1;
+         size = B;
+         switch (size) {
+            case 0:
+               op = Iop_Sub16x8;
+               op2 = Iop_Add16x8;
+               cvt = Iop_Shorten16x8;
+               sh = Iop_ShrN16x8;
+               imm = 1U << 7;
+               imm = (imm << 16) | imm;
+               imm = (imm << 32) | imm;
+               break;
+            case 1:
+               op = Iop_Sub32x4;
+               op2 = Iop_Add32x4;
+               cvt = Iop_Shorten32x4;
+               sh = Iop_ShrN32x4;
+               imm = 1U << 15;
+               imm = (imm << 32) | imm;
+               break;
+            case 2:
+               op = Iop_Sub64x2;
+               op2 = Iop_Add64x2;
+               cvt = Iop_Shorten64x2;
+               sh = Iop_ShrN64x2;
+               imm = 1U << 31;
+               break;
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         tmp = newTemp(Ity_V128);
+         res = newTemp(Ity_V128);
+         assign(tmp, binop(op, getQReg(nreg), getQReg(mreg)));
+         if (U) {
+            /* VRSUBHN */
+            assign(res, binop(op2, mkexpr(tmp),
+                     binop(Iop_64HLtoV128, mkU64(imm), mkU64(imm))));
+         } else {
+            assign(res, mkexpr(tmp));
+         }
+         putDRegI(dreg, unop(cvt, binop(sh, mkexpr(res), mkU8(8 << size))),
+                  IRTemp_INVALID);
+         DIP("v%ssubhn.i%u d%u, q%u, q%u\n", U ? "r" : "", 16 << size, dreg,
+             nreg, mreg);
+         return True;
+      case 7:
+         /* VABDL */
+         if (!((theInstr >> 23) & 1)) {
+            vpanic("VABL should not be in dis_neon_data_3diff\n");
+         }
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         switch (size) {
+            case 0:
+               cmp = U ? Iop_CmpGT8Ux8 : Iop_CmpGT8Sx8;
+               cvt = U ? Iop_Longen8Ux8 : Iop_Longen8Sx8;
+               cvt2 = Iop_Longen8Sx8;
+               op = Iop_Sub16x8;
+               break;
+            case 1:
+               cmp = U ? Iop_CmpGT16Ux4 : Iop_CmpGT16Sx4;
+               cvt = U ? Iop_Longen16Ux4 : Iop_Longen16Sx4;
+               cvt2 = Iop_Longen16Sx4;
+               op = Iop_Sub32x4;
+               break;
+            case 2:
+               cmp = U ? Iop_CmpGT32Ux2 : Iop_CmpGT32Sx2;
+               cvt = U ? Iop_Longen32Ux2 : Iop_Longen32Sx2;
+               cvt2 = Iop_Longen32Sx2;
+               op = Iop_Sub64x2;
+               break;
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         arg_n = newTemp(Ity_V128);
+         arg_m = newTemp(Ity_V128);
+         cond = newTemp(Ity_V128);
+         res = newTemp(Ity_V128);
+         assign(arg_n, unop(cvt, getDRegI(nreg)));
+         assign(arg_m, unop(cvt, getDRegI(mreg)));
+         assign(cond, unop(cvt2, binop(cmp, getDRegI(nreg), getDRegI(mreg))));
+         assign(res, binop(Iop_OrV128,
+                           binop(Iop_AndV128,
+                                 binop(op, mkexpr(arg_n), mkexpr(arg_m)),
+                                 mkexpr(cond)),
+                           binop(Iop_AndV128,
+                                 binop(op, mkexpr(arg_m), mkexpr(arg_n)),
+                                 unop(Iop_NotV128, mkexpr(cond)))));
+         putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+         DIP("vabdl.%c%u q%u, d%u, d%u\n", U ? 'u' : 's', 8 << size, dreg,
+             nreg, mreg);
+         return True;
+      case 8:
+      case 10:
+         /* VMLAL, VMLSL (integer) */
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         size = B;
+         switch (size) {
+            case 0:
+               op = U ? Iop_Mull8Ux8 : Iop_Mull8Sx8;
+               op2 = P ? Iop_Sub16x8 : Iop_Add16x8;
+               break;
+            case 1:
+               op = U ? Iop_Mull16Ux4 : Iop_Mull16Sx4;
+               op2 = P ? Iop_Sub32x4 : Iop_Add32x4;
+               break;
+            case 2:
+               op = U ? Iop_Mull32Ux2 : Iop_Mull32Sx2;
+               op2 = P ? Iop_Sub64x2 : Iop_Add64x2;
+               break;
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         res = newTemp(Ity_V128);
+         assign(res, binop(op, getDRegI(nreg),getDRegI(mreg)));
+         putQReg(dreg, binop(op2, getQReg(dreg), mkexpr(res)), IRTemp_INVALID);
+         DIP("vml%cl.%c%u q%u, d%u, d%u\n", P ? 's' : 'a', U ? 'u' : 's',
+             8 << size, dreg, nreg, mreg);
+         return True;
+      case 9:
+      case 11:
+         /* VQDMLAL, VQDMLSL */
+         if (U)
+            return False;
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         size = B;
+         switch (size) {
+            case 0: case 3:
+               return False;
+            case 1:
+               op = Iop_QDMulLong16Sx4;
+               cmp = Iop_CmpEQ16x4;
+               add = P ? Iop_QSub32Sx4 : Iop_QAdd32Sx4;
+               op2 = P ? Iop_Sub32x4 : Iop_Add32x4;
+               imm = 1LL << 15;
+               imm = (imm << 16) | imm;
+               imm = (imm << 32) | imm;
+               break;
+            case 2:
+               op = Iop_QDMulLong32Sx2;
+               cmp = Iop_CmpEQ32x2;
+               add = P ? Iop_QSub64Sx2 : Iop_QAdd64Sx2;
+               op2 = P ? Iop_Sub64x2 : Iop_Add64x2;
+               imm = 1LL << 31;
+               imm = (imm << 32) | imm;
+               break;
+            default:
+               vassert(0);
+         }
+         res = newTemp(Ity_V128);
+         tmp = newTemp(Ity_V128);
+         assign(res, binop(op, getDRegI(nreg), getDRegI(mreg)));
+#ifndef DISABLE_QC_FLAG
+         assign(tmp, binop(op2, getQReg(dreg), mkexpr(res)));
+         setFlag_QC(mkexpr(tmp), binop(add, getQReg(dreg), mkexpr(res)), True);
+         setFlag_QC(binop(Iop_And64,
+                          binop(cmp, getDRegI(nreg), mkU64(imm)),
+                          binop(cmp, getDRegI(mreg), mkU64(imm))),
+                    mkU64(0), False);
+#endif
+         putQReg(dreg, binop(add, getQReg(dreg), mkexpr(res)), IRTemp_INVALID);
+         DIP("vqdml%cl.s%u q%u, d%u, d%u\n", P ? 's' : 'a', 8 << size, dreg,
+             nreg, mreg);
+         return True;
+      case 12:
+      case 14:
+         /* VMULL (integer or polynomial) */
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         size = B;
+         switch (size) {
+            case 0:
+               op = (U) ? Iop_Mull8Ux8 : Iop_Mull8Sx8;
+               if (P)
+                  op = Iop_PolynomialMull8x8;
+               break;
+            case 1:
+               op = (U) ? Iop_Mull16Ux4 : Iop_Mull16Sx4;
+               break;
+            case 2:
+               op = (U) ? Iop_Mull32Ux2 : Iop_Mull32Sx2;
+               break;
+            default:
+               vassert(0);
+         }
+         putQReg(dreg, binop(op, getDRegI(nreg),
+                                 getDRegI(mreg)), IRTemp_INVALID);
+         DIP("vmull.%c%u q%u, d%u, d%u\n", P ? 'p' : (U ? 'u' : 's'),
+               8 << size, dreg, nreg, mreg);
+         return True;
+      case 13:
+         /* VQDMULL */
+         if (U)
+            return False;
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         size = B;
+         switch (size) {
+            case 0:
+            case 3:
+               return False;
+            case 1:
+               op = Iop_QDMulLong16Sx4;
+               op2 = Iop_CmpEQ16x4;
+               imm = 1LL << 15;
+               imm = (imm << 16) | imm;
+               imm = (imm << 32) | imm;
+               break;
+            case 2:
+               op = Iop_QDMulLong32Sx2;
+               op2 = Iop_CmpEQ32x2;
+               imm = 1LL << 31;
+               imm = (imm << 32) | imm;
+               break;
+            default:
+               vassert(0);
+         }
+         putQReg(dreg, binop(op, getDRegI(nreg), getDRegI(mreg)),
+               IRTemp_INVALID);
+#ifndef DISABLE_QC_FLAG
+         setFlag_QC(binop(Iop_And64,
+                          binop(op2, getDRegI(nreg), mkU64(imm)),
+                          binop(op2, getDRegI(mreg), mkU64(imm))),
+                    mkU64(0), False);
+#endif
+         DIP("vqdmull.s%u q%u, d%u, d%u\n", 8 << size, dreg, nreg, mreg);
+         return True;
+      default:
+         return False;
+   }
+   return False;
+}
+
+/* A7.4.3 Two registers and a scalar */
+static
+Bool dis_neon_data_2reg_and_scalar(UInt theInstr)
+{
+#  define INSN(_bMax,_bMin)  SLICE_UInt(theInstr, (_bMax), (_bMin))
+   UInt U = INSN(24,24);
+   UInt dreg = get_neon_d_regno(theInstr & ~(1 << 6));
+   UInt nreg = get_neon_n_regno(theInstr & ~(1 << 6));
+   UInt mreg = get_neon_m_regno(theInstr & ~(1 << 6));
+   UInt size = INSN(21,20);
+   UInt index;
+   UInt Q = INSN(24,24);
+
+   if (INSN(27,25) != 1 || INSN(23,23) != 1
+       || INSN(6,6) != 1 || INSN(4,4) != 0)
+      return False;
+
+   /* VMLA, VMLS (scalar)  */
+   if ((INSN(11,8) & BITS4(1,0,1,0)) == BITS4(0,0,0,0)) {
+      IRTemp res, arg_m, arg_n;
+      IROp dup, get, op, op2, add, sub;
+      if (Q) {
+         if ((dreg & 1) || (nreg & 1))
+            return False;
+         dreg >>= 1;
+         nreg >>= 1;
+         res = newTemp(Ity_V128);
+         arg_m = newTemp(Ity_V128);
+         arg_n = newTemp(Ity_V128);
+         assign(arg_n, getQReg(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x8;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x4;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      } else {
+         res = newTemp(Ity_I64);
+         arg_m = newTemp(Ity_I64);
+         arg_n = newTemp(Ity_I64);
+         assign(arg_n, getDRegI(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x4;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x2;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      }
+      if (INSN(8,8)) {
+         switch (size) {
+            case 2:
+               op = Q ? Iop_Mul32Fx4 : Iop_Mul32Fx2;
+               add = Q ? Iop_Add32Fx4 : Iop_Add32Fx2;
+               sub = Q ? Iop_Sub32Fx4 : Iop_Sub32Fx2;
+               break;
+            case 0:
+            case 1:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+      } else {
+         switch (size) {
+            case 1:
+               op = Q ? Iop_Mul16x8 : Iop_Mul16x4;
+               add = Q ? Iop_Add16x8 : Iop_Add16x4;
+               sub = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+               break;
+            case 2:
+               op = Q ? Iop_Mul32x4 : Iop_Mul32x2;
+               add = Q ? Iop_Add32x4 : Iop_Add32x2;
+               sub = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+      }
+      op2 = INSN(10,10) ? sub : add;
+      assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+      if (Q)
+         putQReg(dreg, binop(op2, getQReg(dreg), mkexpr(res)),
+               IRTemp_INVALID);
+      else
+         putDRegI(dreg, binop(op2, getDRegI(dreg), mkexpr(res)),
+               IRTemp_INVALID);
+      DIP("vml%c.%c%u %c%u, %c%u, d%u[%u]\n", INSN(10,10) ? 's' : 'a',
+            INSN(8,8) ? 'f' : 'i', 8 << size,
+            Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', nreg, mreg, index);
+      return True;
+   }
+
+   /* VMLAL, VMLSL (scalar)   */
+   if ((INSN(11,8) & BITS4(1,0,1,1)) == BITS4(0,0,1,0)) {
+      IRTemp res, arg_m, arg_n;
+      IROp dup, get, op, op2, add, sub;
+      if (dreg & 1)
+         return False;
+      dreg >>= 1;
+      res = newTemp(Ity_V128);
+      arg_m = newTemp(Ity_I64);
+      arg_n = newTemp(Ity_I64);
+      assign(arg_n, getDRegI(nreg));
+      switch(size) {
+         case 1:
+            dup = Iop_Dup16x4;
+            get = Iop_GetElem16x4;
+            index = mreg >> 3;
+            mreg &= 7;
+            break;
+         case 2:
+            dup = Iop_Dup32x2;
+            get = Iop_GetElem32x2;
+            index = mreg >> 4;
+            mreg &= 0xf;
+            break;
+         case 0:
+         case 3:
+            return False;
+         default:
+            vassert(0);
+      }
+      assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      switch (size) {
+         case 1:
+            op = U ? Iop_Mull16Ux4 : Iop_Mull16Sx4;
+            add = Iop_Add32x4;
+            sub = Iop_Sub32x4;
+            break;
+         case 2:
+            op = U ? Iop_Mull32Ux2 : Iop_Mull32Sx2;
+            add = Iop_Add64x2;
+            sub = Iop_Sub64x2;
+            break;
+         case 0:
+         case 3:
+            return False;
+         default:
+            vassert(0);
+      }
+      op2 = INSN(10,10) ? sub : add;
+      assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+      putQReg(dreg, binop(op2, getQReg(dreg), mkexpr(res)), IRTemp_INVALID);
+      DIP("vml%cl.%c%u q%u, d%u, d%u[%u]\n",
+          INSN(10,10) ? 's' : 'a', U ? 'u' : 's',
+          8 << size, dreg, nreg, mreg, index);
+      return True;
+   }
+
+   /* VQDMLAL, VQDMLSL (scalar)  */
+   if ((INSN(11,8) & BITS4(1,0,1,1)) == BITS4(0,0,1,1) && !U) {
+      IRTemp res, arg_m, arg_n, tmp;
+      IROp dup, get, op, op2, add, cmp;
+      UInt P = INSN(10,10);
+      ULong imm;
+      if (dreg & 1)
+         return False;
+      dreg >>= 1;
+      res = newTemp(Ity_V128);
+      arg_m = newTemp(Ity_I64);
+      arg_n = newTemp(Ity_I64);
+      assign(arg_n, getDRegI(nreg));
+      switch(size) {
+         case 1:
+            dup = Iop_Dup16x4;
+            get = Iop_GetElem16x4;
+            index = mreg >> 3;
+            mreg &= 7;
+            break;
+         case 2:
+            dup = Iop_Dup32x2;
+            get = Iop_GetElem32x2;
+            index = mreg >> 4;
+            mreg &= 0xf;
+            break;
+         case 0:
+         case 3:
+            return False;
+         default:
+            vassert(0);
+      }
+      assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      switch (size) {
+         case 0:
+         case 3:
+            return False;
+         case 1:
+            op = Iop_QDMulLong16Sx4;
+            cmp = Iop_CmpEQ16x4;
+            add = P ? Iop_QSub32Sx4 : Iop_QAdd32Sx4;
+            op2 = P ? Iop_Sub32x4 : Iop_Add32x4;
+            imm = 1LL << 15;
+            imm = (imm << 16) | imm;
+            imm = (imm << 32) | imm;
+            break;
+         case 2:
+            op = Iop_QDMulLong32Sx2;
+            cmp = Iop_CmpEQ32x2;
+            add = P ? Iop_QSub64Sx2 : Iop_QAdd64Sx2;
+            op2 = P ? Iop_Sub64x2 : Iop_Add64x2;
+            imm = 1LL << 31;
+            imm = (imm << 32) | imm;
+            break;
+         default:
+            vassert(0);
+      }
+      res = newTemp(Ity_V128);
+      tmp = newTemp(Ity_V128);
+      assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+      assign(tmp, binop(op2, getQReg(dreg), mkexpr(res)));
+      setFlag_QC(binop(Iop_And64,
+                       binop(cmp, mkexpr(arg_n), mkU64(imm)),
+                       binop(cmp, mkexpr(arg_m), mkU64(imm))),
+                 mkU64(0), False);
+      setFlag_QC(mkexpr(tmp), binop(add, getQReg(dreg), mkexpr(res)), True);
+#endif
+      putQReg(dreg, binop(add, getQReg(dreg), mkexpr(res)), IRTemp_INVALID);
+      DIP("vqdml%cl.s%u q%u, d%u, d%u[%u]\n", P ? 's' : 'a', 8 << size,
+          dreg, nreg, mreg, index);
+      return True;
+   }
+
+   /* VMUL (by scalar)  */
+   if ((INSN(11,8) & BITS4(1,1,1,0)) == BITS4(1,0,0,0)) {
+      IRTemp res, arg_m, arg_n;
+      IROp dup, get, op;
+      if (Q) {
+         if ((dreg & 1) || (nreg & 1))
+            return False;
+         dreg >>= 1;
+         nreg >>= 1;
+         res = newTemp(Ity_V128);
+         arg_m = newTemp(Ity_V128);
+         arg_n = newTemp(Ity_V128);
+         assign(arg_n, getQReg(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x8;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x4;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      } else {
+         res = newTemp(Ity_I64);
+         arg_m = newTemp(Ity_I64);
+         arg_n = newTemp(Ity_I64);
+         assign(arg_n, getDRegI(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x4;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x2;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      }
+      switch (size) {
+         case 1:
+            op = Q ? Iop_Mul16x8 : Iop_Mul16x4;
+            break;
+         case 2:
+            op = Q ? Iop_Mul32x4 : Iop_Mul32x2;
+            break;
+         case 0:
+         case 3:
+            return False;
+         default:
+            vassert(0);
+      }
+      assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+      if (Q)
+         putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+      else
+         putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+      DIP("vmul.i%u %c%u, %c%u, d%u[%u]\n", 8 << size, Q ? 'q' : 'd', dreg,
+          Q ? 'q' : 'd', nreg, mreg, index);
+      return True;
+   }
+
+   /* VMULL (scalar) */
+   if (INSN(11,8) == BITS4(1,0,1,0)) {
+      IRTemp res, arg_m, arg_n;
+      IROp dup, get, op;
+      if (dreg & 1)
+         return False;
+      dreg >>= 1;
+      res = newTemp(Ity_V128);
+      arg_m = newTemp(Ity_I64);
+      arg_n = newTemp(Ity_I64);
+      assign(arg_n, getDRegI(nreg));
+      switch(size) {
+         case 1:
+            dup = Iop_Dup16x4;
+            get = Iop_GetElem16x4;
+            index = mreg >> 3;
+            mreg &= 7;
+            break;
+         case 2:
+            dup = Iop_Dup32x2;
+            get = Iop_GetElem32x2;
+            index = mreg >> 4;
+            mreg &= 0xf;
+            break;
+         case 0:
+         case 3:
+            return False;
+         default:
+            vassert(0);
+      }
+      assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      switch (size) {
+         case 1: op = U ? Iop_Mull16Ux4 : Iop_Mull16Sx4; break;
+         case 2: op = U ? Iop_Mull32Ux2 : Iop_Mull32Sx2; break;
+         case 0: case 3: return False;
+         default: vassert(0);
+      }
+      assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+      putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+      DIP("vmull.%c%u q%u, d%u, d%u[%u]\n", U ? 'u' : 's', 8 << size, dreg,
+          nreg, mreg, index);
+      return True;
+   }
+
+   /* VQDMULL */
+   if (INSN(11,8) == BITS4(1,0,1,1) && !U) {
+      IROp op ,op2, dup, get;
+      ULong imm;
+      IRTemp res, arg_m, arg_n;
+      if (dreg & 1)
+         return False;
+      dreg >>= 1;
+      res = newTemp(Ity_V128);
+      arg_m = newTemp(Ity_I64);
+      arg_n = newTemp(Ity_I64);
+      assign(arg_n, getDRegI(nreg));
+      switch(size) {
+         case 1:
+            dup = Iop_Dup16x4;
+            get = Iop_GetElem16x4;
+            index = mreg >> 3;
+            mreg &= 7;
+            break;
+         case 2:
+            dup = Iop_Dup32x2;
+            get = Iop_GetElem32x2;
+            index = mreg >> 4;
+            mreg &= 0xf;
+            break;
+         case 0:
+         case 3:
+            return False;
+         default:
+            vassert(0);
+      }
+      assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      switch (size) {
+         case 0:
+         case 3:
+            return False;
+         case 1:
+            op = Iop_QDMulLong16Sx4;
+            op2 = Iop_CmpEQ16x4;
+            imm = 1LL << 15;
+            imm = (imm << 16) | imm;
+            imm = (imm << 32) | imm;
+            break;
+         case 2:
+            op = Iop_QDMulLong32Sx2;
+            op2 = Iop_CmpEQ32x2;
+            imm = 1LL << 31;
+            imm = (imm << 32) | imm;
+            break;
+         default:
+            vassert(0);
+      }
+      putQReg(dreg, binop(op, mkexpr(arg_n), mkexpr(arg_m)),
+            IRTemp_INVALID);
+#ifndef DISABLE_QC_FLAG
+      setFlag_QC(binop(Iop_And64,
+                       binop(op2, mkexpr(arg_n), mkU64(imm)),
+                       binop(op2, mkexpr(arg_m), mkU64(imm))),
+                 mkU64(0), False);
+#endif
+      DIP("vqdmull.s%u q%u, d%u, d%u[%u]\n", 8 << size, dreg, nreg, mreg,
+          index);
+      return True;
+   }
+
+   /* VQDMULH */
+   if (INSN(11,8) == BITS4(1,1,0,0)) {
+      IROp op ,op2, dup, get;
+      ULong imm;
+      IRTemp res, arg_m, arg_n;
+      if (Q) {
+         if ((dreg & 1) || (nreg & 1))
+            return False;
+         dreg >>= 1;
+         nreg >>= 1;
+         res = newTemp(Ity_V128);
+         arg_m = newTemp(Ity_V128);
+         arg_n = newTemp(Ity_V128);
+         assign(arg_n, getQReg(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x8;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x4;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      } else {
+         res = newTemp(Ity_I64);
+         arg_m = newTemp(Ity_I64);
+         arg_n = newTemp(Ity_I64);
+         assign(arg_n, getDRegI(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x4;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x2;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      }
+      switch (size) {
+         case 0:
+         case 3:
+            return False;
+         case 1:
+            op = Q ? Iop_QDMulHi16Sx8 : Iop_QDMulHi16Sx4;
+            op2 = Q ? Iop_CmpEQ16x8 : Iop_CmpEQ16x4;
+            imm = 1LL << 15;
+            imm = (imm << 16) | imm;
+            imm = (imm << 32) | imm;
+            break;
+         case 2:
+            op = Q ? Iop_QDMulHi32Sx4 : Iop_QDMulHi32Sx2;
+            op2 = Q ? Iop_CmpEQ32x4 : Iop_CmpEQ32x2;
+            imm = 1LL << 31;
+            imm = (imm << 32) | imm;
+            break;
+         default:
+            vassert(0);
+      }
+      assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+      setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                       binop(op2, mkexpr(arg_n),
+                                  Q ? mkU128(imm) : mkU64(imm)),
+                       binop(op2, mkexpr(arg_m),
+                             Q ? mkU128(imm) : mkU64(imm))),
+                 Q ? mkU128(0) : mkU64(0), Q);
+#endif
+      if (Q)
+         putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+      else
+         putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+      DIP("vqdmulh.s%u %c%u, %c%u, d%u[%u]\n",
+          8 << size, Q ? 'q' : 'd', dreg,
+          Q ? 'q' : 'd', nreg, mreg, index);
+      return True;
+   }
+
+   /* VQRDMULH (scalar) */
+   if (INSN(11,8) == BITS4(1,1,0,1)) {
+      IROp op ,op2, dup, get;
+      ULong imm;
+      IRTemp res, arg_m, arg_n;
+      if (Q) {
+         if ((dreg & 1) || (nreg & 1))
+            return False;
+         dreg >>= 1;
+         nreg >>= 1;
+         res = newTemp(Ity_V128);
+         arg_m = newTemp(Ity_V128);
+         arg_n = newTemp(Ity_V128);
+         assign(arg_n, getQReg(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x8;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x4;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      } else {
+         res = newTemp(Ity_I64);
+         arg_m = newTemp(Ity_I64);
+         arg_n = newTemp(Ity_I64);
+         assign(arg_n, getDRegI(nreg));
+         switch(size) {
+            case 1:
+               dup = Iop_Dup16x4;
+               get = Iop_GetElem16x4;
+               index = mreg >> 3;
+               mreg &= 7;
+               break;
+            case 2:
+               dup = Iop_Dup32x2;
+               get = Iop_GetElem32x2;
+               index = mreg >> 4;
+               mreg &= 0xf;
+               break;
+            case 0:
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(arg_m, unop(dup, binop(get, getDRegI(mreg), mkU8(index))));
+      }
+      switch (size) {
+         case 0:
+         case 3:
+            return False;
+         case 1:
+            op = Q ? Iop_QRDMulHi16Sx8 : Iop_QRDMulHi16Sx4;
+            op2 = Q ? Iop_CmpEQ16x8 : Iop_CmpEQ16x4;
+            imm = 1LL << 15;
+            imm = (imm << 16) | imm;
+            imm = (imm << 32) | imm;
+            break;
+         case 2:
+            op = Q ? Iop_QRDMulHi32Sx4 : Iop_QRDMulHi32Sx2;
+            op2 = Q ? Iop_CmpEQ32x4 : Iop_CmpEQ32x2;
+            imm = 1LL << 31;
+            imm = (imm << 32) | imm;
+            break;
+         default:
+            vassert(0);
+      }
+      assign(res, binop(op, mkexpr(arg_n), mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+      setFlag_QC(binop(Q ? Iop_AndV128 : Iop_And64,
+                       binop(op2, mkexpr(arg_n),
+                                  Q ? mkU128(imm) : mkU64(imm)),
+                       binop(op2, mkexpr(arg_m),
+                                  Q ? mkU128(imm) : mkU64(imm))),
+                 Q ? mkU128(0) : mkU64(0), Q);
+#endif
+      if (Q)
+         putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+      else
+         putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+      DIP("vqrdmulh.s%u %c%u, %c%u, d%u[%u]\n",
+          8 << size, Q ? 'q' : 'd', dreg,
+          Q ? 'q' : 'd', nreg, mreg, index);
+      return True;
+   }
+
+   return False;
+#  undef INSN
+}
+
+/* A7.4.4 Two registers and a shift ammount */
+static
+Bool dis_neon_data_2reg_and_shift(UInt theInstr)
+{
+   UInt A = (theInstr >> 8) & 0xf;
+   UInt B = (theInstr >> 6) & 1;
+   UInt L = (theInstr >> 7) & 1;
+   UInt U = (theInstr >> 24) & 1;
+   UInt Q = B;
+   UInt imm6 = (theInstr >> 16) & 0x3f;
+   UInt shift_imm;
+   UInt size = 4;
+   UInt tmp;
+   UInt mreg = get_neon_m_regno(theInstr);
+   UInt dreg = get_neon_d_regno(theInstr);
+   ULong imm = 0;
+   IROp op, cvt, add = Iop_INVALID, cvt2, op_rev;
+   IRTemp reg_m, res, mask;
+
+   if (L == 0 && ((theInstr >> 19) & 7) == 0)
+      /* It is one reg and immediate */
+      return False;
+
+   tmp = (L << 6) | imm6;
+   if (tmp & 0x40) {
+      size = 3;
+      shift_imm = 64 - imm6;
+   } else if (tmp & 0x20) {
+      size = 2;
+      shift_imm = 64 - imm6;
+   } else if (tmp & 0x10) {
+      size = 1;
+      shift_imm = 32 - imm6;
+   } else if (tmp & 0x8) {
+      size = 0;
+      shift_imm = 16 - imm6;
+   } else {
+      return False;
+   }
+
+   switch (A) {
+      case 3:
+      case 2:
+         /* VRSHR, VRSRA */
+         if (shift_imm > 0) {
+            IRExpr *imm_val;
+            imm = 1L;
+            switch (size) {
+               case 0:
+                  imm = (imm << 8) | imm;
+                  /* fall through */
+               case 1:
+                  imm = (imm << 16) | imm;
+                  /* fall through */
+               case 2:
+                  imm = (imm << 32) | imm;
+                  /* fall through */
+               case 3:
+                  break;
+               default:
+                  vassert(0);
+            }
+            if (Q) {
+               reg_m = newTemp(Ity_V128);
+               res = newTemp(Ity_V128);
+               imm_val = binop(Iop_64HLtoV128, mkU64(imm), mkU64(imm));
+               assign(reg_m, getQReg(mreg));
+               switch (size) {
+                  case 0:
+                     add = Iop_Add8x16;
+                     op = U ? Iop_ShrN8x16 : Iop_SarN8x16;
+                     break;
+                  case 1:
+                     add = Iop_Add16x8;
+                     op = U ? Iop_ShrN16x8 : Iop_SarN16x8;
+                     break;
+                  case 2:
+                     add = Iop_Add32x4;
+                     op = U ? Iop_ShrN32x4 : Iop_SarN32x4;
+                     break;
+                  case 3:
+                     add = Iop_Add64x2;
+                     op = U ? Iop_ShrN64x2 : Iop_SarN64x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               reg_m = newTemp(Ity_I64);
+               res = newTemp(Ity_I64);
+               imm_val = mkU64(imm);
+               assign(reg_m, getDRegI(mreg));
+               switch (size) {
+                  case 0:
+                     add = Iop_Add8x8;
+                     op = U ? Iop_ShrN8x8 : Iop_SarN8x8;
+                     break;
+                  case 1:
+                     add = Iop_Add16x4;
+                     op = U ? Iop_ShrN16x4 : Iop_SarN16x4;
+                     break;
+                  case 2:
+                     add = Iop_Add32x2;
+                     op = U ? Iop_ShrN32x2 : Iop_SarN32x2;
+                     break;
+                  case 3:
+                     add = Iop_Add64;
+                     op = U ? Iop_Shr64 : Iop_Sar64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+            assign(res,
+                   binop(add,
+                         binop(op,
+                               mkexpr(reg_m),
+                               mkU8(shift_imm)),
+                         binop(Q ? Iop_AndV128 : Iop_And64,
+                               binop(op,
+                                     mkexpr(reg_m),
+                                     mkU8(shift_imm - 1)),
+                               imm_val)));
+         } else {
+            if (Q) {
+               res = newTemp(Ity_V128);
+               assign(res, getQReg(mreg));
+            } else {
+               res = newTemp(Ity_I64);
+               assign(res, getDRegI(mreg));
+            }
+         }
+         if (A == 3) {
+            if (Q) {
+               putQReg(dreg, binop(add, mkexpr(res), getQReg(dreg)),
+                             IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, binop(add, mkexpr(res), getDRegI(dreg)),
+                              IRTemp_INVALID);
+            }
+            DIP("vrsra.%c%u %c%u, %c%u, #%u\n",
+                U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, shift_imm);
+         } else {
+            if (Q) {
+               putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+            }
+            DIP("vrshr.%c%u %c%u, %c%u, #%u\n", U ? 'u' : 's', 8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, shift_imm);
+         }
+         return True;
+      case 1:
+      case 0:
+         /* VSHR, VSRA */
+         if (Q) {
+            reg_m = newTemp(Ity_V128);
+            assign(reg_m, getQReg(mreg));
+            res = newTemp(Ity_V128);
+         } else {
+            reg_m = newTemp(Ity_I64);
+            assign(reg_m, getDRegI(mreg));
+            res = newTemp(Ity_I64);
+         }
+         if (Q) {
+            switch (size) {
+               case 0:
+                  op = U ? Iop_ShrN8x16 : Iop_SarN8x16;
+                  add = Iop_Add8x16;
+                  break;
+               case 1:
+                  op = U ? Iop_ShrN16x8 : Iop_SarN16x8;
+                  add = Iop_Add16x8;
+                  break;
+               case 2:
+                  op = U ? Iop_ShrN32x4 : Iop_SarN32x4;
+                  add = Iop_Add32x4;
+                  break;
+               case 3:
+                  op = U ? Iop_ShrN64x2 : Iop_SarN64x2;
+                  add = Iop_Add64x2;
+                  break;
+               default:
+                  vassert(0);
+            }
+         } else {
+            switch (size) {
+               case 0:
+                  op =  U ? Iop_ShrN8x8 : Iop_SarN8x8;
+                  add = Iop_Add8x8;
+                  break;
+               case 1:
+                  op = U ? Iop_ShrN16x4 : Iop_SarN16x4;
+                  add = Iop_Add16x4;
+                  break;
+               case 2:
+                  op = U ? Iop_ShrN32x2 : Iop_SarN32x2;
+                  add = Iop_Add32x2;
+                  break;
+               case 3:
+                  op = U ? Iop_Shr64 : Iop_Sar64;
+                  add = Iop_Add64;
+                  break;
+               default:
+                  vassert(0);
+            }
+         }
+         assign(res, binop(op, mkexpr(reg_m), mkU8(shift_imm)));
+         if (A == 1) {
+            if (Q) {
+               putQReg(dreg, binop(add, mkexpr(res), getQReg(dreg)),
+                             IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, binop(add, mkexpr(res), getDRegI(dreg)),
+                              IRTemp_INVALID);
+            }
+            DIP("vsra.%c%u %c%u, %c%u, #%u\n", U ? 'u' : 's', 8 << size,
+                  Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, shift_imm);
+         } else {
+            if (Q) {
+               putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+            }
+            DIP("vshr.%c%u %c%u, %c%u, #%u\n", U ? 'u' : 's', 8 << size,
+                  Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, shift_imm);
+         }
+         return True;
+      case 4:
+         /* VSRI */
+         if (!U)
+            return False;
+         if (Q) {
+            res = newTemp(Ity_V128);
+            mask = newTemp(Ity_V128);
+         } else {
+            res = newTemp(Ity_I64);
+            mask = newTemp(Ity_I64);
+         }
+         switch (size) {
+            case 0: op = Q ? Iop_ShrN8x16 : Iop_ShrN8x8; break;
+            case 1: op = Q ? Iop_ShrN16x8 : Iop_ShrN16x4; break;
+            case 2: op = Q ? Iop_ShrN32x4 : Iop_ShrN32x2; break;
+            case 3: op = Q ? Iop_ShrN64x2 : Iop_Shr64; break;
+            default: vassert(0);
+         }
+         if (Q) {
+            assign(mask, binop(op, binop(Iop_64HLtoV128,
+                                         mkU64(0xFFFFFFFFFFFFFFFFLL),
+                                         mkU64(0xFFFFFFFFFFFFFFFFLL)),
+                               mkU8(shift_imm)));
+            assign(res, binop(Iop_OrV128,
+                              binop(Iop_AndV128,
+                                    getQReg(dreg),
+                                    unop(Iop_NotV128,
+                                         mkexpr(mask))),
+                              binop(op,
+                                    getQReg(mreg),
+                                    mkU8(shift_imm))));
+            putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+         } else {
+            assign(mask, binop(op, mkU64(0xFFFFFFFFFFFFFFFFLL),
+                               mkU8(shift_imm)));
+            assign(res, binop(Iop_Or64,
+                              binop(Iop_And64,
+                                    getDRegI(dreg),
+                                    unop(Iop_Not64,
+                                         mkexpr(mask))),
+                              binop(op,
+                                    getDRegI(mreg),
+                                    mkU8(shift_imm))));
+            putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+         }
+         DIP("vsri.%u %c%u, %c%u, #%u\n",
+             8 << size, Q ? 'q' : 'd', dreg,
+             Q ? 'q' : 'd', mreg, shift_imm);
+         return True;
+      case 5:
+         if (U) {
+            /* VSLI */
+            shift_imm = 8 * (1 << size) - shift_imm;
+            if (Q) {
+               res = newTemp(Ity_V128);
+               mask = newTemp(Ity_V128);
+            } else {
+               res = newTemp(Ity_I64);
+               mask = newTemp(Ity_I64);
+            }
+            switch (size) {
+               case 0: op = Q ? Iop_ShlN8x16 : Iop_ShlN8x8; break;
+               case 1: op = Q ? Iop_ShlN16x8 : Iop_ShlN16x4; break;
+               case 2: op = Q ? Iop_ShlN32x4 : Iop_ShlN32x2; break;
+               case 3: op = Q ? Iop_ShlN64x2 : Iop_Shl64; break;
+               default: vassert(0);
+            }
+            if (Q) {
+               assign(mask, binop(op, binop(Iop_64HLtoV128,
+                                            mkU64(0xFFFFFFFFFFFFFFFFLL),
+                                            mkU64(0xFFFFFFFFFFFFFFFFLL)),
+                                  mkU8(shift_imm)));
+               assign(res, binop(Iop_OrV128,
+                                 binop(Iop_AndV128,
+                                       getQReg(dreg),
+                                       unop(Iop_NotV128,
+                                            mkexpr(mask))),
+                                 binop(op,
+                                       getQReg(mreg),
+                                       mkU8(shift_imm))));
+               putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+            } else {
+               assign(mask, binop(op, mkU64(0xFFFFFFFFFFFFFFFFLL),
+                                  mkU8(shift_imm)));
+               assign(res, binop(Iop_Or64,
+                                 binop(Iop_And64,
+                                       getDRegI(dreg),
+                                       unop(Iop_Not64,
+                                            mkexpr(mask))),
+                                 binop(op,
+                                       getDRegI(mreg),
+                                       mkU8(shift_imm))));
+               putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+            }
+            DIP("vsli.%u %c%u, %c%u, #%u\n",
+                8 << size, Q ? 'q' : 'd', dreg,
+                Q ? 'q' : 'd', mreg, shift_imm);
+            return True;
+         } else {
+            /* VSHL #imm */
+            shift_imm = 8 * (1 << size) - shift_imm;
+            if (Q) {
+               res = newTemp(Ity_V128);
+            } else {
+               res = newTemp(Ity_I64);
+            }
+            switch (size) {
+               case 0: op = Q ? Iop_ShlN8x16 : Iop_ShlN8x8; break;
+               case 1: op = Q ? Iop_ShlN16x8 : Iop_ShlN16x4; break;
+               case 2: op = Q ? Iop_ShlN32x4 : Iop_ShlN32x2; break;
+               case 3: op = Q ? Iop_ShlN64x2 : Iop_Shl64; break;
+               default: vassert(0);
+            }
+            assign(res, binop(op, Q ? getQReg(mreg) : getDRegI(mreg),
+                     mkU8(shift_imm)));
+            if (Q) {
+               putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+            }
+            DIP("vshl.i%u %c%u, %c%u, #%u\n",
+                8 << size, Q ? 'q' : 'd', dreg,
+                Q ? 'q' : 'd', mreg, shift_imm);
+            return True;
+         }
+         break;
+      case 6:
+      case 7:
+         /* VQSHL, VQSHLU */
+         shift_imm = 8 * (1 << size) - shift_imm;
+         if (U) {
+            if (A & 1) {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_QShlN8x16 : Iop_QShlN8x8;
+                     op_rev = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_QShlN16x8 : Iop_QShlN16x4;
+                     op_rev = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QShlN32x4 : Iop_QShlN32x2;
+                     op_rev = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_QShlN64x2 : Iop_QShlN64x1;
+                     op_rev = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+               DIP("vqshl.u%u %c%u, %c%u, #%u\n",
+                   8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, shift_imm);
+            } else {
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_QShlN8Sx16 : Iop_QShlN8Sx8;
+                     op_rev = Q ? Iop_ShrN8x16 : Iop_ShrN8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_QShlN16Sx8 : Iop_QShlN16Sx4;
+                     op_rev = Q ? Iop_ShrN16x8 : Iop_ShrN16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QShlN32Sx4 : Iop_QShlN32Sx2;
+                     op_rev = Q ? Iop_ShrN32x4 : Iop_ShrN32x2;
+                     break;
+                  case 3:
+                     op = Q ? Iop_QShlN64Sx2 : Iop_QShlN64Sx1;
+                     op_rev = Q ? Iop_ShrN64x2 : Iop_Shr64;
+                     break;
+                  default:
+                     vassert(0);
+               }
+               DIP("vqshlu.s%u %c%u, %c%u, #%u\n",
+                   8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, shift_imm);
+            }
+         } else {
+            if (!(A & 1))
+               return False;
+            switch (size) {
+               case 0:
+                  op = Q ? Iop_QSalN8x16 : Iop_QSalN8x8;
+                  op_rev = Q ? Iop_SarN8x16 : Iop_SarN8x8;
+                  break;
+               case 1:
+                  op = Q ? Iop_QSalN16x8 : Iop_QSalN16x4;
+                  op_rev = Q ? Iop_SarN16x8 : Iop_SarN16x4;
+                  break;
+               case 2:
+                  op = Q ? Iop_QSalN32x4 : Iop_QSalN32x2;
+                  op_rev = Q ? Iop_SarN32x4 : Iop_SarN32x2;
+                  break;
+               case 3:
+                  op = Q ? Iop_QSalN64x2 : Iop_QSalN64x1;
+                  op_rev = Q ? Iop_SarN64x2 : Iop_Sar64;
+                  break;
+               default:
+                  vassert(0);
+            }
+            DIP("vqshl.s%u %c%u, %c%u, #%u\n",
+                8 << size,
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg, shift_imm);
+         }
+         if (Q) {
+            tmp = newTemp(Ity_V128);
+            res = newTemp(Ity_V128);
+            reg_m = newTemp(Ity_V128);
+            assign(reg_m, getQReg(mreg));
+         } else {
+            tmp = newTemp(Ity_I64);
+            res = newTemp(Ity_I64);
+            reg_m = newTemp(Ity_I64);
+            assign(reg_m, getDRegI(mreg));
+         }
+         assign(res, binop(op, mkexpr(reg_m), mkU8(shift_imm)));
+#ifndef DISABLE_QC_FLAG
+         assign(tmp, binop(op_rev, mkexpr(res), mkU8(shift_imm)));
+         setFlag_QC(mkexpr(tmp), mkexpr(reg_m), Q);
+#endif
+         if (Q)
+            putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+         else
+            putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+         return True;
+      case 8:
+         if (!U) {
+            if (L == 1)
+               return False;
+            size++;
+            dreg = ((theInstr >> 18) & 0x10) | ((theInstr >> 12) & 0xF);
+            mreg = ((theInstr >> 1) & 0x10) | (theInstr & 0xF);
+            if (mreg & 1)
+               return False;
+            mreg >>= 1;
+            if (!B) {
+               /* VSHRN*/
+               IROp narOp;
+               reg_m = newTemp(Ity_V128);
+               assign(reg_m, getQReg(mreg));
+               res = newTemp(Ity_I64);
+               switch (size) {
+                  case 1:
+                     op = Iop_ShrN16x8;
+                     narOp = Iop_Shorten16x8;
+                     break;
+                  case 2:
+                     op = Iop_ShrN32x4;
+                     narOp = Iop_Shorten32x4;
+                     break;
+                  case 3:
+                     op = Iop_ShrN64x2;
+                     narOp = Iop_Shorten64x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+               assign(res, unop(narOp,
+                                binop(op,
+                                      mkexpr(reg_m),
+                                      mkU8(shift_imm))));
+               putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+               DIP("vshrn.i%u d%u, q%u, #%u\n", 8 << size, dreg, mreg,
+                   shift_imm);
+               return True;
+            } else {
+               /* VRSHRN   */
+               IROp addOp, shOp, narOp;
+               IRExpr *imm_val;
+               reg_m = newTemp(Ity_V128);
+               assign(reg_m, getQReg(mreg));
+               res = newTemp(Ity_I64);
+               imm = 1L;
+               switch (size) {
+                  case 0: imm = (imm <<  8) | imm; /* fall through */
+                  case 1: imm = (imm << 16) | imm; /* fall through */
+                  case 2: imm = (imm << 32) | imm; /* fall through */
+                  case 3: break;
+                  default: vassert(0);
+               }
+               imm_val = binop(Iop_64HLtoV128, mkU64(imm), mkU64(imm));
+               switch (size) {
+                  case 1:
+                     addOp = Iop_Add16x8;
+                     shOp = Iop_ShrN16x8;
+                     narOp = Iop_Shorten16x8;
+                     break;
+                  case 2:
+                     addOp = Iop_Add32x4;
+                     shOp = Iop_ShrN32x4;
+                     narOp = Iop_Shorten32x4;
+                     break;
+                  case 3:
+                     addOp = Iop_Add64x2;
+                     shOp = Iop_ShrN64x2;
+                     narOp = Iop_Shorten64x2;
+                     break;
+                  default:
+                     vassert(0);
+               }
+               assign(res, unop(narOp,
+                                binop(addOp,
+                                      binop(shOp,
+                                            mkexpr(reg_m),
+                                            mkU8(shift_imm)),
+                                      binop(Iop_AndV128,
+                                            binop(shOp,
+                                                  mkexpr(reg_m),
+                                                  mkU8(shift_imm - 1)),
+                                            imm_val))));
+               putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+               if (shift_imm == 0) {
+                  DIP("vmov%u d%u, q%u, #%u\n", 8 << size, dreg, mreg,
+                      shift_imm);
+               } else {
+                  DIP("vrshrn.i%u d%u, q%u, #%u\n", 8 << size, dreg, mreg,
+                      shift_imm);
+               }
+               return True;
+            }
+         } else {
+            /* fall through */
+         }
+      case 9:
+         dreg = ((theInstr >> 18) & 0x10) | ((theInstr >> 12) & 0xF);
+         mreg = ((theInstr >>  1) & 0x10) | (theInstr & 0xF);
+         if (mreg & 1)
+            return False;
+         mreg >>= 1;
+         size++;
+         if ((theInstr >> 8) & 1) {
+            switch (size) {
+               case 1:
+                  op = U ? Iop_ShrN16x8 : Iop_SarN16x8;
+                  cvt = U ? Iop_QShortenU16Ux8 : Iop_QShortenS16Sx8;
+                  cvt2 = U ? Iop_Longen8Ux8 : Iop_Longen8Sx8;
+                  break;
+               case 2:
+                  op = U ? Iop_ShrN32x4 : Iop_SarN32x4;
+                  cvt = U ? Iop_QShortenU32Ux4 : Iop_QShortenS32Sx4;
+                  cvt2 = U ? Iop_Longen16Ux4 : Iop_Longen16Sx4;
+                  break;
+               case 3:
+                  op = U ? Iop_ShrN64x2 : Iop_SarN64x2;
+                  cvt = U ? Iop_QShortenU64Ux2 : Iop_QShortenS64Sx2;
+                  cvt2 = U ? Iop_Longen32Ux2 : Iop_Longen32Sx2;
+                  break;
+               default:
+                  vassert(0);
+            }
+            DIP("vq%sshrn.%c%u d%u, q%u, #%u\n", B ? "r" : "",
+                U ? 'u' : 's', 8 << size, dreg, mreg, shift_imm);
+         } else {
+            vassert(U);
+            switch (size) {
+               case 1:
+                  op = Iop_SarN16x8;
+                  cvt = Iop_QShortenU16Sx8;
+                  cvt2 = Iop_Longen8Ux8;
+                  break;
+               case 2:
+                  op = Iop_SarN32x4;
+                  cvt = Iop_QShortenU32Sx4;
+                  cvt2 = Iop_Longen16Ux4;
+                  break;
+               case 3:
+                  op = Iop_SarN64x2;
+                  cvt = Iop_QShortenU64Sx2;
+                  cvt2 = Iop_Longen32Ux2;
+                  break;
+               default:
+                  vassert(0);
+            }
+            DIP("vq%sshrun.s%u d%u, q%u, #%u\n", B ? "r" : "",
+                8 << size, dreg, mreg, shift_imm);
+         }
+         if (B) {
+            if (shift_imm > 0) {
+               imm = 1;
+               switch (size) {
+                  case 1: imm = (imm << 16) | imm; /* fall through */
+                  case 2: imm = (imm << 32) | imm; /* fall through */
+                  case 3: break;
+                  case 0: default: vassert(0);
+               }
+               switch (size) {
+                  case 1: add = Iop_Add16x8; break;
+                  case 2: add = Iop_Add32x4; break;
+                  case 3: add = Iop_Add64x2; break;
+                  case 0: default: vassert(0);
+               }
+            }
+         }
+         reg_m = newTemp(Ity_V128);
+         res = newTemp(Ity_V128);
+         assign(reg_m, getQReg(mreg));
+         if (B) {
+            /* VQRSHRN, VQRSHRUN */
+            assign(res, binop(add,
+                              binop(op, mkexpr(reg_m), mkU8(shift_imm)),
+                              binop(Iop_AndV128,
+                                    binop(op,
+                                          mkexpr(reg_m),
+                                          mkU8(shift_imm - 1)),
+                                    mkU128(imm))));
+         } else {
+            /* VQSHRN, VQSHRUN */
+            assign(res, binop(op, mkexpr(reg_m), mkU8(shift_imm)));
+         }
+#ifndef DISABLE_QC_FLAG
+         setFlag_QC(unop(cvt2, unop(cvt, mkexpr(res))), mkexpr(res), True);
+#endif
+         putDRegI(dreg, unop(cvt, mkexpr(res)), IRTemp_INVALID);
+         return True;
+      case 10:
+         /* VSHLL
+            VMOVL ::= VSHLL #0 */
+         if (B)
+            return False;
+         if (dreg & 1)
+            return False;
+         dreg >>= 1;
+         shift_imm = (8 << size) - shift_imm;
+         res = newTemp(Ity_V128);
+         switch (size) {
+            case 0:
+               op = Iop_ShlN16x8;
+               cvt = U ? Iop_Longen8Ux8 : Iop_Longen8Sx8;
+               break;
+            case 1:
+               op = Iop_ShlN32x4;
+               cvt = U ? Iop_Longen16Ux4 : Iop_Longen16Sx4;
+               break;
+            case 2:
+               op = Iop_ShlN64x2;
+               cvt = U ? Iop_Longen32Ux2 : Iop_Longen32Sx2;
+               break;
+            case 3:
+               return False;
+            default:
+               vassert(0);
+         }
+         assign(res, binop(op, unop(cvt, getDRegI(mreg)), mkU8(shift_imm)));
+         putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+         if (shift_imm == 0) {
+            DIP("vmovl.%c%u q%u, d%u\n", U ? 'u' : 's', 8 << size,
+                dreg, mreg);
+         } else {
+            DIP("vshll.%c%u q%u, d%u, #%u\n", U ? 'u' : 's', 8 << size,
+                dreg, mreg, shift_imm);
+         }
+         return True;
+      case 14:
+      case 15:
+         /* VCVT floating-point <-> fixed-point */
+         if ((theInstr >> 8) & 1) {
+            if (U) {
+               op = Q ? Iop_F32ToFixed32Ux4_RZ : Iop_F32ToFixed32Ux2_RZ;
+            } else {
+               op = Q ? Iop_F32ToFixed32Sx4_RZ : Iop_F32ToFixed32Sx2_RZ;
+            }
+            DIP("vcvt.%c32.f32 %c%u, %c%u, #%u\n", U ? 'u' : 's',
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg,
+                64 - ((theInstr >> 16) & 0x3f));
+         } else {
+            if (U) {
+               op = Q ? Iop_Fixed32UToF32x4_RN : Iop_Fixed32UToF32x2_RN;
+            } else {
+               op = Q ? Iop_Fixed32SToF32x4_RN : Iop_Fixed32SToF32x2_RN;
+            }
+            DIP("vcvt.f32.%c32 %c%u, %c%u, #%u\n", U ? 'u' : 's',
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg,
+                64 - ((theInstr >> 16) & 0x3f));
+         }
+         if (((theInstr >> 21) & 1) == 0)
+            return False;
+         if (Q) {
+            putQReg(dreg, binop(op, getQReg(mreg),
+                     mkU8(64 - ((theInstr >> 16) & 0x3f))), IRTemp_INVALID);
+         } else {
+            putDRegI(dreg, binop(op, getDRegI(mreg),
+                     mkU8(64 - ((theInstr >> 16) & 0x3f))), IRTemp_INVALID);
+         }
+         return True;
+      default:
+         return False;
+
+   }
+   return False;
+}
+
+/* A7.4.5 Two registers, miscellaneous */
+static
+Bool dis_neon_data_2reg_misc(UInt theInstr)
+{
+   UInt A = (theInstr >> 16) & 3;
+   UInt B = (theInstr >> 6) & 0x1f;
+   UInt Q = (theInstr >> 6) & 1;
+   UInt U = (theInstr >> 24) & 1;
+   UInt size = (theInstr >> 18) & 3;
+   UInt dreg = get_neon_d_regno(theInstr);
+   UInt mreg = get_neon_m_regno(theInstr);
+   UInt F = (theInstr >> 10) & 1;
+   IRTemp arg_d;
+   IRTemp arg_m;
+   IRTemp res;
+   switch (A) {
+      case 0:
+         if (Q) {
+            arg_m = newTemp(Ity_V128);
+            res = newTemp(Ity_V128);
+            assign(arg_m, getQReg(mreg));
+         } else {
+            arg_m = newTemp(Ity_I64);
+            res = newTemp(Ity_I64);
+            assign(arg_m, getDRegI(mreg));
+         }
+         switch (B >> 1) {
+            case 0: {
+               /* VREV64 */
+               IROp op;
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Reverse64_8x16 : Iop_Reverse64_8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_Reverse64_16x8 : Iop_Reverse64_16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_Reverse64_32x4 : Iop_Reverse64_32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+               assign(res, unop(op, mkexpr(arg_m)));
+               DIP("vrev64.%u %c%u, %c%u\n", 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 1: {
+               /* VREV32 */
+               IROp op;
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Reverse32_8x16 : Iop_Reverse32_8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_Reverse32_16x8 : Iop_Reverse32_16x4;
+                     break;
+                  case 2:
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+               assign(res, unop(op, mkexpr(arg_m)));
+               DIP("vrev32.%u %c%u, %c%u\n", 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 2: {
+               /* VREV16 */
+               IROp op;
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_Reverse16_8x16 : Iop_Reverse16_8x8;
+                     break;
+                  case 1:
+                  case 2:
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+               assign(res, unop(op, mkexpr(arg_m)));
+               DIP("vrev16.%u %c%u, %c%u\n", 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 3:
+               return False;
+            case 4:
+            case 5: {
+               /* VPADDL */
+               IROp op;
+               U = (theInstr >> 7) & 1;
+               if (Q) {
+                  switch (size) {
+                     case 0: op = U ? Iop_PwAddL8Ux16 : Iop_PwAddL8Sx16; break;
+                     case 1: op = U ? Iop_PwAddL16Ux8 : Iop_PwAddL16Sx8; break;
+                     case 2: op = U ? Iop_PwAddL32Ux4 : Iop_PwAddL32Sx4; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+               } else {
+                  switch (size) {
+                     case 0: op = U ? Iop_PwAddL8Ux8  : Iop_PwAddL8Sx8;  break;
+                     case 1: op = U ? Iop_PwAddL16Ux4 : Iop_PwAddL16Sx4; break;
+                     case 2: op = U ? Iop_PwAddL32Ux2 : Iop_PwAddL32Sx2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+               }
+               assign(res, unop(op, mkexpr(arg_m)));
+               DIP("vpaddl.%c%u %c%u, %c%u\n", U ? 'u' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 6:
+            case 7:
+               return False;
+            case 8: {
+               /* VCLS */
+               IROp op;
+               switch (size) {
+                  case 0: op = Q ? Iop_Cls8Sx16 : Iop_Cls8Sx8; break;
+                  case 1: op = Q ? Iop_Cls16Sx8 : Iop_Cls16Sx4; break;
+                  case 2: op = Q ? Iop_Cls32Sx4 : Iop_Cls32Sx2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+               assign(res, unop(op, mkexpr(arg_m)));
+               DIP("vcls.s%u %c%u, %c%u\n", 8 << size, Q ? 'q' : 'd', dreg,
+                   Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 9: {
+               /* VCLZ */
+               IROp op;
+               switch (size) {
+                  case 0: op = Q ? Iop_Clz8Sx16 : Iop_Clz8Sx8; break;
+                  case 1: op = Q ? Iop_Clz16Sx8 : Iop_Clz16Sx4; break;
+                  case 2: op = Q ? Iop_Clz32Sx4 : Iop_Clz32Sx2; break;
+                  case 3: return False;
+                  default: vassert(0);
+               }
+               assign(res, unop(op, mkexpr(arg_m)));
+               DIP("vclz.i%u %c%u, %c%u\n", 8 << size, Q ? 'q' : 'd', dreg,
+                   Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 10:
+               /* VCNT */
+               assign(res, unop(Q ? Iop_Cnt8x16 : Iop_Cnt8x8, mkexpr(arg_m)));
+               DIP("vcnt.8 %c%u, %c%u\n", Q ? 'q' : 'd', dreg, Q ? 'q' : 'd',
+                   mreg);
+               break;
+            case 11:
+               /* VMVN */
+               if (Q)
+                  assign(res, unop(Iop_NotV128, mkexpr(arg_m)));
+               else
+                  assign(res, unop(Iop_Not64, mkexpr(arg_m)));
+               DIP("vmvn %c%u, %c%u\n", Q ? 'q' : 'd', dreg, Q ? 'q' : 'd',
+                   mreg);
+               break;
+            case 12:
+            case 13: {
+               /* VPADAL */
+               IROp op, add_op;
+               U = (theInstr >> 7) & 1;
+               if (Q) {
+                  switch (size) {
+                     case 0:
+                        op = U ? Iop_PwAddL8Ux16 : Iop_PwAddL8Sx16;
+                        add_op = Iop_Add16x8;
+                        break;
+                     case 1:
+                        op = U ? Iop_PwAddL16Ux8 : Iop_PwAddL16Sx8;
+                        add_op = Iop_Add32x4;
+                        break;
+                     case 2:
+                        op = U ? Iop_PwAddL32Ux4 : Iop_PwAddL32Sx4;
+                        add_op = Iop_Add64x2;
+                        break;
+                     case 3:
+                        return False;
+                     default:
+                        vassert(0);
+                  }
+               } else {
+                  switch (size) {
+                     case 0:
+                        op = U ? Iop_PwAddL8Ux8 : Iop_PwAddL8Sx8;
+                        add_op = Iop_Add16x4;
+                        break;
+                     case 1:
+                        op = U ? Iop_PwAddL16Ux4 : Iop_PwAddL16Sx4;
+                        add_op = Iop_Add32x2;
+                        break;
+                     case 2:
+                        op = U ? Iop_PwAddL32Ux2 : Iop_PwAddL32Sx2;
+                        add_op = Iop_Add64;
+                        break;
+                     case 3:
+                        return False;
+                     default:
+                        vassert(0);
+                  }
+               }
+               if (Q) {
+                  arg_d = newTemp(Ity_V128);
+                  assign(arg_d, getQReg(dreg));
+               } else {
+                  arg_d = newTemp(Ity_I64);
+                  assign(arg_d, getDRegI(dreg));
+               }
+               assign(res, binop(add_op, unop(op, mkexpr(arg_m)),
+                                         mkexpr(arg_d)));
+               DIP("vpadal.%c%u %c%u, %c%u\n", U ? 'u' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 14: {
+               /* VQABS */
+               IROp op_sub, op_qsub, op_cmp;
+               IRTemp mask, tmp;
+               IRExpr *zero1, *zero2;
+               IRExpr *neg, *neg2;
+               if (Q) {
+                  zero1 = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+                  zero2 = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+                  mask = newTemp(Ity_V128);
+                  tmp = newTemp(Ity_V128);
+               } else {
+                  zero1 = mkU64(0);
+                  zero2 = mkU64(0);
+                  mask = newTemp(Ity_I64);
+                  tmp = newTemp(Ity_I64);
+               }
+               switch (size) {
+                  case 0:
+                     op_sub = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     op_qsub = Q ? Iop_QSub8Sx16 : Iop_QSub8Sx8;
+                     op_cmp = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8;
+                     break;
+                  case 1:
+                     op_sub = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     op_qsub = Q ? Iop_QSub16Sx8 : Iop_QSub16Sx4;
+                     op_cmp = Q ? Iop_CmpGT16Sx8 : Iop_CmpGT16Sx4;
+                     break;
+                  case 2:
+                     op_sub = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     op_qsub = Q ? Iop_QSub32Sx4 : Iop_QSub32Sx2;
+                     op_cmp = Q ? Iop_CmpGT32Sx4 : Iop_CmpGT32Sx2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+               assign(mask, binop(op_cmp, mkexpr(arg_m), zero1));
+               neg = binop(op_qsub, zero2, mkexpr(arg_m));
+               neg2 = binop(op_sub, zero2, mkexpr(arg_m));
+               assign(res, binop(Q ? Iop_OrV128 : Iop_Or64,
+                                 binop(Q ? Iop_AndV128 : Iop_And64,
+                                       mkexpr(mask),
+                                       mkexpr(arg_m)),
+                                 binop(Q ? Iop_AndV128 : Iop_And64,
+                                       unop(Q ? Iop_NotV128 : Iop_Not64,
+                                            mkexpr(mask)),
+                                       neg)));
+#ifndef DISABLE_QC_FLAG
+               assign(tmp, binop(Q ? Iop_OrV128 : Iop_Or64,
+                                 binop(Q ? Iop_AndV128 : Iop_And64,
+                                       mkexpr(mask),
+                                       mkexpr(arg_m)),
+                                 binop(Q ? Iop_AndV128 : Iop_And64,
+                                       unop(Q ? Iop_NotV128 : Iop_Not64,
+                                            mkexpr(mask)),
+                                       neg2)));
+               setFlag_QC(mkexpr(res), mkexpr(tmp), Q);
+#endif
+               DIP("vqabs.s%u %c%u, %c%u\n", 8 << size, Q ? 'q' : 'd', dreg,
+                   Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 15: {
+               /* VQNEG */
+               IROp op, op2;
+               IRExpr *zero;
+               if (Q) {
+                  zero = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+               } else {
+                  zero = mkU64(0);
+               }
+               switch (size) {
+                  case 0:
+                     op = Q ? Iop_QSub8Sx16 : Iop_QSub8Sx8;
+                     op2 = Q ? Iop_Sub8x16 : Iop_Sub8x8;
+                     break;
+                  case 1:
+                     op = Q ? Iop_QSub16Sx8 : Iop_QSub16Sx4;
+                     op2 = Q ? Iop_Sub16x8 : Iop_Sub16x4;
+                     break;
+                  case 2:
+                     op = Q ? Iop_QSub32Sx4 : Iop_QSub32Sx2;
+                     op2 = Q ? Iop_Sub32x4 : Iop_Sub32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+               assign(res, binop(op, zero, mkexpr(arg_m)));
+#ifndef DISABLE_QC_FLAG
+               setFlag_QC(mkexpr(res), binop(op2, zero, mkexpr(arg_m)), Q);
+#endif
+               DIP("vqneg.s%u %c%u, %c%u\n", 8 << size, Q ? 'q' : 'd', dreg,
+                   Q ? 'q' : 'd', mreg);
+               break;
+            }
+            default:
+               vassert(0);
+         }
+         if (Q) {
+            putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+         } else {
+            putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+         }
+         return True;
+      case 1:
+         if (Q) {
+            arg_m = newTemp(Ity_V128);
+            res = newTemp(Ity_V128);
+            assign(arg_m, getQReg(mreg));
+         } else {
+            arg_m = newTemp(Ity_I64);
+            res = newTemp(Ity_I64);
+            assign(arg_m, getDRegI(mreg));
+         }
+         switch ((B >> 1) & 0x7) {
+            case 0: {
+               /* VCGT #0 */
+               IRExpr *zero;
+               IROp op;
+               if (Q) {
+                  zero = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+               } else {
+                  zero = mkU64(0);
+               }
+               if (F) {
+                  switch (size) {
+                     case 0: case 1: case 3: return False;
+                     case 2: op = Q ? Iop_CmpGT32Fx4 : Iop_CmpGT32Fx2; break;
+                     default: vassert(0);
+                  }
+               } else {
+                  switch (size) {
+                     case 0: op = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8; break;
+                     case 1: op = Q ? Iop_CmpGT16Sx8 : Iop_CmpGT16Sx4; break;
+                     case 2: op = Q ? Iop_CmpGT32Sx4 : Iop_CmpGT32Sx2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+               }
+               assign(res, binop(op, mkexpr(arg_m), zero));
+               DIP("vcgt.%c%u %c%u, %c%u, #0\n", F ? 'f' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 1: {
+               /* VCGE #0 */
+               IROp op;
+               IRExpr *zero;
+               if (Q) {
+                  zero = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+               } else {
+                  zero = mkU64(0);
+               }
+               if (F) {
+                  switch (size) {
+                     case 0: case 1: case 3: return False;
+                     case 2: op = Q ? Iop_CmpGE32Fx4 : Iop_CmpGE32Fx2; break;
+                     default: vassert(0);
+                  }
+                  assign(res, binop(op, mkexpr(arg_m), zero));
+               } else {
+                  switch (size) {
+                     case 0: op = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8; break;
+                     case 1: op = Q ? Iop_CmpGT16Sx8 : Iop_CmpGT16Sx4; break;
+                     case 2: op = Q ? Iop_CmpGT32Sx4 : Iop_CmpGT32Sx2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  assign(res, unop(Q ? Iop_NotV128 : Iop_Not64,
+                                   binop(op, zero, mkexpr(arg_m))));
+               }
+               DIP("vcge.%c%u %c%u, %c%u, #0\n", F ? 'f' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 2: {
+               /* VCEQ #0 */
+               IROp op;
+               IRExpr *zero;
+               if (F) {
+                  if (Q) {
+                     zero = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+                  } else {
+                     zero = mkU64(0);
+                  }
+                  switch (size) {
+                     case 0: case 1: case 3: return False;
+                     case 2: op = Q ? Iop_CmpEQ32Fx4 : Iop_CmpEQ32Fx2; break;
+                     default: vassert(0);
+                  }
+                  assign(res, binop(op, zero, mkexpr(arg_m)));
+               } else {
+                  switch (size) {
+                     case 0: op = Q ? Iop_CmpNEZ8x16 : Iop_CmpNEZ8x8; break;
+                     case 1: op = Q ? Iop_CmpNEZ16x8 : Iop_CmpNEZ16x4; break;
+                     case 2: op = Q ? Iop_CmpNEZ32x4 : Iop_CmpNEZ32x2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  assign(res, unop(Q ? Iop_NotV128 : Iop_Not64,
+                                   unop(op, mkexpr(arg_m))));
+               }
+               DIP("vceq.%c%u %c%u, %c%u, #0\n", F ? 'f' : 'i', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 3: {
+               /* VCLE #0 */
+               IRExpr *zero;
+               IROp op;
+               if (Q) {
+                  zero = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+               } else {
+                  zero = mkU64(0);
+               }
+               if (F) {
+                  switch (size) {
+                     case 0: case 1: case 3: return False;
+                     case 2: op = Q ? Iop_CmpGE32Fx4 : Iop_CmpGE32Fx2; break;
+                     default: vassert(0);
+                  }
+                  assign(res, binop(op, zero, mkexpr(arg_m)));
+               } else {
+                  switch (size) {
+                     case 0: op = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8; break;
+                     case 1: op = Q ? Iop_CmpGT16Sx8 : Iop_CmpGT16Sx4; break;
+                     case 2: op = Q ? Iop_CmpGT32Sx4 : Iop_CmpGT32Sx2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  assign(res, unop(Q ? Iop_NotV128 : Iop_Not64,
+                                   binop(op, mkexpr(arg_m), zero)));
+               }
+               DIP("vcle.%c%u %c%u, %c%u, #0\n", F ? 'f' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 4: {
+               /* VCLT #0 */
+               IROp op;
+               IRExpr *zero;
+               if (Q) {
+                  zero = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+               } else {
+                  zero = mkU64(0);
+               }
+               if (F) {
+                  switch (size) {
+                     case 0: case 1: case 3: return False;
+                     case 2: op = Q ? Iop_CmpGT32Fx4 : Iop_CmpGT32Fx2; break;
+                     default: vassert(0);
+                  }
+                  assign(res, binop(op, zero, mkexpr(arg_m)));
+               } else {
+                  switch (size) {
+                     case 0: op = Q ? Iop_CmpGT8Sx16 : Iop_CmpGT8Sx8; break;
+                     case 1: op = Q ? Iop_CmpGT16Sx8 : Iop_CmpGT16Sx4; break;
+                     case 2: op = Q ? Iop_CmpGT32Sx4 : Iop_CmpGT32Sx2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  assign(res, binop(op, zero, mkexpr(arg_m)));
+               }
+               DIP("vclt.%c%u %c%u, %c%u, #0\n", F ? 'f' : 's', 8 << size,
+                   Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 5:
+               return False;
+            case 6: {
+               /* VABS */
+               if (!F) {
+                  IROp op;
+                  switch(size) {
+                     case 0: op = Q ? Iop_Abs8x16 : Iop_Abs8x8; break;
+                     case 1: op = Q ? Iop_Abs16x8 : Iop_Abs16x4; break;
+                     case 2: op = Q ? Iop_Abs32x4 : Iop_Abs32x2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  assign(res, unop(op, mkexpr(arg_m)));
+               } else {
+                  assign(res, unop(Q ? Iop_Abs32Fx4 : Iop_Abs32Fx2,
+                                   mkexpr(arg_m)));
+               }
+               DIP("vabs.%c%u %c%u, %c%u\n",
+                   F ? 'f' : 's', 8 << size, Q ? 'q' : 'd', dreg,
+                   Q ? 'q' : 'd', mreg);
+               break;
+            }
+            case 7: {
+               /* VNEG */
+               IROp op;
+               IRExpr *zero;
+               if (F) {
+                  switch (size) {
+                     case 0: case 1: case 3: return False;
+                     case 2: op = Q ? Iop_Neg32Fx4 : Iop_Neg32Fx2; break;
+                     default: vassert(0);
+                  }
+                  assign(res, unop(op, mkexpr(arg_m)));
+               } else {
+                  if (Q) {
+                     zero = binop(Iop_64HLtoV128, mkU64(0), mkU64(0));
+                  } else {
+                     zero = mkU64(0);
+                  }
+                  switch (size) {
+                     case 0: op = Q ? Iop_Sub8x16 : Iop_Sub8x8; break;
+                     case 1: op = Q ? Iop_Sub16x8 : Iop_Sub16x4; break;
+                     case 2: op = Q ? Iop_Sub32x4 : Iop_Sub32x2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  assign(res, binop(op, zero, mkexpr(arg_m)));
+               }
+               DIP("vneg.%c%u %c%u, %c%u\n",
+                   F ? 'f' : 's', 8 << size, Q ? 'q' : 'd', dreg,
+                   Q ? 'q' : 'd', mreg);
+               break;
+            }
+            default:
+               vassert(0);
+         }
+         if (Q) {
+            putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+         } else {
+            putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+         }
+         return True;
+      case 2:
+         if ((B >> 1) == 0) {
+            /* VSWP */
+            if (Q) {
+               arg_m = newTemp(Ity_V128);
+               assign(arg_m, getQReg(mreg));
+               putQReg(mreg, getQReg(dreg), IRTemp_INVALID);
+               putQReg(dreg, mkexpr(arg_m), IRTemp_INVALID);
+            } else {
+               arg_m = newTemp(Ity_I64);
+               assign(arg_m, getDRegI(mreg));
+               putDRegI(mreg, getDRegI(dreg), IRTemp_INVALID);
+               putDRegI(dreg, mkexpr(arg_m), IRTemp_INVALID);
+            }
+            DIP("vswp %c%u, %c%u\n",
+                Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+            return True;
+         } else if ((B >> 1) == 1) {
+            /* VTRN */
+            IROp op_lo, op_hi;
+            IRTemp res1, res2;
+            if (Q) {
+               arg_m = newTemp(Ity_V128);
+               arg_d = newTemp(Ity_V128);
+               res1 = newTemp(Ity_V128);
+               res2 = newTemp(Ity_V128);
+               assign(arg_m, getQReg(mreg));
+               assign(arg_d, getQReg(dreg));
+            } else {
+               res1 = newTemp(Ity_I64);
+               res2 = newTemp(Ity_I64);
+               arg_m = newTemp(Ity_I64);
+               arg_d = newTemp(Ity_I64);
+               assign(arg_m, getDRegI(mreg));
+               assign(arg_d, getDRegI(dreg));
+            }
+            if (Q) {
+               switch (size) {
+                  case 0:
+                     op_lo = Iop_InterleaveOddLanes8x16;
+                     op_hi = Iop_InterleaveEvenLanes8x16;
+                     break;
+                  case 1:
+                     op_lo = Iop_InterleaveOddLanes16x8;
+                     op_hi = Iop_InterleaveEvenLanes16x8;
+                     break;
+                  case 2:
+                     op_lo = Iop_InterleaveOddLanes32x4;
+                     op_hi = Iop_InterleaveEvenLanes32x4;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            } else {
+               switch (size) {
+                  case 0:
+                     op_lo = Iop_InterleaveOddLanes8x8;
+                     op_hi = Iop_InterleaveEvenLanes8x8;
+                     break;
+                  case 1:
+                     op_lo = Iop_InterleaveOddLanes16x4;
+                     op_hi = Iop_InterleaveEvenLanes16x4;
+                     break;
+                  case 2:
+                     op_lo = Iop_InterleaveHI32x2;
+                     op_hi = Iop_InterleaveLO32x2;
+                     break;
+                  case 3:
+                     return False;
+                  default:
+                     vassert(0);
+               }
+            }
+            assign(res1, binop(op_lo, mkexpr(arg_m), mkexpr(arg_d)));
+            assign(res2, binop(op_hi, mkexpr(arg_m), mkexpr(arg_d)));
+            if (Q) {
+               putQReg(dreg, mkexpr(res1), IRTemp_INVALID);
+               putQReg(mreg, mkexpr(res2), IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, mkexpr(res1), IRTemp_INVALID);
+               putDRegI(mreg, mkexpr(res2), IRTemp_INVALID);
+            }
+            DIP("vtrn.%u %c%u, %c%u\n",
+                8 << size, Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+            return True;
+         } else if ((B >> 1) == 2) {
+            /* VUZP */
+            IROp op_lo, op_hi;
+            IRTemp res1, res2;
+            if (!Q && size == 2)
+               return False;
+            if (Q) {
+               arg_m = newTemp(Ity_V128);
+               arg_d = newTemp(Ity_V128);
+               res1 = newTemp(Ity_V128);
+               res2 = newTemp(Ity_V128);
+               assign(arg_m, getQReg(mreg));
+               assign(arg_d, getQReg(dreg));
+            } else {
+               res1 = newTemp(Ity_I64);
+               res2 = newTemp(Ity_I64);
+               arg_m = newTemp(Ity_I64);
+               arg_d = newTemp(Ity_I64);
+               assign(arg_m, getDRegI(mreg));
+               assign(arg_d, getDRegI(dreg));
+            }
+            switch (size) {
+               case 0:
+                  op_lo = Q ? Iop_CatOddLanes8x16 : Iop_CatOddLanes8x8;
+                  op_hi = Q ? Iop_CatEvenLanes8x16 : Iop_CatEvenLanes8x8;
+                  break;
+               case 1:
+                  op_lo = Q ? Iop_CatOddLanes16x8 : Iop_CatOddLanes16x4;
+                  op_hi = Q ? Iop_CatEvenLanes16x8 : Iop_CatEvenLanes16x4;
+                  break;
+               case 2:
+                  op_lo = Iop_CatOddLanes32x4;
+                  op_hi = Iop_CatEvenLanes32x4;
+                  break;
+               case 3:
+                  return False;
+               default:
+                  vassert(0);
+            }
+            assign(res1, binop(op_lo, mkexpr(arg_m), mkexpr(arg_d)));
+            assign(res2, binop(op_hi, mkexpr(arg_m), mkexpr(arg_d)));
+            if (Q) {
+               putQReg(dreg, mkexpr(res1), IRTemp_INVALID);
+               putQReg(mreg, mkexpr(res2), IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, mkexpr(res1), IRTemp_INVALID);
+               putDRegI(mreg, mkexpr(res2), IRTemp_INVALID);
+            }
+            DIP("vuzp.%u %c%u, %c%u\n",
+                8 << size, Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+            return True;
+         } else if ((B >> 1) == 3) {
+            /* VZIP */
+            IROp op_lo, op_hi;
+            IRTemp res1, res2;
+            if (!Q && size == 2)
+               return False;
+            if (Q) {
+               arg_m = newTemp(Ity_V128);
+               arg_d = newTemp(Ity_V128);
+               res1 = newTemp(Ity_V128);
+               res2 = newTemp(Ity_V128);
+               assign(arg_m, getQReg(mreg));
+               assign(arg_d, getQReg(dreg));
+            } else {
+               res1 = newTemp(Ity_I64);
+               res2 = newTemp(Ity_I64);
+               arg_m = newTemp(Ity_I64);
+               arg_d = newTemp(Ity_I64);
+               assign(arg_m, getDRegI(mreg));
+               assign(arg_d, getDRegI(dreg));
+            }
+            switch (size) {
+               case 0:
+                  op_lo = Q ? Iop_InterleaveLO8x16 : Iop_InterleaveHI8x8;
+                  op_hi = Q ? Iop_InterleaveLO8x16 : Iop_InterleaveLO8x8;
+                  break;
+               case 1:
+                  op_lo = Q ? Iop_InterleaveHI16x8 : Iop_InterleaveHI16x4;
+                  op_hi = Q ? Iop_InterleaveLO16x8 : Iop_InterleaveLO16x4;
+                  break;
+               case 2:
+                  op_lo = Iop_InterleaveHI32x4;
+                  op_hi = Iop_InterleaveLO32x4;
+                  break;
+               case 3:
+                  return False;
+               default:
+                  vassert(0);
+            }
+            assign(res1, binop(op_lo, mkexpr(arg_m), mkexpr(arg_d)));
+            assign(res2, binop(op_hi, mkexpr(arg_m), mkexpr(arg_d)));
+            if (Q) {
+               putQReg(dreg, mkexpr(res1), IRTemp_INVALID);
+               putQReg(mreg, mkexpr(res2), IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, mkexpr(res1), IRTemp_INVALID);
+               putDRegI(mreg, mkexpr(res2), IRTemp_INVALID);
+            }
+            DIP("vzip.%u %c%u, %c%u\n",
+                8 << size, Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+            return True;
+         } else if (B == 8) {
+            /* VMOVN */
+            IROp op;
+            mreg >>= 1;
+            switch (size) {
+               case 0: op = Iop_Shorten16x8; break;
+               case 1: op = Iop_Shorten32x4; break;
+               case 2: op = Iop_Shorten64x2; break;
+               case 3: return False;
+               default: vassert(0);
+            }
+            putDRegI(dreg, unop(op, getQReg(mreg)), IRTemp_INVALID);
+            DIP("vmovn.i%u d%u, q%u\n", 16 << size, dreg, mreg);
+            return True;
+         } else if (B == 9 || (B >> 1) == 5) {
+            /* VQMOVN, VQMOVUN */
+            IROp op, op2;
+            IRTemp tmp;
+            dreg = ((theInstr >> 18) & 0x10) | ((theInstr >> 12) & 0xF);
+            mreg = ((theInstr >> 1) & 0x10) | (theInstr & 0xF);
+            if (mreg & 1)
+               return False;
+            mreg >>= 1;
+            switch (size) {
+               case 0: op2 = Iop_Shorten16x8; break;
+               case 1: op2 = Iop_Shorten32x4; break;
+               case 2: op2 = Iop_Shorten64x2; break;
+               case 3: return False;
+               default: vassert(0);
+            }
+            switch (B & 3) {
+               case 0:
+                  vassert(0);
+               case 1:
+                  switch (size) {
+                     case 0: op = Iop_QShortenU16Sx8; break;
+                     case 1: op = Iop_QShortenU32Sx4; break;
+                     case 2: op = Iop_QShortenU64Sx2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  DIP("vqmovun.s%u d%u, q%u\n", 16 << size, dreg, mreg);
+                  break;
+               case 2:
+                  switch (size) {
+                     case 0: op = Iop_QShortenS16Sx8; break;
+                     case 1: op = Iop_QShortenS32Sx4; break;
+                     case 2: op = Iop_QShortenS64Sx2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  DIP("vqmovn.s%u d%u, q%u\n", 16 << size, dreg, mreg);
+                  break;
+               case 3:
+                  switch (size) {
+                     case 0: op = Iop_QShortenU16Ux8; break;
+                     case 1: op = Iop_QShortenU32Ux4; break;
+                     case 2: op = Iop_QShortenU64Ux2; break;
+                     case 3: return False;
+                     default: vassert(0);
+                  }
+                  DIP("vqmovn.u%u d%u, q%u\n", 16 << size, dreg, mreg);
+                  break;
+               default:
+                  vassert(0);
+            }
+            res = newTemp(Ity_I64);
+            tmp = newTemp(Ity_I64);
+            assign(res, unop(op, getQReg(mreg)));
+#ifndef DISABLE_QC_FLAG
+            assign(tmp, unop(op2, getQReg(mreg)));
+            setFlag_QC(mkexpr(res), mkexpr(tmp), False);
+#endif
+            putDRegI(dreg, mkexpr(res), IRTemp_INVALID);
+            return True;
+         } else if (B == 12) {
+            /* VSHLL (maximum shift) */
+            IROp op, cvt;
+            UInt shift_imm;
+            if (Q)
+               return False;
+            if (dreg & 1)
+               return False;
+            dreg >>= 1;
+            shift_imm = 8 << size;
+            res = newTemp(Ity_V128);
+            switch (size) {
+               case 0: op = Iop_ShlN16x8; cvt = Iop_Longen8Ux8; break;
+               case 1: op = Iop_ShlN32x4; cvt = Iop_Longen16Ux4; break;
+               case 2: op = Iop_ShlN64x2; cvt = Iop_Longen32Ux2; break;
+               case 3: return False;
+               default: vassert(0);
+            }
+            assign(res, binop(op, unop(cvt, getDRegI(mreg)), mkU8(shift_imm)));
+            putQReg(dreg, mkexpr(res), IRTemp_INVALID);
+            DIP("vshll.i%u q%u, d%u, #%u\n", 8 << size, dreg, mreg, 8 << size);
+            return True;
+         } else if ((B >> 3) == 3 && (B & 3) == 0) {
+            /* VCVT (half<->single) */
+            /* Half-precision extensions are needed to run this */
+            vassert(0); // ATC
+            if (((theInstr >> 18) & 3) != 1)
+               return False;
+            if ((theInstr >> 8) & 1) {
+               if (dreg & 1)
+                  return False;
+               dreg >>= 1;
+               putQReg(dreg, unop(Iop_F16toF32x4, getDRegI(mreg)),
+                     IRTemp_INVALID);
+               DIP("vcvt.f32.f16 q%u, d%u\n", dreg, mreg);
+            } else {
+               if (mreg & 1)
+                  return False;
+               mreg >>= 1;
+               putDRegI(dreg, unop(Iop_F32toF16x4, getQReg(mreg)),
+                     IRTemp_INVALID);
+               DIP("vcvt.f16.f32 d%u, q%u\n", dreg, mreg);
+            }
+            return True;
+         } else {
+            return False;
+         }
+         vassert(0);
+         return True;
+      case 3:
+         if (((B >> 1) & BITS4(1,1,0,1)) == BITS4(1,0,0,0)) {
+            /* VRECPE */
+            IROp op;
+            F = (theInstr >> 8) & 1;
+            if (size != 2)
+               return False;
+            if (Q) {
+               op = F ? Iop_Recip32Fx4 : Iop_Recip32x4;
+               putQReg(dreg, unop(op, getQReg(mreg)), IRTemp_INVALID);
+               DIP("vrecpe.%c32 q%u, q%u\n", F ? 'f' : 'u', dreg, mreg);
+            } else {
+               op = F ? Iop_Recip32Fx2 : Iop_Recip32x2;
+               putDRegI(dreg, unop(op, getDRegI(mreg)), IRTemp_INVALID);
+               DIP("vrecpe.%c32 d%u, d%u\n", F ? 'f' : 'u', dreg, mreg);
+            }
+            return True;
+         } else if (((B >> 1) & BITS4(1,1,0,1)) == BITS4(1,0,0,1)) {
+            /* VRSQRTE */
+            IROp op;
+            F = (B >> 2) & 1;
+            if (size != 2)
+               return False;
+            if (F) {
+               /* fp */
+               op = Q ? Iop_Rsqrte32Fx4 : Iop_Rsqrte32Fx2;
+            } else {
+               /* unsigned int */
+               op = Q ? Iop_Rsqrte32x4 : Iop_Rsqrte32x2;
+            }
+            if (Q) {
+               putQReg(dreg, unop(op, getQReg(mreg)), IRTemp_INVALID);
+               DIP("vrsqrte.%c32 q%u, q%u\n", F ? 'f' : 'u', dreg, mreg);
+            } else {
+               putDRegI(dreg, unop(op, getDRegI(mreg)), IRTemp_INVALID);
+               DIP("vrsqrte.%c32 d%u, d%u\n", F ? 'f' : 'u', dreg, mreg);
+            }
+            return True;
+         } else if ((B >> 3) == 3) {
+            /* VCVT (fp<->integer) */
+            IROp op;
+            if (size != 2)
+               return False;
+            switch ((B >> 1) & 3) {
+               case 0:
+                  op = Q ? Iop_I32StoFx4 : Iop_I32StoFx2;
+                  DIP("vcvt.f32.s32 %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+                  break;
+               case 1:
+                  op = Q ? Iop_I32UtoFx4 : Iop_I32UtoFx2;
+                  DIP("vcvt.f32.u32 %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+                  break;
+               case 2:
+                  op = Q ? Iop_FtoI32Sx4_RZ : Iop_FtoI32Sx2_RZ;
+                  DIP("vcvt.s32.f32 %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+                  break;
+               case 3:
+                  op = Q ? Iop_FtoI32Ux4_RZ : Iop_FtoI32Ux2_RZ;
+                  DIP("vcvt.u32.f32 %c%u, %c%u\n",
+                      Q ? 'q' : 'd', dreg, Q ? 'q' : 'd', mreg);
+                  break;
+               default:
+                  vassert(0);
+            }
+            if (Q) {
+               putQReg(dreg, unop(op, getQReg(mreg)), IRTemp_INVALID);
+            } else {
+               putDRegI(dreg, unop(op, getDRegI(mreg)), IRTemp_INVALID);
+            }
+            return True;
+         } else {
+            return False;
+         }
+         vassert(0);
+         return True;
+      default:
+         vassert(0);
+   }
+   return False;
+}
+
+/* A7.4.6 One register and a modified immediate value */
+static
+void ppNeonImm(UInt imm, UInt cmode, UInt op)
+{
+   int i;
+   switch (cmode) {
+      case 0: case 1: case 8: case 9:
+         vex_printf("0x%x", imm);
+         break;
+      case 2: case 3: case 10: case 11:
+         vex_printf("0x%x00", imm);
+         break;
+      case 4: case 5:
+         vex_printf("0x%x0000", imm);
+         break;
+      case 6: case 7:
+         vex_printf("0x%x000000", imm);
+         break;
+      case 12:
+         vex_printf("0x%xff", imm);
+         break;
+      case 13:
+         vex_printf("0x%xffff", imm);
+         break;
+      case 14:
+         if (op) {
+            vex_printf("0x");
+            for (i = 7; i >= 0; i--)
+               vex_printf("%s", (imm & (1 << i)) ? "ff" : "00");
+         } else {
+            vex_printf("0x%x", imm);
+         }
+         break;
+      case 15:
+         vex_printf("0x%x", imm);
+         break;
+   }
+}
+
+static
+const char *ppNeonImmType(UInt cmode, UInt op)
+{
+   switch (cmode) {
+      case 0 ... 7:
+      case 12: case 13:
+         return "i32";
+      case 8 ... 11:
+         return "i16";
+      case 14:
+         if (op)
+            return "i64";
+         else
+            return "i8";
+      case 15:
+         if (op)
+            vassert(0);
+         else
+            return "f32";
+      default:
+         vassert(0);
+   }
+}
+
+static
+void DIPimm(UInt imm, UInt cmode, UInt op,
+            const char *instr, UInt Q, UInt dreg)
+{
+   if (vex_traceflags & VEX_TRACE_FE) {
+      vex_printf("%s.%s %c%u, #", instr,
+                 ppNeonImmType(cmode, op), Q ? 'q' : 'd', dreg);
+      ppNeonImm(imm, cmode, op);
+      vex_printf("\n");
+   }
+}
+
+static
+Bool dis_neon_data_1reg_and_imm(UInt theInstr)
+{
+   UInt dreg = get_neon_d_regno(theInstr);
+   ULong imm_raw = ((theInstr >> 17) & 0x80) | ((theInstr >> 12) & 0x70) |
+                  (theInstr & 0xf);
+   ULong imm_raw_pp = imm_raw;
+   UInt cmode = (theInstr >> 8) & 0xf;
+   UInt op_bit = (theInstr >> 5) & 1;
+   ULong imm = 0;
+   UInt Q = (theInstr >> 6) & 1;
+   int i, j;
+   UInt tmp;
+   IRExpr *imm_val;
+   IRExpr *expr;
+   IRTemp tmp_var;
+   switch(cmode) {
+      case 7: case 6:
+         imm_raw = imm_raw << 8;
+         /* fallthrough */
+      case 5: case 4:
+         imm_raw = imm_raw << 8;
+         /* fallthrough */
+      case 3: case 2:
+         imm_raw = imm_raw << 8;
+         /* fallthrough */
+      case 0: case 1:
+         imm = (imm_raw << 32) | imm_raw;
+         break;
+      case 11: case 10:
+         imm_raw = imm_raw << 8;
+         /* fallthrough */
+      case 9: case 8:
+         imm_raw = (imm_raw << 16) | imm_raw;
+         imm = (imm_raw << 32) | imm_raw;
+         break;
+      case 13:
+         imm_raw = (imm_raw << 8) | 0xff;
+         /* fallthrough */
+      case 12:
+         imm_raw = (imm_raw << 8) | 0xff;
+         imm = (imm_raw << 32) | imm_raw;
+         break;
+      case 14:
+         if (! op_bit) {
+            for(i = 0; i < 8; i++) {
+               imm = (imm << 8) | imm_raw;
+            }
+         } else {
+            for(i = 7; i >= 0; i--) {
+               tmp = 0;
+               for(j = 0; j < 8; j++) {
+                  tmp = (tmp << 1) | ((imm_raw >> i) & 1);
+               }
+               imm = (imm << 8) | tmp;
+            }
+         }
+         break;
+      case 15:
+         imm = (imm_raw & 0x80) << 5;
+         imm |= ~((imm_raw & 0x40) << 5);
+         for(i = 1; i <= 4; i++)
+            imm |= (imm_raw & 0x40) << i;
+         imm |= (imm_raw & 0x7f);
+         imm = imm << 19;
+         imm = (imm << 32) | imm;
+         break;
+      default:
+         return False;
+   }
+   if (Q) {
+      imm_val = binop(Iop_64HLtoV128, mkU64(imm), mkU64(imm));
+   } else {
+      imm_val = mkU64(imm);
+   }
+   if (((op_bit == 0) &&
+      (((cmode & 9) == 0) || ((cmode & 13) == 8) || ((cmode & 12) == 12))) ||
+      ((op_bit == 1) && (cmode == 14))) {
+      /* VMOV (immediate) */
+      if (Q) {
+         putQReg(dreg, imm_val, IRTemp_INVALID);
+      } else {
+         putDRegI(dreg, imm_val, IRTemp_INVALID);
+      }
+      DIPimm(imm_raw_pp, cmode, op_bit, "vmov", Q, dreg);
+      return True;
+   }
+   if ((op_bit == 1) &&
+      (((cmode & 9) == 0) || ((cmode & 13) == 8) || ((cmode & 14) == 12))) {
+      /* VMVN (immediate) */
+      if (Q) {
+         putQReg(dreg, unop(Iop_NotV128, imm_val), IRTemp_INVALID);
+      } else {
+         putDRegI(dreg, unop(Iop_Not64, imm_val), IRTemp_INVALID);
+      }
+      DIPimm(imm_raw_pp, cmode, op_bit, "vmvn", Q, dreg);
+      return True;
+   }
+   if (Q) {
+      tmp_var = newTemp(Ity_V128);
+      assign(tmp_var, getQReg(dreg));
+   } else {
+      tmp_var = newTemp(Ity_I64);
+      assign(tmp_var, getDRegI(dreg));
+   }
+   if ((op_bit == 0) && (((cmode & 9) == 1) || ((cmode & 13) == 9))) {
+      /* VORR (immediate) */
+      if (Q)
+         expr = binop(Iop_OrV128, mkexpr(tmp_var), imm_val);
+      else
+         expr = binop(Iop_Or64, mkexpr(tmp_var), imm_val);
+      DIPimm(imm_raw_pp, cmode, op_bit, "vorr", Q, dreg);
+   } else if ((op_bit == 1) && (((cmode & 9) == 1) || ((cmode & 13) == 9))) {
+      /* VBIC (immediate) */
+      if (Q)
+         expr = binop(Iop_AndV128, mkexpr(tmp_var),
+                                   unop(Iop_NotV128, imm_val));
+      else
+         expr = binop(Iop_And64, mkexpr(tmp_var), unop(Iop_Not64, imm_val));
+      DIPimm(imm_raw_pp, cmode, op_bit, "vbic", Q, dreg);
+   } else {
+      return False;
+   }
+   if (Q)
+      putQReg(dreg, expr, IRTemp_INVALID);
+   else
+      putDRegI(dreg, expr, IRTemp_INVALID);
+   return True;
+}
+
+/* A7.4 Advanced SIMD data-processing instructions */
+static
+Bool dis_neon_data_processing(UInt theInstr)
+{
+   UInt A = (theInstr >> 19) & 0x1F;
+   UInt B = (theInstr >>  8) & 0xF;
+   UInt C = (theInstr >>  4) & 0xF;
+   UInt U = (theInstr >> 24) & 0x1;
+
+   if (! (A & 0x10)) {
+      return dis_neon_data_3same(theInstr);
+   }
+   if (((A & 0x17) == 0x10) && ((C & 0x9) == 0x1)) {
+      return dis_neon_data_1reg_and_imm(theInstr);
+   }
+   if ((C & 1) == 1) {
+      return dis_neon_data_2reg_and_shift(theInstr);
+   }
+   if (((C & 5) == 0) && (((A & 0x14) == 0x10) || ((A & 0x16) == 0x14))) {
+      return dis_neon_data_3diff(theInstr);
+   }
+   if (((C & 5) == 4) && (((A & 0x14) == 0x10) || ((A & 0x16) == 0x14))) {
+      return dis_neon_data_2reg_and_scalar(theInstr);
+   }
+   if ((A & 0x16) == 0x16) {
+      if ((U == 0) && ((C & 1) == 0)) {
+         return dis_neon_vext(theInstr);
+      }
+      if ((U != 1) || ((C & 1) == 1))
+         return False;
+      if ((B & 8) == 0) {
+         return dis_neon_data_2reg_misc(theInstr);
+      }
+      if ((B & 12) == 8) {
+         return dis_neon_vtb(theInstr);
+      }
+      if ((B == 12) && ((C & 9) == 0)) {
+         return dis_neon_vdup(theInstr);
+      }
+   }
+   return False;
+}
+
+static
+void mk_neon_elem_load_to_one_lane(UInt rD, UInt inc, UInt index,
+      UInt N, UInt size, IRTemp addr)
+{
+   UInt i;
+   switch (size) {
+      case 0:
+         putDRegI(rD, triop(Iop_SetElem8x8, getDRegI(rD), mkU8(index),
+                  loadLE(Ity_I8, mkexpr(addr))), IRTemp_INVALID);
+         break;
+      case 1:
+         putDRegI(rD, triop(Iop_SetElem16x4, getDRegI(rD), mkU8(index),
+                  loadLE(Ity_I16, mkexpr(addr))), IRTemp_INVALID);
+         break;
+      case 2:
+         putDRegI(rD, triop(Iop_SetElem32x2, getDRegI(rD), mkU8(index),
+                  loadLE(Ity_I32, mkexpr(addr))), IRTemp_INVALID);
+         break;
+      default:
+         vassert(0);
+   }
+   for(i = 1; i <= N; i++) {
+      switch (size) {
+         case 0:
+            putDRegI(rD + i * inc,
+                     triop(Iop_SetElem8x8,
+                           getDRegI(rD + i * inc),
+                           mkU8(index),
+                           loadLE(Ity_I8, binop(Iop_Add32,
+                                                mkexpr(addr),
+                                                mkU32(i * 1)))),
+                     IRTemp_INVALID);
+            break;
+         case 1:
+            putDRegI(rD + i * inc,
+                     triop(Iop_SetElem16x4,
+                           getDRegI(rD + i * inc),
+                           mkU8(index),
+                           loadLE(Ity_I16, binop(Iop_Add32,
+                                                 mkexpr(addr),
+                                                 mkU32(i * 2)))),
+                     IRTemp_INVALID);
+            break;
+         case 2:
+            putDRegI(rD + i * inc,
+                     triop(Iop_SetElem32x2,
+                           getDRegI(rD + i * inc),
+                           mkU8(index),
+                           loadLE(Ity_I32, binop(Iop_Add32,
+                                                 mkexpr(addr),
+                                                 mkU32(i * 4)))),
+                     IRTemp_INVALID);
+            break;
+         default:
+            vassert(0);
+      }
+   }
+}
+
+static
+void mk_neon_elem_store_from_one_lane(UInt rD, UInt inc, UInt index,
+      UInt N, UInt size, IRTemp addr)
+{
+   UInt i;
+   switch (size) {
+      case 0:
+         storeLE(mkexpr(addr),
+                 binop(Iop_GetElem8x8, getDRegI(rD), mkU8(index)));
+         break;
+      case 1:
+         storeLE(mkexpr(addr),
+                 binop(Iop_GetElem16x4, getDRegI(rD), mkU8(index)));
+         break;
+      case 2:
+         storeLE(mkexpr(addr),
+                 binop(Iop_GetElem32x2, getDRegI(rD), mkU8(index)));
+         break;
+      default:
+         vassert(0);
+   }
+   for (i = 1; i <= N; i++) {
+      switch (size) {
+         case 0:
+            storeLE(binop(Iop_Add32, mkexpr(addr), mkU32(i * 1)),
+                binop(Iop_GetElem8x8, getDRegI(rD + i * inc), mkU8(index)));
+            break;
+         case 1:
+            storeLE(binop(Iop_Add32, mkexpr(addr), mkU32(i * 2)),
+                binop(Iop_GetElem16x4, getDRegI(rD + i * inc), mkU8(index)));
+            break;
+         case 2:
+            storeLE(binop(Iop_Add32, mkexpr(addr), mkU32(i * 4)),
+                binop(Iop_GetElem32x2, getDRegI(rD + i * inc), mkU8(index)));
+            break;
+         default:
+            vassert(0);
+      }
+   }
+}
+
+/* A7.7 Advanced SIMD element or structure load/store instructions */
+static
+Bool dis_neon_elem_or_struct_load(UInt theInstr)
+{
+#  define INSN(_bMax,_bMin)  SLICE_UInt(theInstr, (_bMax), (_bMin))
+   UInt A = INSN(23,23);
+   UInt B = INSN(11,8);
+   UInt L = INSN(21,21);
+   UInt rD = (INSN(22,22) << 4) | INSN(15,12);
+   UInt rN = INSN(19,16);
+   UInt rM = INSN(3,0);
+   UInt N, size, i, j;
+   UInt inc;
+   UInt regs = 1;
+   IRTemp addr;
+
+   if (INSN(20,20) != 0)
+      return False;
+
+   if (A) {
+      N = B & 3;
+      if ((B >> 2) < 3) {
+         /* VSTn / VLDn (n-element structure from/to one lane) */
+
+         size = B >> 2;
+
+         switch (size) {
+            case 0: i = INSN(7,5); inc = 1; break;
+            case 1: i = INSN(7,6); inc = INSN(5,5) ? 2 : 1; break;
+            case 2: i = INSN(7,7); inc = INSN(6,6) ? 2 : 1; break;
+            case 3: return False;
+            default: vassert(0);
+         }
+
+         addr = newTemp(Ity_I32);
+         assign(addr, getIRegA(rN));
+
+         if (L)
+            mk_neon_elem_load_to_one_lane(rD, inc, i, N, size, addr);
+         else
+            mk_neon_elem_store_from_one_lane(rD, inc, i, N, size, addr);
+         DIP("v%s%u.%u {", L ? "ld" : "st", N + 1, 8 << size);
+         for(j = 0; j <= N; j++) {
+            if (j)
+               DIP(", ");
+            DIP("d%u[%u]", rD + j * inc, i);
+         }
+            DIP("}, [r%u]%s\n", rN, (rM != 15) ? "!" : "");
+      } else {
+         /* VLDn (single element to all lanes) */
+         UInt r;
+         if (L == 0)
+            return False;
+
+         inc = INSN(5,5) + 1;
+         size = INSN(7,6);
+
+         /* size == 3 and size == 2 cases differs in alligment constraints */
+         if (size == 3 && N == 3 && INSN(4,4) == 1)
+            size = 2;
+
+         if (size == 0 && N == 0 && INSN(4,4) == 1)
+            return False;
+         if (N == 2 && INSN(4,4) == 1)
+            return False;
+         if (size == 3)
+            return False;
+
+         addr = newTemp(Ity_I32);
+         assign(addr, getIRegA(rN));
+
+         if (N == 0 && INSN(5,5))
+            regs = 2;
+
+         for (r = 0; r < regs; r++) {
+            switch (size) {
+               case 0:
+                  putDRegI(rD + r, unop(Iop_Dup8x8,
+                                        loadLE(Ity_I8, mkexpr(addr))),
+                        IRTemp_INVALID);
+                  break;
+               case 1:
+                  putDRegI(rD + r, unop(Iop_Dup16x4,
+                                        loadLE(Ity_I16, mkexpr(addr))),
+                        IRTemp_INVALID);
+                  break;
+               case 2:
+                  putDRegI(rD + r, unop(Iop_Dup32x2,
+                                        loadLE(Ity_I32, mkexpr(addr))),
+                        IRTemp_INVALID);
+                  break;
+               default:
+                  vassert(0);
+            }
+            for(i = 1; i <= N; i++) {
+               switch (size) {
+                  case 0:
+                     putDRegI(rD + r + i * inc,
+                              unop(Iop_Dup8x8,
+                                   loadLE(Ity_I8, binop(Iop_Add32,
+                                                        mkexpr(addr),
+                                                        mkU32(i * 1)))),
+                           IRTemp_INVALID);
+                     break;
+                  case 1:
+                     putDRegI(rD + r + i * inc,
+                              unop(Iop_Dup16x4,
+                                   loadLE(Ity_I16, binop(Iop_Add32,
+                                                         mkexpr(addr),
+                                                         mkU32(i * 2)))),
+                              IRTemp_INVALID);
+                     break;
+                  case 2:
+                     putDRegI(rD + r + i * inc,
+                              unop(Iop_Dup32x2,
+                                   loadLE(Ity_I32, binop(Iop_Add32,
+                                                         mkexpr(addr),
+                                                         mkU32(i * 4)))),
+                              IRTemp_INVALID);
+                     break;
+                  default:
+                     vassert(0);
+               }
+            }
+         }
+         DIP("vld%u.%u {", N + 1, 8 << size);
+         for (r = 0; r < regs; r++) {
+            for (i = 0; i <= N; i++) {
+               if (i || r)
+                  DIP(", ");
+               DIP("d%u[]", rD + r + i * inc);
+            }
+         }
+         DIP("}, [r%u]%s\n", rN, (rM != 15) ? "!" : "");
+      }
+      /* Writeback */
+      if (rM != 15) {
+         if (rM == 13) {
+            putIRegA(rN, binop(Iop_Add32,
+                               mkexpr(addr),
+                               mkU32((1 << size) * (N + 1))),
+                     IRTemp_INVALID, Ijk_Boring);
+         } else {
+            putIRegA(rN, binop(Iop_Add32, mkexpr(addr), getIRegA(rM)),
+                     IRTemp_INVALID, Ijk_Boring);
+         }
+      }
+      return True;
+   } else {
+      IRTemp tmp;
+      UInt r, elems;
+      /* VSTn / VLDn (multiple n-element structures) */
+      if (B == BITS4(0,0,1,0) || B == BITS4(0,1,1,0)
+          || B == BITS4(0,1,1,1) || B == BITS4(1,0,1,0)) {
+         N = 0;
+      } else if (B == BITS4(0,0,1,1) || B == BITS4(1,0,0,0)
+                 || B == BITS4(1,0,0,1)) {
+         N = 1;
+      } else if (B == BITS4(0,1,0,0) || B == BITS4(0,1,0,1)) {
+         N = 2;
+      } else if (B == BITS4(0,0,0,0) || B == BITS4(0,0,0,1)) {
+         N = 3;
+      } else {
+         return False;
+      }
+      inc = (B & 1) + 1;
+      if (N == 1 && B == BITS4(0,0,1,1)) {
+         regs = 2;
+      } else if (N == 0) {
+         if (B == BITS4(1,0,1,0)) {
+            regs = 2;
+         } else if (B == BITS4(0,1,1,0)) {
+            regs = 3;
+         } else if (B == BITS4(0,0,1,0)) {
+            regs = 4;
+         }
+      }
+
+      size = INSN(7,6);
+      if (N == 0 && size == 3)
+         size = 2;
+      if (size == 3)
+         return False;
+
+      elems = 8 / (1 << size);
+
+      addr = newTemp(Ity_I32);
+      assign(addr, getIRegA(rN));
+
+      for (r = 0; r < regs; r++) {
+         for (i = 0; i < elems; i++) {
+            if (L)
+               mk_neon_elem_load_to_one_lane(rD + r, inc, i, N, size, addr);
+            else
+               mk_neon_elem_store_from_one_lane(rD + r, inc, i, N, size, addr);
+            tmp = newTemp(Ity_I32);
+            assign(tmp, binop(Iop_Add32, mkexpr(addr),
+                                         mkU32((1 << size) * (N + 1))));
+            addr = tmp;
+         }
+      }
+      /* Writeback */
+      if (rM != 15) {
+         if (rM == 13) {
+            putIRegA(rN, binop(Iop_Add32,
+                               mkexpr(addr),
+                               mkU32(8 * (N + 1) * regs)),
+                     IRTemp_INVALID, Ijk_Boring);
+         } else {
+            putIRegA(rN, binop(Iop_Add32, mkexpr(addr), getIRegA(rM)),
+                     IRTemp_INVALID, Ijk_Boring);
+         }
+      }
+      DIP("v%s%u.%u {", L ? "ld" : "st", N + 1, 8 << INSN(7,6));
+      if ((inc == 1 && regs * (N + 1) > 1)
+            || (inc == 2 && regs > 1 && N > 0)) {
+         DIP("d%u-d%u", rD, rD + regs * (N + 1) - 1);
+      } else {
+         for (r = 0; r < regs; r++) {
+            for (i = 0; i <= N; i++) {
+               if (i || r)
+                  DIP(", ");
+               DIP("d%u", rD + r + i * inc);
+            }
+         }
+      }
+      DIP("}, [r%u]%s\n", rN, (rM != 15) ? "!" : "");
+      return True;
+   }
+#  undef INSN
+}
+
+static
+Bool dis_neon(UInt theInstr)
+{
+   Bool ok = False;
+
+   if (((theInstr >> 25) & 0x7) == 1)
+      ok = dis_neon_data_processing(theInstr);
+   if (ok)
+      return True;
+
+   if (((theInstr >> 24) & 0xF) == BITS4(0,1,0,0))
+      ok = dis_neon_elem_or_struct_load(theInstr);
+   if (ok)
+      return True;
+
+   return ok;
+}
+
 
 /*------------------------------------------------------------*/
 /*--- LDMxx/STMxx helper (both ARM and Thumb32)            ---*/
@@ -2332,6 +7918,15 @@ static Bool decode_NV_instruction ( /*MOD*/DisResult* dres, UInt insn )
          break;
    }
 
+//   vex_traceflags |= VEX_TRACE_FE;
+
+   if (dis_neon(insn)) {
+//      vex_traceflags &= ~VEX_TRACE_FE;
+      return True;
+   }
+
+//   vex_traceflags &= ~VEX_TRACE_FE;
+
    return False;
 
 #  undef INSN_COND
@@ -2348,7 +7943,7 @@ static Bool decode_NV_instruction ( /*MOD*/DisResult* dres, UInt insn )
    of guest_R15_curr_instr_notENC, which will have been set before the
    call here. */
 
-static   
+static
 DisResult disInstr_ARM_WRK (
              Bool         put_IP,
              Bool         (*resteerOkFn) ( /*opaque*/void*, Addr64 ),
@@ -3486,7 +9081,8 @@ DisResult disInstr_ARM_WRK (
             setFlags_D1_ND( ARMG_CC_OP_MUL, res, pair, condT );
          }
          DIP("ml%c%c%s r%u, r%u, r%u, r%u\n",
-             isMLS ? 's' : 'a', bitS ? 's' : ' ', nCC(INSN_COND), rD, rM, rS, rN);
+             isMLS ? 's' : 'a', bitS ? 's' : ' ',
+             nCC(INSN_COND), rD, rM, rS, rN);
          goto decode_success;
       }
       /* fall through */
@@ -3746,7 +9342,7 @@ DisResult disInstr_ARM_WRK (
          2  ia-Rn   (access at Rn, then Rn += 4+8n)
          3  db-Rn   (Rn -= 4+8n,   then access at Rn)
    */
-   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,1,0,0))
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
        && INSN(11,8) == BITS4(1,0,1,1)) {
       UInt bP     = (insn >> 24) & 1;
       UInt bU     = (insn >> 23) & 1;
@@ -3754,12 +9350,11 @@ DisResult disInstr_ARM_WRK (
       UInt bL     = (insn >> 20) & 1;
       UInt offset = (insn >> 0) & 0xFF;
       UInt rN     = INSN(19,16);
-      UInt dD     = INSN(15,12);
+      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
       UInt nRegs  = (offset - 1) / 2;
       Int  i;
 
       /**/ if (bP == 0 && bU == 1 && bW == 0) {
-         vassert(0); //ATC
          summary = 1;
       }
       else if (bP == 0 && bU == 1 && bW == 1) {
@@ -3779,7 +9374,7 @@ DisResult disInstr_ARM_WRK (
          goto after_vfp_fldmx_fstmx;
 
       /* can't transfer regs after D15 */
-      if (dD + nRegs - 1 >= 16)
+      if (dD + nRegs - 1 >= 32)
          goto after_vfp_fldmx_fstmx;
 
       /* Now, we can't do a conditional load or store, since that very
@@ -3872,7 +9467,7 @@ DisResult disInstr_ARM_WRK (
          2  ia-Rn   (access at Rn, then Rn += 8n)
          3  db-Rn   (Rn -= 8n,     then access at Rn)
    */
-   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,1,0,0))
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
        && INSN(11,8) == BITS4(1,0,1,1)) {
       UInt bP     = (insn >> 24) & 1;
       UInt bU     = (insn >> 23) & 1;
@@ -3880,12 +9475,11 @@ DisResult disInstr_ARM_WRK (
       UInt bL     = (insn >> 20) & 1;
       UInt offset = (insn >> 0) & 0xFF;
       UInt rN     = INSN(19,16);
-      UInt dD     = INSN(15,12);
+      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
       UInt nRegs  = offset / 2;
       Int  i;
 
       /**/ if (bP == 0 && bU == 1 && bW == 0) {
-         vassert(0); //ATC
          summary = 1;
       }
       else if (bP == 0 && bU == 1 && bW == 1) {
@@ -3905,7 +9499,7 @@ DisResult disInstr_ARM_WRK (
          goto after_vfp_fldmd_fstmd;
 
       /* can't transfer regs after D15 */
-      if (dD + nRegs - 1 >= 16)
+      if (dD + nRegs - 1 >= 32)
          goto after_vfp_fldmd_fstmd;
 
       /* Now, we can't do a conditional load or store, since that very
@@ -4019,8 +9613,8 @@ DisResult disInstr_ARM_WRK (
 
    /* --------------------- vmov --------------------- */
    // VMOV dM, rD, rN
-   if (0x0C400B10 == (insn & 0x0FF00FF0)) {
-      UInt dM = INSN(3,0);
+   if (0x0C400B10 == (insn & 0x0FF00FD0)) {
+      UInt dM = INSN(3,0) | (INSN(5,5) << 4);
       UInt rD = INSN(15,12); /* lo32 */
       UInt rN = INSN(19,16); /* hi32 */
       if (rD == 15 || rN == 15) {
@@ -4037,8 +9631,8 @@ DisResult disInstr_ARM_WRK (
    }
 
    // VMOV rD, rN, dM
-   if (0x0C500B10 == (insn & 0x0FF00FF0)) {
-      UInt dM = INSN(3,0);
+   if (0x0C500B10 == (insn & 0x0FF00FD0)) {
+      UInt dM = INSN(3,0) | (INSN(5,5) << 4);
       UInt rD = INSN(15,12); /* lo32 */
       UInt rN = INSN(19,16); /* hi32 */
       if (rD == 15 || rN == 15 || rD == rN) {
@@ -4052,6 +9646,164 @@ DisResult disInstr_ARM_WRK (
          goto decode_success;
       }
       /* fall through */
+   }
+
+   // VMOV rD[x], rT
+   if (0x0E000B10 == (insn & 0x0F900F1F)) {
+      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT = INSN(15,12);
+      UInt opc = (INSN(22,21) << 2) | INSN(6,5);
+      UInt index;
+      if (rT == 15) {
+         /* fall through */
+      } else {
+         if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
+            index = opc & 7;
+            putDRegI(rD, triop(Iop_SetElem8x8, getDRegI(rD), mkU8(index),
+                               unop(Iop_32to8, getIRegA(rT))), condT);
+            DIP("vmov%s.8 d%u[%u], r%u\n", nCC(INSN_COND), rD, index, rT);
+            goto decode_success;
+         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
+            index = (opc >> 1) & 3;
+            putDRegI(rD, triop(Iop_SetElem16x4, getDRegI(rD), mkU8(index),
+                               unop(Iop_32to16, getIRegA(rT))), condT);
+            DIP("vmov%s.16 d%u[%u], r%u\n", nCC(INSN_COND), rD, index, rT);
+            goto decode_success;
+         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0)) {
+            index = (opc >> 2) & 1;
+            putDRegI(rD, triop(Iop_SetElem32x2, getDRegI(rD), mkU8(index),
+                               getIRegA(rT)), condT);
+            DIP("vmov%s.32 d%u[%u], r%u\n", nCC(INSN_COND), rD, index, rT);
+            goto decode_success;
+         } else {
+            /* fall through */
+         }
+      }
+   }
+
+   // VMOV rT, rD[x]
+   if (0x0E100B10 == (insn & 0x0F100F1F)) {
+      UInt rN = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT = INSN(15,12);
+      UInt U = INSN(23,23);
+      UInt opc = (INSN(22,21) << 2) | INSN(6,5);
+      UInt index;
+      if (rT == 15) {
+         /* fall through */
+      } else {
+         if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
+            index = opc & 7;
+            putIRegA(rT, unop(U ? Iop_8Uto32 : Iop_8Sto32,
+                              binop(Iop_GetElem8x8,
+                                    getDRegI(rN),
+                                    mkU8(index))),
+                    condT, Ijk_Boring);
+            DIP("vmov%s.%c8 r%u, d%u[%u]\n", nCC(INSN_COND), U ? 'u' : 's',
+                  rT, rN, index);
+            goto decode_success;
+         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
+            index = (opc >> 1) & 3;
+            putIRegA(rT, unop(U ? Iop_16Uto32 : Iop_16Sto32,
+                              binop(Iop_GetElem16x4,
+                                    getDRegI(rN),
+                                    mkU8(index))),
+                    condT, Ijk_Boring);
+            DIP("vmov%s.%c16 r%u, d%u[%u]\n", nCC(INSN_COND), U ? 'u' : 's',
+                  rT, rN, index);
+            goto decode_success;
+         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0) && U == 0) {
+            index = (opc >> 2) & 1;
+            putIRegA(rT, binop(Iop_GetElem32x2, getDRegI(rN), mkU8(index)),
+                     condT, Ijk_Boring);
+            DIP("vmov%s.32 r%u, d%u[%u]\n", nCC(INSN_COND), rT, rN, index);
+            goto decode_success;
+         } else {
+            /* fall through */
+         }
+      }
+   }
+
+   // VMOV.F32 sD, #imm
+   // FCONSTS sD, #imm
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,0)) {
+      UInt rD = (INSN(15,12) << 1) | INSN(22,22);
+      UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
+      UInt b = (imm8 >> 6) & 1;
+      UInt imm;
+      imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,(imm8 >> 5) & 1) << 8)
+             | ((imm8 & 0x1f) << 3);
+      imm <<= 16;
+      putFReg(rD, unop(Iop_ReinterpI32asF32, mkU32(imm)), condT);
+      DIP("focnsts%s s%u #%u", nCC(INSN_COND), rD, imm8);
+      goto decode_success;
+   }
+
+   // VMOV.F64 dD, #imm
+   // FCONSTD dD, #imm
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,1)) {
+      UInt rD = INSN(15,12) | (INSN(22,22) << 4);
+      UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
+      UInt b = (imm8 >> 6) & 1;
+      ULong imm;
+      imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,b) << 8)
+             | BITS8(b,b,0,0,0,0,0,0) | (imm8 & 0x3f);
+      imm <<= 48;
+      putDReg(rD, unop(Iop_ReinterpI64asF64, mkU64(imm)), condT);
+      DIP("focnstd%s d%u #%u", nCC(INSN_COND), rD, imm8);
+      goto decode_success;
+   }
+
+   /* ---------------------- vdup ------------------------- */
+   // VDUP dD, rT
+   // VDUP qD, rT
+   if (BITS8(1,1,1,0,1,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,0,1))
+       && BITS4(1,0,1,1) == INSN(11,8) && INSN(6,6) == 0 && INSN(4,4) == 1) {
+      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT = INSN(15,12);
+      UInt Q = INSN(21,21);
+      UInt size = (INSN(22,22) << 1) | INSN(5,5);
+      if (rT == 15 || size == 3i || (Q && (rD & 1))) {
+         /* fall through */
+      } else {
+         if (Q) {
+            rD >>= 1;
+            switch (size) {
+               case 0:
+                  putQReg(rD, unop(Iop_Dup32x4, getIRegA(rT)), condT);
+                  goto decode_success;
+               case 1:
+                  putQReg(rD, unop(Iop_Dup16x8,
+                                   unop(Iop_32to16, getIRegA(rT))),
+                          condT);
+                  goto decode_success;
+               case 2:
+                  putQReg(rD, unop(Iop_Dup8x16, unop(Iop_32to8, getIRegA(rT))),
+                          condT);
+                  goto decode_success;
+               default:
+                  vassert(0);
+            }
+         } else {
+            switch (size) {
+               case 0:
+                  putDRegI(rD, unop(Iop_Dup32x2, getIRegA(rT)), condT);
+                  goto decode_success;
+               case 1:
+                  putDRegI(rD, unop(Iop_Dup16x4,
+                                    unop(Iop_32to16, getIRegA(rT))),
+                           condT);
+                  goto decode_success;
+               case 2:
+                  putDRegI(rD, unop(Iop_Dup8x8, unop(Iop_32to8, getIRegA(rT))),
+                           condT);
+                  goto decode_success;
+               default:
+                  vassert(0);
+            }
+         }
+      }
    }
 
    /* --------------------- f{ld,st}d --------------------- */
@@ -4371,7 +10123,6 @@ DisResult disInstr_ARM_WRK (
       Int  i;
 
       /**/ if (bP == 0 && bU == 1 && bW == 0) {
-         vassert(0); //ATC
          summary = 1;
       }
       else if (bP == 0 && bU == 1 && bW == 1) {
@@ -6210,6 +11961,7 @@ DisResult disInstr_THUMB_WRK (
          DIP("it%c%c%c %s\n", c1, c2, c3, nCC(firstcond));
          goto decode_success;
       }
+      break;
    }
 
    case BITS8(1,0,1,1,0,0,0,1):
@@ -6950,6 +12702,14 @@ DisResult disInstr_THUMB_WRK (
 
    }
 
+   /* ================ 16-bit misc cases ================ */
+
+   /* ------ NOP ------ */
+   if (INSN0(15,0) == 0xBF00) {
+      DIP("nop");
+      goto decode_success;
+   }
+
    /* ----------------------------------------------------------- */
    /* --                                                       -- */
    /* -- Thumb 32-bit integer instructions                     -- */
@@ -6970,41 +12730,57 @@ DisResult disInstr_THUMB_WRK (
    vassert(dres.continueAt == 0);
    dres.len = 4;
 
-   /* ---------------- BL/BLX simm22 ---------------- */
-   if (BITS5(1,1,1,1,0) == INSN0(15,11)
-       &&  BITS5(1,1,1,0,1) == (INSN1(15,11) & BITS5(1,1,1,0,1))) {
-      /* Only allowed outside or last-in IT block; SIGILL if not so. */
-      gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
-      // and skip this insn if not selected; being cleverer is too
-      // difficult
-      mk_skip_over_T32_if_cond_is_false(condT);
-      condT = IRTemp_INVALID;
-      // now uncond
+   /* ---------------- BL/BLX simm26 ---------------- */
+   if (BITS5(1,1,1,1,0) == INSN0(15,11) && BITS2(1,1) == INSN1(15,14)) {
       UInt isBL = INSN1(12,12);
-      UInt hi11 = INSN0(10,0);
-      UInt lo11 = INSN1(10,0);
-      Int dst = hi11;
-      dst = (dst << 21) >> 21; /* sign extend */
-      dst = (dst << 12) + (lo11 << 1)
-            + guest_R15_curr_instr_notENC + 4;
-      /* We're returning to Thumb code, hence "| 1" */
-      putIRegT( 14, mkU32( (guest_R15_curr_instr_notENC + 4) | 1 ),
-                IRTemp_INVALID);
-      if (isBL) {
-         /* BL: unconditional T -> T call */
-         /* we're calling Thumb code, hence "| 1" */
-         irsb->next = mkU32( dst | 1 );
-         DIP("bl 0x%x (stay in Thumb mode)\n", dst);
-      } else {
-         /* BLX: unconditional T -> A call */
-         /* we're calling ARM code, hence "& 3" to align to a
-            valid ARM insn address */
-         irsb->next = mkU32( dst & ~3 );
-         DIP("bl 0x%x (switch to ARM mode)\n", dst);
+      UInt bS   = INSN0(10,10);
+      UInt bJ1  = INSN1(13,13);
+      UInt bJ2  = INSN1(11,11);
+      UInt bI1  = 1 ^ (bJ1 ^ bS);
+      UInt bI2  = 1 ^ (bJ2 ^ bS);
+      Int simm25
+         =   (bS          << (1 + 1 + 10 + 11 + 1))
+           | (bI1         << (1 + 10 + 11 + 1))
+           | (bI2         << (10 + 11 + 1))
+           | (INSN0(9,0)  << (11 + 1))
+           | (INSN1(10,0) << 1);
+      simm25 = (simm25 << 7) >> 7;
+
+      vassert(0 == (guest_R15_curr_instr_notENC & 1));
+      UInt dst = simm25 + guest_R15_curr_instr_notENC + 4;
+
+      /* One further validity case to check: in the case of BLX
+         (not-BL), that insn1[0] must be zero. */
+      Bool valid = True;
+      if (isBL == 0 && INSN1(0,0) == 1) valid = False;
+      if (valid) {
+         /* Only allowed outside or last-in IT block; SIGILL if not so. */
+         gen_SIGILL_T_if_in_but_NLI_ITBlock(old_itstate, new_itstate);
+         // and skip this insn if not selected; being cleverer is too
+         // difficult
+         mk_skip_over_T32_if_cond_is_false(condT);
+         condT = IRTemp_INVALID;
+         // now uncond
+
+         /* We're returning to Thumb code, hence "| 1" */
+         putIRegT( 14, mkU32( (guest_R15_curr_instr_notENC + 4) | 1 ),
+                   IRTemp_INVALID);
+         if (isBL) {
+            /* BL: unconditional T -> T call */
+            /* we're calling Thumb code, hence "| 1" */
+            irsb->next = mkU32( dst | 1 );
+            DIP("bl 0x%x (stay in Thumb mode)\n", dst);
+         } else {
+            /* BLX: unconditional T -> A call */
+            /* we're calling ARM code, hence "& 3" to align to a
+               valid ARM insn address */
+            irsb->next = mkU32( dst & ~3 );
+            DIP("blx 0x%x (switch to ARM mode)\n", dst);
+         }
+         irsb->jumpkind = Ijk_Call;
+         dres.whatNext = Dis_StopHere;
+         goto decode_success;
       }
-      irsb->jumpkind = Ijk_Call;
-      dres.whatNext = Dis_StopHere;
-      goto decode_success;
    }
 
    /* ---------------- {LD,ST}M{IA,DB} ---------------- */
@@ -7115,20 +12891,23 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* ---------------- (T2) CMP.W Rn, #constT ---------------- */
-   // Ditto CMN
+   /* ---------------- (T2) CMN.W Rn, #constT ---------------- */
    if (INSN0(15,11) == BITS5(1,1,1,1,0)
-       && INSN0(9,4) == BITS6(0,1,1,0,1,1)
+       && (   INSN0(9,4) == BITS6(0,1,1,0,1,1)  // CMP
+           || INSN0(9,4) == BITS6(0,1,0,0,0,1)) // CMN
        && INSN1(15,15) == 0
        && INSN1(11,8) == BITS4(1,1,1,1)) {
       UInt rN = INSN0(3,0);
       if (rN != 15) {
          IRTemp argL  = newTemp(Ity_I32);
          IRTemp argR  = newTemp(Ity_I32);
+         Bool   isCMN = INSN0(9,4) == BITS6(0,1,0,0,0,1);
          UInt   imm32 = thumbExpandImm_from_I0_I1(NULL, insn0, insn1);
          assign(argL, getIRegT(rN));
          assign(argR, mkU32(imm32));
-         setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
-         DIP("cmp.w r%u, #%u\n", rN, imm32);
+         setFlags_D1_D2( isCMN ? ARMG_CC_OP_ADD : ARMG_CC_OP_SUB,
+                         argL, argR, condT );
+         DIP("%s.w r%u, #%u\n", isCMN ? "cmn" : "cmp", rN, imm32);
          goto decode_success;
       }
    }
@@ -8390,6 +14169,23 @@ DisResult disInstr_THUMB_WRK (
                       binop(Iop_Mul32, getIRegT(rN), getIRegT(rM))));
          putIRegT(rD, mkexpr(res), condT);
          DIP("%s r%u, r%u, r%u, r%u\n", "mla", rD, rN, rM, rA);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------ (T3) ADR ------------------ */
+   if ((INSN0(15,0) == 0xF20F || INSN0(15,0) == 0xF60F)
+       && INSN1(15,15) == 0) {
+      /* rD = align4(PC) + imm32 */
+      UInt rD = INSN1(11,8);
+      if (!isBadRegT(rD)) {
+         UInt imm32 = (INSN0(10,10) << 11)
+                      | (INSN1(14,12) << 8) | INSN1(7,0);
+         putIRegT(rD, binop(Iop_Add32, 
+                            binop(Iop_And32, getIRegT(15), mkU32(~3UL)),
+                            mkU32(imm32)),
+                      condT);
+         DIP("add r%u, pc, #%u\n", rD, imm32);
          goto decode_success;
       }
    }

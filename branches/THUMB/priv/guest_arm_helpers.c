@@ -204,6 +204,31 @@ UInt armg_calculate_flag_v ( UInt cc_op, UInt cc_dep1,
    return (r >> ARMG_CC_SHIFT_V) & 1;
 }
 
+/* CALLED FROM GENERATED CODE: CLEAN HELPER */
+/* Calculate the QC flag from the thunk components, in the lowest bit
+   of the word (bit 0). */
+UInt armg_calculate_flag_qc ( UInt resL1, UInt resL2,
+                              UInt resR1, UInt resR2 )
+{
+   if (resL1 != resR1 || resL2 != resR2)
+      return 1;
+   else
+      return 0;
+}
+
+UInt armg_calculate_flag_idc ( UInt res1, UInt res2,
+                              UInt res3, UInt res4 )
+{
+   UInt exp1 = (res1 >> 23) & 0xff;
+   UInt exp2 = (res2 >> 23) & 0xff;
+   UInt exp3 = (res3 >> 23) & 0xff;
+   UInt exp4 = (res4 >> 23) & 0xff;
+   if ((exp1 == 0) || (exp2 == 0) || (exp3 == 0) || (exp3 == 0))
+      return 1;
+   else
+      return 0;
+}
+
 
 /* CALLED FROM GENERATED CODE: CLEAN HELPER */
 /* Calculate the specified condition from the thunk components, in the
@@ -523,6 +548,22 @@ void LibVEX_GuestARM_initialise ( /*OUT*/VexGuestARMState* vex_state )
    vex_state->guest_D13 = 0;
    vex_state->guest_D14 = 0;
    vex_state->guest_D15 = 0;
+   vex_state->guest_D16 = 0;
+   vex_state->guest_D17 = 0;
+   vex_state->guest_D18 = 0;
+   vex_state->guest_D19 = 0;
+   vex_state->guest_D20 = 0;
+   vex_state->guest_D21 = 0;
+   vex_state->guest_D22 = 0;
+   vex_state->guest_D23 = 0;
+   vex_state->guest_D24 = 0;
+   vex_state->guest_D25 = 0;
+   vex_state->guest_D26 = 0;
+   vex_state->guest_D27 = 0;
+   vex_state->guest_D28 = 0;
+   vex_state->guest_D29 = 0;
+   vex_state->guest_D30 = 0;
+   vex_state->guest_D31 = 0;
 
    /* ARM encoded; zero is the default as it happens (result flags
       (NZCV) cleared, FZ disabled, round to nearest, non-vector mode,

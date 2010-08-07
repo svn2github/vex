@@ -116,6 +116,22 @@ typedef
       ULong guest_D13;
       ULong guest_D14;
       ULong guest_D15;
+      ULong guest_D16;
+      ULong guest_D17;
+      ULong guest_D18;
+      ULong guest_D19;
+      ULong guest_D20;
+      ULong guest_D21;
+      ULong guest_D22;
+      ULong guest_D23;
+      ULong guest_D24;
+      ULong guest_D25;
+      ULong guest_D26;
+      ULong guest_D27;
+      ULong guest_D28;
+      ULong guest_D29;
+      ULong guest_D30;
+      ULong guest_D31;
       UInt  guest_FPSCR;
 
       /* Not a town in Cornwall, but instead the TPIDRURO, on of the
