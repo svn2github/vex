@@ -40,6 +40,9 @@
    needs to happen even after we go uncond.  (and for sure it doesn't
    happen for VFP loads/stores right now).
 
+   VFP on thumb: check that we exclude all r13/r15 cases that we
+   should.
+
    XXXX thumb to do: improve the ITSTATE-zeroing optimisation by
    taking into account the number of insns guarded by an IT.
 
@@ -7943,15 +7946,15 @@ static Bool decode_CP10_CP11_instruction (
    */
    if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
        && INSN(11,8) == BITS4(1,0,1,1)) {
-      UInt bP     = (insn28 >> 24) & 1;
-      UInt bU     = (insn28 >> 23) & 1;
-      UInt bW     = (insn28 >> 21) & 1;
-      UInt bL     = (insn28 >> 20) & 1;
-      UInt offset = (insn28 >> 0) & 0xFF;
-      UInt rN     = INSN(19,16);
-      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
-      UInt nRegs  = (offset - 1) / 2;
-      UInt summary;
+      UInt bP      = (insn28 >> 24) & 1;
+      UInt bU      = (insn28 >> 23) & 1;
+      UInt bW      = (insn28 >> 21) & 1;
+      UInt bL      = (insn28 >> 20) & 1;
+      UInt offset  = (insn28 >> 0) & 0xFF;
+      UInt rN      = INSN(19,16);
+      UInt dD      = (INSN(22,22) << 4) | INSN(15,12);
+      UInt nRegs   = (offset - 1) / 2;
+      UInt summary = 0;
       Int  i;
 
       /**/ if (bP == 0 && bU == 1 && bW == 0) {
@@ -7965,8 +7968,8 @@ static Bool decode_CP10_CP11_instruction (
       }
       else goto after_vfp_fldmx_fstmx;
 
-      /* no writebacks to r15 allowed */
-      if (rN == 15 && (summary == 2 || summary == 3))
+      /* no writebacks to r15 allowed.  No use of r15 in thumb mode. */
+      if (rN == 15 && (summary == 2 || summary == 3 || isT))
          goto after_vfp_fldmx_fstmx;
 
       /* offset must be odd, and specify at least one register */
@@ -7981,14 +7984,18 @@ static Bool decode_CP10_CP11_instruction (
          likely will generate an exception.  So we have to take a side
          exit at this point if the condition is false. */
       if (condT != IRTemp_INVALID) {
-         mk_skip_over_A32_if_cond_is_false( condT );
+         if (isT)
+            mk_skip_over_T32_if_cond_is_false( condT );
+         else
+            mk_skip_over_A32_if_cond_is_false( condT );
          condT = IRTemp_INVALID;
       }
       /* Ok, now we're unconditional.  Do the load or store. */
 
       /* get the old Rn value */
       IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, getIRegA(rN));
+      assign(rnT, align4if(isT ? getIRegT(rN) : getIRegA(rN),
+                           rN == 15));
 
       /* make a new value for Rn, post-insn */
       IRTemp rnTnew = IRTemp_INVALID;
@@ -8006,8 +8013,12 @@ static Bool decode_CP10_CP11_instruction (
       /* update Rn if necessary -- in case 3, we're moving it down, so
          update before any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
-      if (summary == 3)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      if (summary == 3) {
+         if (isT)
+            putIRegT(rN, mkexpr(rnTnew), IRTemp_INVALID);
+         else
+            putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      }
 
       /* generate the transfers */
       for (i = 0; i < nRegs; i++) {
@@ -8022,8 +8033,12 @@ static Bool decode_CP10_CP11_instruction (
       /* update Rn if necessary -- in case 2, we're moving it up, so
          update after any memory reference, in order to keep Memcheck
          and V's stack-extending logic (on linux) happy */
-      if (summary == 2)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      if (summary == 2) {
+         if (isT)
+            putIRegT(rN, mkexpr(rnTnew), IRTemp_INVALID);
+         else
+            putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      }
 
       HChar* nm = bL==1 ? "ld" : "st";
       switch (summary) {
@@ -8068,15 +8083,15 @@ static Bool decode_CP10_CP11_instruction (
    */
    if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
        && INSN(11,8) == BITS4(1,0,1,1)) {
-      UInt bP     = (insn28 >> 24) & 1;
-      UInt bU     = (insn28 >> 23) & 1;
-      UInt bW     = (insn28 >> 21) & 1;
-      UInt bL     = (insn28 >> 20) & 1;
-      UInt offset = (insn28 >> 0) & 0xFF;
-      UInt rN     = INSN(19,16);
-      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
-      UInt nRegs  = offset / 2;
-      UInt summary;
+      UInt bP      = (insn28 >> 24) & 1;
+      UInt bU      = (insn28 >> 23) & 1;
+      UInt bW      = (insn28 >> 21) & 1;
+      UInt bL      = (insn28 >> 20) & 1;
+      UInt offset  = (insn28 >> 0) & 0xFF;
+      UInt rN      = INSN(19,16);
+      UInt dD      = (INSN(22,22) << 4) | INSN(15,12);
+      UInt nRegs   = offset / 2;
+      UInt summary = 0;
       Int  i;
 
       /**/ if (bP == 0 && bU == 1 && bW == 0) {
@@ -8090,8 +8105,8 @@ static Bool decode_CP10_CP11_instruction (
       }
       else goto after_vfp_fldmd_fstmd;
 
-      /* no writebacks to r15 allowed */
-      if (rN == 15 && (summary == 2 || summary == 3))
+      /* no writebacks to r15 allowed.  No use of r15 in thumb mode. */
+      if (rN == 15 && (summary == 2 || summary == 3 || isT))
          goto after_vfp_fldmd_fstmd;
 
       /* offset must be even, and specify at least one register */
@@ -8116,7 +8131,8 @@ static Bool decode_CP10_CP11_instruction (
 
       /* get the old Rn value */
       IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, isT ? getIRegT(rN) : getIRegA(rN));
+      assign(rnT, align4if(isT ? getIRegT(rN) : getIRegA(rN),
+                           rN == 15));
 
       /* make a new value for Rn, post-insn */
       IRTemp rnTnew = IRTemp_INVALID;
@@ -8200,8 +8216,11 @@ static Bool decode_CP10_CP11_instruction (
             DIP("fmstat%s\n", nCC(conq));
          } else {
             /* Otherwise, merely transfer FPSCR to r0 .. r14. */
-            putIRegA(rD, IRExpr_Get(OFFB_FPSCR, Ity_I32), 
-                         condT, Ijk_Boring);
+            IRExpr* e = IRExpr_Get(OFFB_FPSCR, Ity_I32);
+            if (isT)
+               putIRegT(rD, e, condT);
+            else
+               putIRegA(rD, e, condT, Ijk_Boring);
             DIP("fmrx%s r%u, fpscr\n", nCC(conq), rD);
          }
          goto decode_success_vfp;
@@ -8215,7 +8234,8 @@ static Bool decode_CP10_CP11_instruction (
       UInt rD  = INSN(15,12);
       UInt reg = INSN(19,16);
       if (reg == BITS4(0,0,0,1)) {
-         putMiscReg32(OFFB_FPSCR, getIRegA(rD), condT);
+         putMiscReg32(OFFB_FPSCR,
+                      isT ? getIRegT(rD) : getIRegA(rD), condT);
          DIP("fmxr%s fpscr, r%u\n", nCC(conq), rD);
          goto decode_success_vfp;
       }
@@ -8270,8 +8290,8 @@ static Bool decode_CP10_CP11_instruction (
 
    // VMOV rD[x], rT
    if (0x0E000B10 == (insn28 & 0x0F900F1F)) {
-      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
-      UInt rT = INSN(15,12);
+      UInt rD  = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT  = INSN(15,12);
       UInt opc = (INSN(22,21) << 2) | INSN(6,5);
       UInt index;
       if (rT == 15) {
@@ -8279,20 +8299,33 @@ static Bool decode_CP10_CP11_instruction (
       } else {
          if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
             index = opc & 7;
-            putDRegI(rD, triop(Iop_SetElem8x8, getDRegI(rD), mkU8(index),
-                               unop(Iop_32to8, getIRegA(rT))), condT);
+            putDRegI(rD, triop(Iop_SetElem8x8,
+                               getDRegI(rD),
+                               mkU8(index),
+                               unop(Iop_32to8,
+                                    isT ? getIRegT(rT) : getIRegA(rT))),
+                         condT);
             DIP("vmov%s.8 d%u[%u], r%u\n", nCC(conq), rD, index, rT);
             goto decode_success_vfp;
-         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
+         }
+         else if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
             index = (opc >> 1) & 3;
-            putDRegI(rD, triop(Iop_SetElem16x4, getDRegI(rD), mkU8(index),
-                               unop(Iop_32to16, getIRegA(rT))), condT);
+            putDRegI(rD, triop(Iop_SetElem16x4,
+                               getDRegI(rD),
+                               mkU8(index),
+                               unop(Iop_32to16,
+                                    isT ? getIRegT(rT) : getIRegA(rT))),
+                         condT);
             DIP("vmov%s.16 d%u[%u], r%u\n", nCC(conq), rD, index, rT);
             goto decode_success_vfp;
-         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0)) {
+         }
+         else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0)) {
             index = (opc >> 2) & 1;
-            putDRegI(rD, triop(Iop_SetElem32x2, getDRegI(rD), mkU8(index),
-                               getIRegA(rT)), condT);
+            putDRegI(rD, triop(Iop_SetElem32x2,
+                               getDRegI(rD),
+                               mkU8(index),
+                               isT ? getIRegT(rT) : getIRegA(rT)),
+                         condT);
             DIP("vmov%s.32 d%u[%u], r%u\n", nCC(conq), rD, index, rT);
             goto decode_success_vfp;
          } else {
@@ -8303,9 +8336,9 @@ static Bool decode_CP10_CP11_instruction (
 
    // VMOV rT, rD[x]
    if (0x0E100B10 == (insn28 & 0x0F100F1F)) {
-      UInt rN = (INSN(7,7) << 4) | INSN(19,16);
-      UInt rT = INSN(15,12);
-      UInt U = INSN(23,23);
+      UInt rN  = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT  = INSN(15,12);
+      UInt U   = INSN(23,23);
       UInt opc = (INSN(22,21) << 2) | INSN(6,5);
       UInt index;
       if (rT == 15) {
@@ -8313,28 +8346,39 @@ static Bool decode_CP10_CP11_instruction (
       } else {
          if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
             index = opc & 7;
-            putIRegA(rT, unop(U ? Iop_8Uto32 : Iop_8Sto32,
-                              binop(Iop_GetElem8x8,
-                                    getDRegI(rN),
-                                    mkU8(index))),
-                    condT, Ijk_Boring);
+            IRExpr* e = unop(U ? Iop_8Uto32 : Iop_8Sto32,
+                             binop(Iop_GetElem8x8,
+                                   getDRegI(rN),
+                                   mkU8(index)));
+            if (isT)
+               putIRegT(rT, e, condT);
+            else
+               putIRegA(rT, e, condT, Ijk_Boring);
             DIP("vmov%s.%c8 r%u, d%u[%u]\n", nCC(conq), U ? 'u' : 's',
                   rT, rN, index);
             goto decode_success_vfp;
-         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
+         }
+         else if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
             index = (opc >> 1) & 3;
-            putIRegA(rT, unop(U ? Iop_16Uto32 : Iop_16Sto32,
-                              binop(Iop_GetElem16x4,
-                                    getDRegI(rN),
-                                    mkU8(index))),
-                    condT, Ijk_Boring);
+            IRExpr* e = unop(U ? Iop_16Uto32 : Iop_16Sto32,
+                             binop(Iop_GetElem16x4,
+                                   getDRegI(rN),
+                                   mkU8(index)));
+            if (isT)
+               putIRegT(rT, e, condT);
+            else
+               putIRegA(rT, e, condT, Ijk_Boring);
             DIP("vmov%s.%c16 r%u, d%u[%u]\n", nCC(conq), U ? 'u' : 's',
                   rT, rN, index);
             goto decode_success_vfp;
-         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0) && U == 0) {
+         }
+         else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0) && U == 0) {
             index = (opc >> 2) & 1;
-            putIRegA(rT, binop(Iop_GetElem32x2, getDRegI(rN), mkU8(index)),
-                     condT, Ijk_Boring);
+            IRExpr* e = binop(Iop_GetElem32x2, getDRegI(rN), mkU8(index));
+            if (isT)
+               putIRegT(rT, e, condT);
+            else
+               putIRegA(rT, e, condT, Ijk_Boring);
             DIP("vmov%s.32 r%u, d%u[%u]\n", nCC(conq), rT, rN, index);
             goto decode_success_vfp;
          } else {
@@ -8347,9 +8391,9 @@ static Bool decode_CP10_CP11_instruction (
    // FCONSTS sD, #imm
    if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
        && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,0)) {
-      UInt rD = (INSN(15,12) << 1) | INSN(22,22);
+      UInt rD   = (INSN(15,12) << 1) | INSN(22,22);
       UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
-      UInt b = (imm8 >> 6) & 1;
+      UInt b    = (imm8 >> 6) & 1;
       UInt imm;
       imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,(imm8 >> 5) & 1) << 8)
              | ((imm8 & 0x1f) << 3);
@@ -8363,9 +8407,9 @@ static Bool decode_CP10_CP11_instruction (
    // FCONSTD dD, #imm
    if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
        && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,1)) {
-      UInt rD = INSN(15,12) | (INSN(22,22) << 4);
+      UInt rD   = INSN(15,12) | (INSN(22,22) << 4);
       UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
-      UInt b = (imm8 >> 6) & 1;
+      UInt b    = (imm8 >> 6) & 1;
       ULong imm;
       imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,b) << 8)
              | BITS8(b,b,0,0,0,0,0,0) | (imm8 & 0x3f);
@@ -8380,27 +8424,27 @@ static Bool decode_CP10_CP11_instruction (
    // VDUP qD, rT
    if (BITS8(1,1,1,0,1,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,0,1))
        && BITS4(1,0,1,1) == INSN(11,8) && INSN(6,6) == 0 && INSN(4,4) == 1) {
-      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
-      UInt rT = INSN(15,12);
-      UInt Q = INSN(21,21);
+      UInt rD   = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT   = INSN(15,12);
+      UInt Q    = INSN(21,21);
       UInt size = (INSN(22,22) << 1) | INSN(5,5);
       if (rT == 15 || size == 3i || (Q && (rD & 1))) {
          /* fall through */
       } else {
+         IRExpr* e = isT ? getIRegT(rT) : getIRegA(rT);
          if (Q) {
             rD >>= 1;
             switch (size) {
                case 0:
-                  putQReg(rD, unop(Iop_Dup32x4, getIRegA(rT)), condT);
+                  putQReg(rD, unop(Iop_Dup32x4, e), condT);
                   goto decode_success_vfp;
                case 1:
-                  putQReg(rD, unop(Iop_Dup16x8,
-                                   unop(Iop_32to16, getIRegA(rT))),
-                          condT);
+                  putQReg(rD, unop(Iop_Dup16x8, unop(Iop_32to16, e)),
+                              condT);
                   goto decode_success_vfp;
                case 2:
-                  putQReg(rD, unop(Iop_Dup8x16, unop(Iop_32to8, getIRegA(rT))),
-                          condT);
+                  putQReg(rD, unop(Iop_Dup8x16, unop(Iop_32to8, e)),
+                              condT);
                   goto decode_success_vfp;
                default:
                   vassert(0);
@@ -8408,16 +8452,15 @@ static Bool decode_CP10_CP11_instruction (
          } else {
             switch (size) {
                case 0:
-                  putDRegI(rD, unop(Iop_Dup32x2, getIRegA(rT)), condT);
+                  putDRegI(rD, unop(Iop_Dup32x2, e), condT);
                   goto decode_success_vfp;
                case 1:
-                  putDRegI(rD, unop(Iop_Dup16x4,
-                                    unop(Iop_32to16, getIRegA(rT))),
-                           condT);
+                  putDRegI(rD, unop(Iop_Dup16x4, unop(Iop_32to16, e)),
+                               condT);
                   goto decode_success_vfp;
                case 2:
-                  putDRegI(rD, unop(Iop_Dup8x8, unop(Iop_32to8, getIRegA(rT))),
-                           condT);
+                  putDRegI(rD, unop(Iop_Dup8x8, unop(Iop_32to8, e)),
+                               condT);
                   goto decode_success_vfp;
                default:
                   vassert(0);
@@ -8736,16 +8779,16 @@ static Bool decode_CP10_CP11_instruction (
    */
    if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
        && INSN(11,8) == BITS4(1,0,1,0)) {
-      UInt bP     = (insn28 >> 24) & 1;
-      UInt bU     = (insn28 >> 23) & 1;
-      UInt bW     = (insn28 >> 21) & 1;
-      UInt bL     = (insn28 >> 20) & 1;
-      UInt bD     = (insn28 >> 22) & 1;
-      UInt offset = (insn28 >> 0) & 0xFF;
-      UInt rN     = INSN(19,16);
-      UInt fD     = (INSN(15,12) << 1) | bD;
-      UInt nRegs  = offset;
-      UInt summary;
+      UInt bP      = (insn28 >> 24) & 1;
+      UInt bU      = (insn28 >> 23) & 1;
+      UInt bW      = (insn28 >> 21) & 1;
+      UInt bL      = (insn28 >> 20) & 1;
+      UInt bD      = (insn28 >> 22) & 1;
+      UInt offset  = (insn28 >> 0) & 0xFF;
+      UInt rN      = INSN(19,16);
+      UInt fD      = (INSN(15,12) << 1) | bD;
+      UInt nRegs   = offset;
+      UInt summary = 0;
       Int  i;
 
       /**/ if (bP == 0 && bU == 1 && bW == 0) {
@@ -8759,8 +8802,8 @@ static Bool decode_CP10_CP11_instruction (
       }
       else goto after_vfp_fldms_fstms;
 
-      /* no writebacks to r15 allowed */
-      if (rN == 15 && (summary == 2 || summary == 3))
+      /* no writebacks to r15 allowed.  No use of r15 in thumb mode. */
+      if (rN == 15 && (summary == 2 || summary == 3 || isT))
          goto after_vfp_fldms_fstms;
 
       /* offset must specify at least one register */
@@ -8785,7 +8828,8 @@ static Bool decode_CP10_CP11_instruction (
 
       /* get the old Rn value */
       IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, isT ? getIRegT(rN) : getIRegA(rN));
+      assign(rnT, align4if(isT ? getIRegT(rN) : getIRegA(rN),
+                           rN == 15));
 
       /* make a new value for Rn, post-insn */
       IRTemp rnTnew = IRTemp_INVALID;
