@@ -35,6 +35,10 @@
 
    All uses of newTemp assign to an IRTemp and not a UInt
 
+   For all thumb loads and stores, including VFP ones, new-ITSTATE is
+   backed out before the memory op, and restored afterwards.  This
+   needs to happen even after we go uncond.  (and for sure it doesn't
+   happen for VFP loads/stores right now).
 
    XXXX thumb to do: improve the ITSTATE-zeroing optimisation by
    taking into account the number of insns guarded by an IT.
@@ -113,6 +117,10 @@ static Bool host_is_bigendian;
    to the CPSR.T kludge). */
 static Addr32 guest_R15_curr_instr_notENC;
 
+/* CONST, FOR ASSERTIONS ONLY.  Indicates whether currently processed
+   insn is Thumb (True) or ARM (False). */
+static Bool __curr_is_Thumb;
+
 /* MOD: The IRSB* into which we're generating code. */
 static IRSB* irsb;
 
@@ -151,6 +159,12 @@ static IRTemp r15kind;
 #define DIS(buf, format, args...)      \
    if (vex_traceflags & VEX_TRACE_FE)  \
       vex_sprintf(buf, format, ## args)
+
+#define ASSERT_IS_THUMB \
+   do { vassert(__curr_is_Thumb); } while (0)
+
+#define ASSERT_IS_ARM \
+   do { vassert(! __curr_is_Thumb); } while (0)
 
 
 /*------------------------------------------------------------*/
@@ -328,6 +342,16 @@ static IRExpr* mkU128 ( ULong i )
    return binop(Iop_64HLtoV128, mkU64(i), mkU64(i));
 }
 
+/* Generate a 4-aligned version of the given expression if
+   the given condition is true.  Else return it unchanged. */
+static IRExpr* align4if ( IRExpr* e, Bool b )
+{
+   if (b)
+      return binop(Iop_And32, e, mkU32(~3));
+   else
+      return e;
+}
+
 
 /*------------------------------------------------------------*/
 /*--- Helpers for accessing guest registers.               ---*/
@@ -434,6 +458,7 @@ static IRExpr* llGetIReg ( UInt iregNo )
 static IRExpr* getIRegA ( UInt iregNo )
 {
    IRExpr* e;
+   ASSERT_IS_ARM;
    vassert(iregNo < 16);
    if (iregNo == 15) {
       /* If asked for r15, don't read the guest state value, as that
@@ -455,6 +480,7 @@ static IRExpr* getIRegA ( UInt iregNo )
 static IRExpr* getIRegT ( UInt iregNo )
 {
    IRExpr* e;
+   ASSERT_IS_THUMB;
    vassert(iregNo < 16);
    if (iregNo == 15) {
       /* Ditto comment in getIReg. */
@@ -491,6 +517,7 @@ static void putIRegA ( UInt       iregNo,
    // but is no aligned too relaxed?
    //if (iregNo == 15)
    //   e = binop(Iop_And32, e, mkU32(~3));
+   ASSERT_IS_ARM;
    /* So, generate either an unconditional or a conditional write to
       the reg. */
    if (guardT == IRTemp_INVALID) {
@@ -525,6 +552,7 @@ static void putIRegT ( UInt       iregNo,
 {
    /* So, generate either an unconditional or a conditional write to
       the reg. */
+   ASSERT_IS_THUMB;
    vassert(iregNo >= 0 && iregNo <= 14);
    if (guardT == IRTemp_INVALID) {
       /* unconditional write */
@@ -544,6 +572,7 @@ static void putIRegT ( UInt       iregNo,
 static Bool isBadRegT ( UInt r )
 {
    vassert(r <= 15);
+   ASSERT_IS_THUMB;
    return r == 13 || r == 15;
 }
 
@@ -816,17 +845,19 @@ static void putMiscReg32 ( UInt    gsoffset,
       /* unconditional write */
       stmt(IRStmt_Put(gsoffset, e));
    } else {
-      vassert(0); //ATC
-      stmt(IRStmt_Put( gsoffset,
-                       IRExpr_Mux0X( unop(Iop_32to8, mkexpr(guardT)),
-                                     IRExpr_Get(gsoffset, Ity_I32),
-                                     e) ));
-
+      stmt(IRStmt_Put(
+         gsoffset,
+         IRExpr_Mux0X( unop(Iop_32to8, mkexpr(guardT)),
+                       IRExpr_Get(gsoffset, Ity_I32),
+                       e
+         )
+      ));
    }
 }
 
 static IRTemp get_ITSTATE ( void )
 {
+   ASSERT_IS_THUMB;
    IRTemp t = newTemp(Ity_I32);
    assign(t, IRExpr_Get( OFFB_ITSTATE, Ity_I32));
    return t;
@@ -834,6 +865,7 @@ static IRTemp get_ITSTATE ( void )
 
 static void put_ITSTATE ( IRTemp t )
 {
+   ASSERT_IS_THUMB;
    stmt( IRStmt_Put( OFFB_ITSTATE, mkexpr(t)) );
 }
 
@@ -1223,6 +1255,7 @@ static void mk_skip_over_A32_if_cond_is_false (
                IRTemp guardT /* :: Ity_I32, 0 or 1 */
             )
 {
+   ASSERT_IS_ARM;
    vassert(guardT != IRTemp_INVALID);
    vassert(0 == (guest_R15_curr_instr_notENC & 3));
    stmt( IRStmt_Exit(
@@ -1238,6 +1271,7 @@ static void mk_skip_over_T16_if_cond_is_false (
                IRTemp guardT /* :: Ity_I32, 0 or 1 */
             )
 {
+   ASSERT_IS_THUMB;
    vassert(guardT != IRTemp_INVALID);
    vassert(0 == (guest_R15_curr_instr_notENC & 1));
    stmt( IRStmt_Exit(
@@ -1254,6 +1288,7 @@ static void mk_skip_over_T32_if_cond_is_false (
                IRTemp guardT /* :: Ity_I32, 0 or 1 */
             )
 {
+   ASSERT_IS_THUMB;
    vassert(guardT != IRTemp_INVALID);
    vassert(0 == (guest_R15_curr_instr_notENC & 1));
    stmt( IRStmt_Exit(
@@ -1269,6 +1304,7 @@ static void mk_skip_over_T32_if_cond_is_false (
    if the given temp is nonzero. */
 static void gen_SIGILL_T_if_nonzero ( IRTemp t /* :: Ity_I32 */ )
 {
+   ASSERT_IS_THUMB;
    vassert(t != IRTemp_INVALID);
    vassert(0 == (guest_R15_curr_instr_notENC & 1));
    stmt(
@@ -1293,6 +1329,7 @@ static void gen_SIGILL_T_if_in_but_NLI_ITBlock (
                IRTemp new_itstate /* :: Ity_I32 */
             )
 {
+   ASSERT_IS_THUMB;
    put_ITSTATE(old_itstate); // backout
    IRTemp guards_for_next3 = newTemp(Ity_I32);
    assign(guards_for_next3,
@@ -7825,6 +7862,1373 @@ static void mk_ldm_stm ( Bool arm,     /* True: ARM, False: Thumb */
 
 
 /*------------------------------------------------------------*/
+/*--- VFP (CP 10 and 11) instructions                      ---*/
+/*------------------------------------------------------------*/
+
+/* Both ARM and Thumb */
+/* Translate a CP10 or CP11 instruction.  .  If successful, returns
+   *True and dres may or may not be updated.  If failure, returns
+   *False and doesn't change *dres nor create any IR.
+
+   The ARM and Thumb encodings are identical for the low 28 bits of
+   the insn (yay!) and that's what the caller must supply, iow, imm28
+   has the top 4 bits masked out.  Caller is responsible for
+   determining whether the masked-out bits are valid for a CP10/11
+   insn.  The rules for the top 4 bits are:
+
+     ARM: 0000 to 1110 allowed, and this is the gating condition.
+     1111 (NV) is not allowed.
+
+     Thumb: must be 1110.  The gating condition is taken from
+     ITSTATE in the normal way.
+
+   Conditionalisation:
+
+   Caller must supply an IRTemp 'condT' holding the gating condition,
+   or IRTemp_INVALID indicating the insn is always executed.
+
+   Caller must also supply an ARMCondcode 'cond'.  This is only used
+   for debug printing, no other purpose.  For ARM, this is simply the
+   top 4 bits of the original instruction.  For Thumb, the condition
+   is not (really) known until run time, and so ARMCondAL should be
+   passed, only so that printing of these instructions does not show
+   any condition.
+
+   Finally, the caller must indicate whether this occurs in ARM or
+   Thumb code.  (FIXME: is that actually necessary?  why?)
+
+*/
+static Bool decode_CP10_CP11_instruction (
+               /*MOD*/DisResult* dres,
+               UInt              insn28,
+               IRTemp            condT,
+               ARMCondcode       conq,
+               Bool              isT
+            )
+{
+#  define INSN(_bMax,_bMin)  SLICE_UInt(insn28, (_bMax), (_bMin))
+
+   vassert(INSN(31,28) == BITS4(0,0,0,0)); // caller's obligation
+
+   if (isT) {
+      vassert(conq == ARMCondAL);
+   } else {
+      vassert(conq >= ARMCondEQ && conq <= ARMCondAL);
+   }
+
+   /* ----------------------------------------------------------- */
+   /* -- VFP instructions -- double precision (mostly)         -- */
+   /* ----------------------------------------------------------- */
+
+   /* --------------------- fldmx, fstmx --------------------- */
+   /*
+                                 31   27   23   19 15 11   7   0
+                                         P U WL
+      C4-100, C5-26  1  FSTMX    cond 1100 1000 Rn Dd 1011 offset
+      C4-100, C5-28  2  FSTMIAX  cond 1100 1010 Rn Dd 1011 offset
+      C4-100, C5-30  3  FSTMDBX  cond 1101 0010 Rn Dd 1011 offset
+
+      C4-42, C5-26   1  FLDMX    cond 1100 1001 Rn Dd 1011 offset
+      C4-42, C5-28   2  FLDMIAX  cond 1100 1011 Rn Dd 1011 offset
+      C4-42, C5-30   3  FLDMDBX  cond 1101 0011 Rn Dd 1011 offset
+
+      Regs transferred: Dd .. D(d + (offset-3)/2)
+      offset must be odd, must not imply a reg > 15
+      IA/DB: Rn is changed by (4 + 8 x # regs transferred)
+
+      case coding:
+         1  at-Rn   (access at Rn)
+         2  ia-Rn   (access at Rn, then Rn += 4+8n)
+         3  db-Rn   (Rn -= 4+8n,   then access at Rn)
+   */
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
+       && INSN(11,8) == BITS4(1,0,1,1)) {
+      UInt bP     = (insn28 >> 24) & 1;
+      UInt bU     = (insn28 >> 23) & 1;
+      UInt bW     = (insn28 >> 21) & 1;
+      UInt bL     = (insn28 >> 20) & 1;
+      UInt offset = (insn28 >> 0) & 0xFF;
+      UInt rN     = INSN(19,16);
+      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
+      UInt nRegs  = (offset - 1) / 2;
+      UInt summary;
+      Int  i;
+
+      /**/ if (bP == 0 && bU == 1 && bW == 0) {
+         summary = 1;
+      }
+      else if (bP == 0 && bU == 1 && bW == 1) {
+         summary = 2;
+      }
+      else if (bP == 1 && bU == 0 && bW == 1) {
+         summary = 3;
+      }
+      else goto after_vfp_fldmx_fstmx;
+
+      /* no writebacks to r15 allowed */
+      if (rN == 15 && (summary == 2 || summary == 3))
+         goto after_vfp_fldmx_fstmx;
+
+      /* offset must be odd, and specify at least one register */
+      if (0 == (offset & 1) || offset < 3)
+         goto after_vfp_fldmx_fstmx;
+
+      /* can't transfer regs after D15 */
+      if (dD + nRegs - 1 >= 32)
+         goto after_vfp_fldmx_fstmx;
+
+      /* Now, we can't do a conditional load or store, since that very
+         likely will generate an exception.  So we have to take a side
+         exit at this point if the condition is false. */
+      if (condT != IRTemp_INVALID) {
+         mk_skip_over_A32_if_cond_is_false( condT );
+         condT = IRTemp_INVALID;
+      }
+      /* Ok, now we're unconditional.  Do the load or store. */
+
+      /* get the old Rn value */
+      IRTemp rnT = newTemp(Ity_I32);
+      assign(rnT, getIRegA(rN));
+
+      /* make a new value for Rn, post-insn */
+      IRTemp rnTnew = IRTemp_INVALID;
+      if (summary == 2 || summary == 3) {
+         rnTnew = newTemp(Ity_I32);
+         assign(rnTnew, binop(summary == 2 ? Iop_Add32 : Iop_Sub32,
+                              mkexpr(rnT),
+                              mkU32(4 + 8 * nRegs)));
+      }
+
+      /* decide on the base transfer address */
+      IRTemp taT = newTemp(Ity_I32);
+      assign(taT,  summary == 3 ? mkexpr(rnTnew) : mkexpr(rnT));
+
+      /* update Rn if necessary -- in case 3, we're moving it down, so
+         update before any memory reference, in order to keep Memcheck
+         and V's stack-extending logic (on linux) happy */
+      if (summary == 3)
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+
+      /* generate the transfers */
+      for (i = 0; i < nRegs; i++) {
+         IRExpr* addr = binop(Iop_Add32, mkexpr(taT), mkU32(8*i));
+         if (bL) {
+            putDReg(dD + i, loadLE(Ity_F64, addr), IRTemp_INVALID);
+         } else {
+            storeLE(addr, getDReg(dD + i));
+         }
+      }
+
+      /* update Rn if necessary -- in case 2, we're moving it up, so
+         update after any memory reference, in order to keep Memcheck
+         and V's stack-extending logic (on linux) happy */
+      if (summary == 2)
+         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+
+      HChar* nm = bL==1 ? "ld" : "st";
+      switch (summary) {
+         case 1:  DIP("f%smx%s r%u, {d%u-d%u}\n", 
+                      nm, nCC(conq), rN, dD, dD + nRegs - 1);
+                  break;
+         case 2:  DIP("f%smiax%s r%u!, {d%u-d%u}\n", 
+                      nm, nCC(conq), rN, dD, dD + nRegs - 1);
+                  break;
+         case 3:  DIP("f%smdbx%s r%u!, {d%u-d%u}\n", 
+                      nm, nCC(conq), rN, dD, dD + nRegs - 1);
+                  break;
+         default: vassert(0);
+      }
+
+      goto decode_success_vfp;
+      /* FIXME alignment constraints? */
+   }
+
+  after_vfp_fldmx_fstmx:
+
+   /* --------------------- fldmd, fstmd --------------------- */
+   /*
+                                 31   27   23   19 15 11   7   0
+                                         P U WL
+      C4-96, C5-26   1  FSTMD    cond 1100 1000 Rn Dd 1011 offset
+      C4-96, C5-28   2  FSTMDIA  cond 1100 1010 Rn Dd 1011 offset
+      C4-96, C5-30   3  FSTMDDB  cond 1101 0010 Rn Dd 1011 offset
+
+      C4-38, C5-26   1  FLDMD    cond 1100 1001 Rn Dd 1011 offset
+      C4-38, C5-28   2  FLDMIAD  cond 1100 1011 Rn Dd 1011 offset
+      C4-38, C5-30   3  FLDMDBD  cond 1101 0011 Rn Dd 1011 offset
+
+      Regs transferred: Dd .. D(d + (offset-2)/2)
+      offset must be even, must not imply a reg > 15
+      IA/DB: Rn is changed by (8 x # regs transferred)
+
+      case coding:
+         1  at-Rn   (access at Rn)
+         2  ia-Rn   (access at Rn, then Rn += 8n)
+         3  db-Rn   (Rn -= 8n,     then access at Rn)
+   */
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
+       && INSN(11,8) == BITS4(1,0,1,1)) {
+      UInt bP     = (insn28 >> 24) & 1;
+      UInt bU     = (insn28 >> 23) & 1;
+      UInt bW     = (insn28 >> 21) & 1;
+      UInt bL     = (insn28 >> 20) & 1;
+      UInt offset = (insn28 >> 0) & 0xFF;
+      UInt rN     = INSN(19,16);
+      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
+      UInt nRegs  = offset / 2;
+      UInt summary;
+      Int  i;
+
+      /**/ if (bP == 0 && bU == 1 && bW == 0) {
+         summary = 1;
+      }
+      else if (bP == 0 && bU == 1 && bW == 1) {
+         summary = 2;
+      }
+      else if (bP == 1 && bU == 0 && bW == 1) {
+         summary = 3;
+      }
+      else goto after_vfp_fldmd_fstmd;
+
+      /* no writebacks to r15 allowed */
+      if (rN == 15 && (summary == 2 || summary == 3))
+         goto after_vfp_fldmd_fstmd;
+
+      /* offset must be even, and specify at least one register */
+      if (1 == (offset & 1) || offset < 2)
+         goto after_vfp_fldmd_fstmd;
+
+      /* can't transfer regs after D15 */
+      if (dD + nRegs - 1 >= 32)
+         goto after_vfp_fldmd_fstmd;
+
+      /* Now, we can't do a conditional load or store, since that very
+         likely will generate an exception.  So we have to take a side
+         exit at this point if the condition is false. */
+      if (condT != IRTemp_INVALID) {
+         if (isT)
+            mk_skip_over_T32_if_cond_is_false( condT );
+         else
+            mk_skip_over_A32_if_cond_is_false( condT );
+         condT = IRTemp_INVALID;
+      }
+      /* Ok, now we're unconditional.  Do the load or store. */
+
+      /* get the old Rn value */
+      IRTemp rnT = newTemp(Ity_I32);
+      assign(rnT, isT ? getIRegT(rN) : getIRegA(rN));
+
+      /* make a new value for Rn, post-insn */
+      IRTemp rnTnew = IRTemp_INVALID;
+      if (summary == 2 || summary == 3) {
+         rnTnew = newTemp(Ity_I32);
+         assign(rnTnew, binop(summary == 2 ? Iop_Add32 : Iop_Sub32,
+                              mkexpr(rnT),
+                              mkU32(8 * nRegs)));
+      }
+
+      /* decide on the base transfer address */
+      IRTemp taT = newTemp(Ity_I32);
+      assign(taT, summary == 3 ? mkexpr(rnTnew) : mkexpr(rnT));
+
+      /* update Rn if necessary -- in case 3, we're moving it down, so
+         update before any memory reference, in order to keep Memcheck
+         and V's stack-extending logic (on linux) happy */
+      if (summary == 3) {
+         if (isT)
+            putIRegT(rN, mkexpr(rnTnew), IRTemp_INVALID);
+         else
+            putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      }
+
+      /* generate the transfers */
+      for (i = 0; i < nRegs; i++) {
+         IRExpr* addr = binop(Iop_Add32, mkexpr(taT), mkU32(8*i));
+         if (bL) {
+            putDReg(dD + i, loadLE(Ity_F64, addr), IRTemp_INVALID);
+         } else {
+            storeLE(addr, getDReg(dD + i));
+         }
+      }
+
+      /* update Rn if necessary -- in case 2, we're moving it up, so
+         update after any memory reference, in order to keep Memcheck
+         and V's stack-extending logic (on linux) happy */
+      if (summary == 2) {
+         if (isT)
+            putIRegT(rN, mkexpr(rnTnew), IRTemp_INVALID);
+         else
+            putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      }
+
+      HChar* nm = bL==1 ? "ld" : "st";
+      switch (summary) {
+         case 1:  DIP("f%smd%s r%u, {d%u-d%u}\n", 
+                      nm, nCC(conq), rN, dD, dD + nRegs - 1);
+                  break;
+         case 2:  DIP("f%smiad%s r%u!, {d%u-d%u}\n", 
+                      nm, nCC(conq), rN, dD, dD + nRegs - 1);
+                  break;
+         case 3:  DIP("f%smdbd%s r%u!, {d%u-d%u}\n", 
+                      nm, nCC(conq), rN, dD, dD + nRegs - 1);
+                  break;
+         default: vassert(0);
+      }
+
+      goto decode_success_vfp;
+      /* FIXME alignment constraints? */
+   }
+
+  after_vfp_fldmd_fstmd:
+
+   /* ------------------- fmrx, fmxr ------------------- */
+   if (BITS8(1,1,1,0,1,1,1,1) == INSN(27,20)
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS8(0,0,0,1,0,0,0,0) == (insn28 & 0xFF)) {
+      UInt rD  = INSN(15,12);
+      UInt reg = INSN(19,16);
+      if (reg == BITS4(0,0,0,1)) {
+         if (rD == 15) {
+            IRTemp nzcvT = newTemp(Ity_I32);
+            /* When rD is 15, we are copying the top 4 bits of FPSCR
+               into CPSR.  That is, set the flags thunk to COPY and
+               install FPSCR[31:28] as the value to copy. */
+            assign(nzcvT, binop(Iop_And32,
+                                IRExpr_Get(OFFB_FPSCR, Ity_I32),
+                                mkU32(0xF0000000)));
+            setFlags_D1(ARMG_CC_OP_COPY, nzcvT, condT);
+            DIP("fmstat%s\n", nCC(conq));
+         } else {
+            /* Otherwise, merely transfer FPSCR to r0 .. r14. */
+            putIRegA(rD, IRExpr_Get(OFFB_FPSCR, Ity_I32), 
+                         condT, Ijk_Boring);
+            DIP("fmrx%s r%u, fpscr\n", nCC(conq), rD);
+         }
+         goto decode_success_vfp;
+      }
+      /* fall through */
+   }
+
+   if (BITS8(1,1,1,0,1,1,1,0) == INSN(27,20)
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS8(0,0,0,1,0,0,0,0) == (insn28 & 0xFF)) {
+      UInt rD  = INSN(15,12);
+      UInt reg = INSN(19,16);
+      if (reg == BITS4(0,0,0,1)) {
+         putMiscReg32(OFFB_FPSCR, getIRegA(rD), condT);
+         DIP("fmxr%s fpscr, r%u\n", nCC(conq), rD);
+         goto decode_success_vfp;
+      }
+      /* fall through */
+   }
+
+   /* --------------------- vmov --------------------- */
+   // VMOV dM, rD, rN
+   if (0x0C400B10 == (insn28 & 0x0FF00FD0)) {
+      UInt dM = INSN(3,0) | (INSN(5,5) << 4);
+      UInt rD = INSN(15,12); /* lo32 */
+      UInt rN = INSN(19,16); /* hi32 */
+      if (rD == 15 || rN == 15) {
+         /* fall through */
+      } else {
+         putDReg(dM,
+                 unop(Iop_ReinterpI64asF64,
+                      binop(Iop_32HLto64,
+                            isT ? getIRegT(rN) : getIRegA(rN),
+                            isT ? getIRegT(rD) : getIRegA(rD))),
+                 condT);
+         DIP("vmov%s d%u, r%u, r%u\n", nCC(conq), dM, rD, rN);
+         goto decode_success_vfp;
+      }
+      /* fall through */
+   }
+
+   // VMOV rD, rN, dM
+   if (0x0C500B10 == (insn28 & 0x0FF00FD0)) {
+      UInt dM = INSN(3,0) | (INSN(5,5) << 4);
+      UInt rD = INSN(15,12); /* lo32 */
+      UInt rN = INSN(19,16); /* hi32 */
+      if (rD == 15 || rN == 15 || rD == rN) {
+         /* fall through */
+      } else {
+         IRTemp i64 = newTemp(Ity_I64);
+         assign(i64, unop(Iop_ReinterpF64asI64, getDReg(dM)));
+         IRExpr* hi32 = unop(Iop_64HIto32, mkexpr(i64));
+         IRExpr* lo32 = unop(Iop_64to32,   mkexpr(i64));
+         if (isT) {
+            putIRegT(rN, hi32, condT);
+            putIRegT(rD, lo32, condT);
+         } else {
+            putIRegA(rN, hi32, condT, Ijk_Boring);
+            putIRegA(rD, lo32, condT, Ijk_Boring);
+         }
+         DIP("vmov%s r%u, r%u, d%u\n", nCC(conq), rD, rN, dM);
+         goto decode_success_vfp;
+      }
+      /* fall through */
+   }
+
+   // VMOV rD[x], rT
+   if (0x0E000B10 == (insn28 & 0x0F900F1F)) {
+      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT = INSN(15,12);
+      UInt opc = (INSN(22,21) << 2) | INSN(6,5);
+      UInt index;
+      if (rT == 15) {
+         /* fall through */
+      } else {
+         if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
+            index = opc & 7;
+            putDRegI(rD, triop(Iop_SetElem8x8, getDRegI(rD), mkU8(index),
+                               unop(Iop_32to8, getIRegA(rT))), condT);
+            DIP("vmov%s.8 d%u[%u], r%u\n", nCC(conq), rD, index, rT);
+            goto decode_success_vfp;
+         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
+            index = (opc >> 1) & 3;
+            putDRegI(rD, triop(Iop_SetElem16x4, getDRegI(rD), mkU8(index),
+                               unop(Iop_32to16, getIRegA(rT))), condT);
+            DIP("vmov%s.16 d%u[%u], r%u\n", nCC(conq), rD, index, rT);
+            goto decode_success_vfp;
+         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0)) {
+            index = (opc >> 2) & 1;
+            putDRegI(rD, triop(Iop_SetElem32x2, getDRegI(rD), mkU8(index),
+                               getIRegA(rT)), condT);
+            DIP("vmov%s.32 d%u[%u], r%u\n", nCC(conq), rD, index, rT);
+            goto decode_success_vfp;
+         } else {
+            /* fall through */
+         }
+      }
+   }
+
+   // VMOV rT, rD[x]
+   if (0x0E100B10 == (insn28 & 0x0F100F1F)) {
+      UInt rN = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT = INSN(15,12);
+      UInt U = INSN(23,23);
+      UInt opc = (INSN(22,21) << 2) | INSN(6,5);
+      UInt index;
+      if (rT == 15) {
+         /* fall through */
+      } else {
+         if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
+            index = opc & 7;
+            putIRegA(rT, unop(U ? Iop_8Uto32 : Iop_8Sto32,
+                              binop(Iop_GetElem8x8,
+                                    getDRegI(rN),
+                                    mkU8(index))),
+                    condT, Ijk_Boring);
+            DIP("vmov%s.%c8 r%u, d%u[%u]\n", nCC(conq), U ? 'u' : 's',
+                  rT, rN, index);
+            goto decode_success_vfp;
+         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
+            index = (opc >> 1) & 3;
+            putIRegA(rT, unop(U ? Iop_16Uto32 : Iop_16Sto32,
+                              binop(Iop_GetElem16x4,
+                                    getDRegI(rN),
+                                    mkU8(index))),
+                    condT, Ijk_Boring);
+            DIP("vmov%s.%c16 r%u, d%u[%u]\n", nCC(conq), U ? 'u' : 's',
+                  rT, rN, index);
+            goto decode_success_vfp;
+         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0) && U == 0) {
+            index = (opc >> 2) & 1;
+            putIRegA(rT, binop(Iop_GetElem32x2, getDRegI(rN), mkU8(index)),
+                     condT, Ijk_Boring);
+            DIP("vmov%s.32 r%u, d%u[%u]\n", nCC(conq), rT, rN, index);
+            goto decode_success_vfp;
+         } else {
+            /* fall through */
+         }
+      }
+   }
+
+   // VMOV.F32 sD, #imm
+   // FCONSTS sD, #imm
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,0)) {
+      UInt rD = (INSN(15,12) << 1) | INSN(22,22);
+      UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
+      UInt b = (imm8 >> 6) & 1;
+      UInt imm;
+      imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,(imm8 >> 5) & 1) << 8)
+             | ((imm8 & 0x1f) << 3);
+      imm <<= 16;
+      putFReg(rD, unop(Iop_ReinterpI32asF32, mkU32(imm)), condT);
+      DIP("fconsts%s s%u #%u", nCC(conq), rD, imm8);
+      goto decode_success_vfp;
+   }
+
+   // VMOV.F64 dD, #imm
+   // FCONSTD dD, #imm
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,1)) {
+      UInt rD = INSN(15,12) | (INSN(22,22) << 4);
+      UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
+      UInt b = (imm8 >> 6) & 1;
+      ULong imm;
+      imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,b) << 8)
+             | BITS8(b,b,0,0,0,0,0,0) | (imm8 & 0x3f);
+      imm <<= 48;
+      putDReg(rD, unop(Iop_ReinterpI64asF64, mkU64(imm)), condT);
+      DIP("fconstd%s d%u #%u", nCC(conq), rD, imm8);
+      goto decode_success_vfp;
+   }
+
+   /* ---------------------- vdup ------------------------- */
+   // VDUP dD, rT
+   // VDUP qD, rT
+   if (BITS8(1,1,1,0,1,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,0,1))
+       && BITS4(1,0,1,1) == INSN(11,8) && INSN(6,6) == 0 && INSN(4,4) == 1) {
+      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
+      UInt rT = INSN(15,12);
+      UInt Q = INSN(21,21);
+      UInt size = (INSN(22,22) << 1) | INSN(5,5);
+      if (rT == 15 || size == 3i || (Q && (rD & 1))) {
+         /* fall through */
+      } else {
+         if (Q) {
+            rD >>= 1;
+            switch (size) {
+               case 0:
+                  putQReg(rD, unop(Iop_Dup32x4, getIRegA(rT)), condT);
+                  goto decode_success_vfp;
+               case 1:
+                  putQReg(rD, unop(Iop_Dup16x8,
+                                   unop(Iop_32to16, getIRegA(rT))),
+                          condT);
+                  goto decode_success_vfp;
+               case 2:
+                  putQReg(rD, unop(Iop_Dup8x16, unop(Iop_32to8, getIRegA(rT))),
+                          condT);
+                  goto decode_success_vfp;
+               default:
+                  vassert(0);
+            }
+         } else {
+            switch (size) {
+               case 0:
+                  putDRegI(rD, unop(Iop_Dup32x2, getIRegA(rT)), condT);
+                  goto decode_success_vfp;
+               case 1:
+                  putDRegI(rD, unop(Iop_Dup16x4,
+                                    unop(Iop_32to16, getIRegA(rT))),
+                           condT);
+                  goto decode_success_vfp;
+               case 2:
+                  putDRegI(rD, unop(Iop_Dup8x8, unop(Iop_32to8, getIRegA(rT))),
+                           condT);
+                  goto decode_success_vfp;
+               default:
+                  vassert(0);
+            }
+         }
+      }
+   }
+
+   /* --------------------- f{ld,st}d --------------------- */
+   // FLDD, FSTD
+   if (BITS8(1,1,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)) {
+      UInt dD     = INSN(15,12);
+      UInt rN     = INSN(19,16);
+      UInt offset = (insn28 & 0xFF) << 2;
+      UInt bU     = (insn28 >> 23) & 1; /* 1: +offset  0: -offset */
+      UInt bL     = (insn28 >> 20) & 1; /* 1: load  0: store */
+      /* make unconditional */
+      if (condT != IRTemp_INVALID) {
+         if (isT)
+            mk_skip_over_T32_if_cond_is_false( condT );
+         else
+            mk_skip_over_A32_if_cond_is_false( condT );
+         condT = IRTemp_INVALID;
+      }
+      IRTemp ea = newTemp(Ity_I32);
+      assign(ea, binop(bU ? Iop_Add32 : Iop_Sub32,
+                       align4if(isT ? getIRegT(rN) : getIRegA(rN),
+                                rN == 15),
+                       mkU32(offset)));
+      if (bL) {
+         putDReg(dD, loadLE(Ity_F64,mkexpr(ea)), IRTemp_INVALID);
+      } else {
+         storeLE(mkexpr(ea), getDReg(dD));
+      }
+      DIP("f%sd%s d%u, [r%u, %c#%u]\n",
+          bL ? "ld" : "st", nCC(conq), dD, rN,
+          bU ? '+' : '-', offset);
+      goto decode_success_vfp;
+   }
+
+   /* --------------------- dp insns (D) --------------------- */
+   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,1,0,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,0,0,0) == (INSN(7,4) & BITS4(1,0,1,1))) {
+      UInt    dM  = INSN(3,0);   /* argR */
+      UInt    dD  = INSN(15,12); /* dst/acc */
+      UInt    dN  = INSN(19,16); /* argL */
+      UInt    bP  = (insn28 >> 23) & 1;
+      UInt    bQ  = (insn28 >> 21) & 1;
+      UInt    bR  = (insn28 >> 20) & 1;
+      UInt    bS  = (insn28 >> 6) & 1;
+      UInt    opc = (bP << 3) | (bQ << 2) | (bR << 1) | bS;
+      IRExpr* rm  = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
+      switch (opc) {
+         case BITS4(0,0,0,0): /* MAC: d + n * m */
+            putDReg(dD, triop(Iop_AddF64, rm,
+                              getDReg(dD),
+                              triop(Iop_MulF64, rm, getDReg(dN),
+                                                    getDReg(dM))),
+                        condT);
+            DIP("fmacd%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(0,0,0,1): /* NMAC: d - n * m */
+            putDReg(dD, triop(Iop_SubF64, rm,
+                              getDReg(dD),
+                              triop(Iop_MulF64, rm, getDReg(dN),
+                                                    getDReg(dM))),
+                        condT);
+            DIP("fnmacd%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(0,0,1,0): /* MSC: - d + n * m */
+            putDReg(dD, triop(Iop_AddF64, rm,
+                              unop(Iop_NegF64, getDReg(dD)),
+                              triop(Iop_MulF64, rm, getDReg(dN),
+                                                    getDReg(dM))),
+                        condT);
+            DIP("fmscd%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(0,0,1,1): /* NMSC: - d - n * m */
+            putDReg(dD, triop(Iop_SubF64, rm,
+                              unop(Iop_NegF64, getDReg(dD)),
+                              triop(Iop_MulF64, rm, getDReg(dN),
+                                                    getDReg(dM))),
+                        condT);
+            DIP("fnmscd%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(0,1,0,0): /* MUL: n * m */
+            putDReg(dD, triop(Iop_MulF64, rm, getDReg(dN), getDReg(dM)),
+                        condT);
+            DIP("fmuld%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(0,1,0,1): /* NMUL: - n * m */
+            putDReg(dD, unop(Iop_NegF64,
+                             triop(Iop_MulF64, rm, getDReg(dN),
+                                                   getDReg(dM))),
+                    condT);
+            DIP("fnmuld%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(0,1,1,0): /* ADD: n + m */
+            putDReg(dD, triop(Iop_AddF64, rm, getDReg(dN), getDReg(dM)),
+                        condT);
+            DIP("faddd%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(0,1,1,1): /* SUB: n - m */
+            putDReg(dD, triop(Iop_SubF64, rm, getDReg(dN), getDReg(dM)),
+                        condT);
+            DIP("fsubd%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         case BITS4(1,0,0,0): /* DIV: n / m */
+            putDReg(dD, triop(Iop_DivF64, rm, getDReg(dN), getDReg(dM)),
+                        condT);
+            DIP("fdivd%s d%u, d%u, d%u\n", nCC(conq), dD, dN, dM);
+            goto decode_success_vfp;
+         default:
+            break;
+      }
+   }
+
+   /* --------------------- compares (D) --------------------- */
+   /*          31   27   23   19   15 11   7    3
+                 28   24   20   16 12    8    4    0 
+      FCMPD    cond 1110 1011 0100 Dd 1011 0100 Dm
+      FCMPED   cond 1110 1011 0100 Dd 1011 1100 Dm
+      FCMPZD   cond 1110 1011 0101 Dd 1011 0100 0000
+      FCMPZED  cond 1110 1011 0101 Dd 1011 1100 0000
+                                 Z         N
+
+      Z=0 Compare Dd vs Dm     and set FPSCR 31:28 accordingly
+      Z=1 Compare Dd vs zero
+
+      N=1 generates Invalid Operation exn if either arg is any kind of NaN
+      N=0 generates Invalid Operation exn if either arg is a signalling NaN
+      (Not that we pay any attention to N here)
+   */
+   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
+       && BITS4(0,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt bZ = (insn28 >> 16) & 1;
+      UInt bN = (insn28 >> 7) & 1;
+      UInt dD = INSN(15,12);
+      UInt dM = INSN(3,0);
+      if (bZ && INSN(3,0) != 0) {
+         /* does not decode; fall through */
+      } else {
+         IRTemp argL = newTemp(Ity_F64);
+         IRTemp argR = newTemp(Ity_F64);
+         IRTemp irRes = newTemp(Ity_I32);
+         assign(argL, getDReg(dD));
+         assign(argR, bZ ? IRExpr_Const(IRConst_F64i(0)) : getDReg(dM));
+         assign(irRes, binop(Iop_CmpF64, mkexpr(argL), mkexpr(argR)));
+
+         IRTemp nzcv     = IRTemp_INVALID;
+         IRTemp oldFPSCR = newTemp(Ity_I32);
+         IRTemp newFPSCR = newTemp(Ity_I32);
+
+         /* This is where the fun starts.  We have to convert 'irRes'
+            from an IR-convention return result (IRCmpF64Result) to an
+            ARM-encoded (N,Z,C,V) group.  The final result is in the
+            bottom 4 bits of 'nzcv'. */
+         /* Map compare result from IR to ARM(nzcv) */
+         /*
+            FP cmp result | IR   | ARM(nzcv)
+            --------------------------------
+            UN              0x45   0011
+            LT              0x01   1000
+            GT              0x00   0010
+            EQ              0x40   0110
+         */
+         nzcv = mk_convert_IRCmpF64Result_to_NZCV(irRes);
+
+         /* And update FPSCR accordingly */
+         assign(oldFPSCR, IRExpr_Get(OFFB_FPSCR, Ity_I32));
+         assign(newFPSCR, 
+                binop(Iop_Or32, 
+                      binop(Iop_And32, mkexpr(oldFPSCR), mkU32(0x0FFFFFFF)),
+                      binop(Iop_Shl32, mkexpr(nzcv), mkU8(28))));
+
+         putMiscReg32(OFFB_FPSCR, mkexpr(newFPSCR), condT);
+
+         if (bZ) {
+            DIP("fcmpz%sd%s d%u\n", bN ? "e" : "", nCC(conq), dD);
+         } else {
+            DIP("fcmp%sd%s d%u, d%u\n", bN ? "e" : "", nCC(conq), dD, dM);
+         }
+         goto decode_success_vfp;
+      }
+      /* fall through */
+   }  
+
+   /* --------------------- unary (D) --------------------- */
+   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
+       && BITS4(0,0,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt dD  = INSN(15,12);
+      UInt dM  = INSN(3,0);
+      UInt b16 = (insn28 >> 16) & 1;
+      UInt b7  = (insn28 >> 7) & 1;
+      /**/ if (b16 == 0 && b7 == 0) {
+         // FCPYD
+         putDReg(dD, getDReg(dM), condT);
+         DIP("fcpyd%s d%u, d%u\n", nCC(conq), dD, dM);
+         goto decode_success_vfp;
+      }
+      else if (b16 == 0 && b7 == 1) {
+         // FABSD
+         putDReg(dD, unop(Iop_AbsF64, getDReg(dM)), condT);
+         DIP("fabsd%s d%u, d%u\n", nCC(conq), dD, dM);
+         goto decode_success_vfp;
+      }
+      else if (b16 == 1 && b7 == 0) {
+         // FNEGD
+         putDReg(dD, unop(Iop_NegF64, getDReg(dM)), condT);
+         DIP("fnegd%s d%u, d%u\n", nCC(conq), dD, dM);
+         goto decode_success_vfp;
+      }
+      else if (b16 == 1 && b7 == 1) {
+         // FSQRTD
+         IRExpr* rm = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
+         putDReg(dD, binop(Iop_SqrtF64, rm, getDReg(dM)), condT);
+         DIP("fsqrtd%s d%u, d%u\n", nCC(conq), dD, dM);
+         goto decode_success_vfp;
+      }
+      else
+         vassert(0);
+
+      /* fall through */
+   }
+
+   /* ----------------- I <-> D conversions ----------------- */
+
+   // F{S,U}ITOD dD, fM
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,1))
+       && BITS4(1,0,0,0) == (INSN(19,16) & BITS4(1,1,1,1))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
+      UInt bM    = (insn28 >> 5) & 1;
+      UInt fM    = (INSN(3,0) << 1) | bM;
+      UInt dD    = INSN(15,12);
+      UInt syned = (insn28 >> 7) & 1;
+      if (syned) {
+         // FSITOD
+         putDReg(dD, unop(Iop_I32StoF64,
+                          unop(Iop_ReinterpF32asI32, getFReg(fM))),
+                 condT);
+         DIP("fsitod%s d%u, s%u\n", nCC(conq), dD, fM);
+      } else {
+         // FUITOD
+         putDReg(dD, unop(Iop_I32UtoF64,
+                          unop(Iop_ReinterpF32asI32, getFReg(fM))),
+                 condT);
+         DIP("fuitod%s d%u, s%u\n", nCC(conq), dD, fM);
+      }
+      goto decode_success_vfp;
+   }
+
+   // FTO{S,U}ID fD, dM
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(1,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt   bD    = (insn28 >> 22) & 1;
+      UInt   fD    = (INSN(15,12) << 1) | bD;
+      UInt   dM    = INSN(3,0);
+      UInt   bZ    = (insn28 >> 7) & 1;
+      UInt   syned = (insn28 >> 16) & 1;
+      IRTemp rmode = newTemp(Ity_I32);
+      assign(rmode, bZ ? mkU32(Irrm_ZERO)
+                       : mkexpr(mk_get_IR_rounding_mode()));
+      if (syned) {
+         // FTOSID
+         putFReg(fD, unop(Iop_ReinterpI32asF32,
+                          binop(Iop_F64toI32S, mkexpr(rmode),
+                                getDReg(dM))),
+                 condT);
+         DIP("ftosi%sd%s s%u, d%u\n", bZ ? "z" : "",
+             nCC(conq), fD, dM);
+      } else {
+         // FTOUID
+         putFReg(fD, unop(Iop_ReinterpI32asF32,
+                          binop(Iop_F64toI32U, mkexpr(rmode),
+                                getDReg(dM))),
+                 condT);
+         DIP("ftoui%sd%s s%u, d%u\n", bZ ? "z" : "",
+             nCC(conq), fD, dM);
+      }
+      goto decode_success_vfp;
+   }
+
+   /* ----------------------------------------------------------- */
+   /* -- VFP instructions -- single precision                  -- */
+   /* ----------------------------------------------------------- */
+
+   /* --------------------- fldms, fstms --------------------- */
+   /*
+                                 31   27   23   19 15 11   7   0
+                                         P UDWL
+      C4-98, C5-26   1  FSTMD    cond 1100 1x00 Rn Fd 1010 offset
+      C4-98, C5-28   2  FSTMDIA  cond 1100 1x10 Rn Fd 1010 offset
+      C4-98, C5-30   3  FSTMDDB  cond 1101 0x10 Rn Fd 1010 offset
+
+      C4-40, C5-26   1  FLDMD    cond 1100 1x01 Rn Fd 1010 offset
+      C4-40, C5-26   2  FLDMIAD  cond 1100 1x11 Rn Fd 1010 offset
+      C4-40, C5-26   3  FLDMDBD  cond 1101 0x11 Rn Fd 1010 offset
+
+      Regs transferred: F(Fd:D) .. F(Fd:d + offset)
+      offset must not imply a reg > 15
+      IA/DB: Rn is changed by (4 x # regs transferred)
+
+      case coding:
+         1  at-Rn   (access at Rn)
+         2  ia-Rn   (access at Rn, then Rn += 4n)
+         3  db-Rn   (Rn -= 4n,     then access at Rn)
+   */
+   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
+       && INSN(11,8) == BITS4(1,0,1,0)) {
+      UInt bP     = (insn28 >> 24) & 1;
+      UInt bU     = (insn28 >> 23) & 1;
+      UInt bW     = (insn28 >> 21) & 1;
+      UInt bL     = (insn28 >> 20) & 1;
+      UInt bD     = (insn28 >> 22) & 1;
+      UInt offset = (insn28 >> 0) & 0xFF;
+      UInt rN     = INSN(19,16);
+      UInt fD     = (INSN(15,12) << 1) | bD;
+      UInt nRegs  = offset;
+      UInt summary;
+      Int  i;
+
+      /**/ if (bP == 0 && bU == 1 && bW == 0) {
+         summary = 1;
+      }
+      else if (bP == 0 && bU == 1 && bW == 1) {
+         summary = 2;
+      }
+      else if (bP == 1 && bU == 0 && bW == 1) {
+         summary = 3;
+      }
+      else goto after_vfp_fldms_fstms;
+
+      /* no writebacks to r15 allowed */
+      if (rN == 15 && (summary == 2 || summary == 3))
+         goto after_vfp_fldms_fstms;
+
+      /* offset must specify at least one register */
+      if (offset < 1)
+         goto after_vfp_fldms_fstms;
+
+      /* can't transfer regs after S31 */
+      if (fD + nRegs - 1 >= 32)
+         goto after_vfp_fldms_fstms;
+
+      /* Now, we can't do a conditional load or store, since that very
+         likely will generate an exception.  So we have to take a side
+         exit at this point if the condition is false. */
+      if (condT != IRTemp_INVALID) {
+         if (isT)
+            mk_skip_over_T32_if_cond_is_false( condT );
+         else
+            mk_skip_over_A32_if_cond_is_false( condT );
+         condT = IRTemp_INVALID;
+      }
+      /* Ok, now we're unconditional.  Do the load or store. */
+
+      /* get the old Rn value */
+      IRTemp rnT = newTemp(Ity_I32);
+      assign(rnT, isT ? getIRegT(rN) : getIRegA(rN));
+
+      /* make a new value for Rn, post-insn */
+      IRTemp rnTnew = IRTemp_INVALID;
+      if (summary == 2 || summary == 3) {
+         rnTnew = newTemp(Ity_I32);
+         assign(rnTnew, binop(summary == 2 ? Iop_Add32 : Iop_Sub32,
+                              mkexpr(rnT),
+                              mkU32(4 * nRegs)));
+      }
+
+      /* decide on the base transfer address */
+      IRTemp taT = newTemp(Ity_I32);
+      assign(taT, summary == 3 ? mkexpr(rnTnew) : mkexpr(rnT));
+
+      /* update Rn if necessary -- in case 3, we're moving it down, so
+         update before any memory reference, in order to keep Memcheck
+         and V's stack-extending logic (on linux) happy */
+      if (summary == 3) {
+         if (isT)
+            putIRegT(rN, mkexpr(rnTnew), IRTemp_INVALID);
+         else
+            putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      }
+
+      /* generate the transfers */
+      for (i = 0; i < nRegs; i++) {
+         IRExpr* addr = binop(Iop_Add32, mkexpr(taT), mkU32(4*i));
+         if (bL) {
+            putFReg(fD + i, loadLE(Ity_F32, addr), IRTemp_INVALID);
+         } else {
+            storeLE(addr, getFReg(fD + i));
+         }
+      }
+
+      /* update Rn if necessary -- in case 2, we're moving it up, so
+         update after any memory reference, in order to keep Memcheck
+         and V's stack-extending logic (on linux) happy */
+      if (summary == 2) {
+         if (isT)
+            putIRegT(rN, mkexpr(rnTnew), IRTemp_INVALID);
+         else
+            putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
+      }
+
+      HChar* nm = bL==1 ? "ld" : "st";
+      switch (summary) {
+         case 1:  DIP("f%sms%s r%u, {s%u-s%u}\n", 
+                      nm, nCC(conq), rN, fD, fD + nRegs - 1);
+                  break;
+         case 2:  DIP("f%smias%s r%u!, {s%u-s%u}\n", 
+                      nm, nCC(conq), rN, fD, fD + nRegs - 1);
+                  break;
+         case 3:  DIP("f%smdbs%s r%u!, {s%u-s%u}\n", 
+                      nm, nCC(conq), rN, fD, fD + nRegs - 1);
+                  break;
+         default: vassert(0);
+      }
+
+      goto decode_success_vfp;
+      /* FIXME alignment constraints? */
+   }
+
+  after_vfp_fldms_fstms:
+
+   /* --------------------- fmsr, fmrs --------------------- */
+   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,0,0,0) == INSN(3,0)
+       && BITS4(0,0,0,1) == (INSN(7,4) & BITS4(0,1,1,1))) {
+      UInt rD  = INSN(15,12);
+      UInt b7  = (insn28 >> 7) & 1;
+      UInt fN  = (INSN(19,16) << 1) | b7;
+      UInt b20 = (insn28 >> 20) & 1;
+      if (rD == 15) {
+         /* fall through */
+         /* Let's assume that no sane person would want to do
+            floating-point transfers to or from the program counter,
+            and simply decline to decode the instruction.  The ARM ARM
+            doesn't seem to explicitly disallow this case, though. */
+      } else {
+         if (b20) {
+            IRExpr* res = unop(Iop_ReinterpF32asI32, getFReg(fN));
+            if (isT)
+               putIRegT(rD, res, condT);
+            else
+               putIRegA(rD, res, condT, Ijk_Boring);
+            DIP("fmrs%s r%u, s%u\n", nCC(conq), rD, fN);
+         } else {
+            putFReg(fN, unop(Iop_ReinterpI32asF32,
+                             isT ? getIRegT(rD) : getIRegA(rD)),
+                        condT);
+            DIP("fmsr%s s%u, r%u\n", nCC(conq), fN, rD);
+         }
+         goto decode_success_vfp;
+      }
+      /* fall through */
+   }
+
+   /* --------------------- f{ld,st}s --------------------- */
+   // FLDS, FSTS
+   if (BITS8(1,1,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,0,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)) {
+      UInt bD     = (insn28 >> 22) & 1;
+      UInt fD     = (INSN(15,12) << 1) | bD;
+      UInt rN     = INSN(19,16);
+      UInt offset = (insn28 & 0xFF) << 2;
+      UInt bU     = (insn28 >> 23) & 1; /* 1: +offset  0: -offset */
+      UInt bL     = (insn28 >> 20) & 1; /* 1: load  0: store */
+      /* make unconditional */
+      if (condT != IRTemp_INVALID) {
+         if (isT)
+            mk_skip_over_T32_if_cond_is_false( condT );
+         else
+            mk_skip_over_A32_if_cond_is_false( condT );
+         condT = IRTemp_INVALID;
+      }
+      IRTemp ea = newTemp(Ity_I32);
+      assign(ea, binop(bU ? Iop_Add32 : Iop_Sub32,
+                       align4if(isT ? getIRegT(rN) : getIRegA(rN),
+                                rN == 15),
+                       mkU32(offset)));
+      if (bL) {
+         putFReg(fD, loadLE(Ity_F32,mkexpr(ea)), IRTemp_INVALID);
+      } else {
+         storeLE(mkexpr(ea), getFReg(fD));
+      }
+      DIP("f%ss%s s%u, [r%u, %c#%u]\n",
+          bL ? "ld" : "st", nCC(conq), fD, rN,
+          bU ? '+' : '-', offset);
+      goto decode_success_vfp;
+   }
+
+   /* --------------------- dp insns (F) --------------------- */
+   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,0,0,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,0,0,0) == (INSN(7,4) & BITS4(0,0,0,1))) {
+      UInt    bM  = (insn28 >> 5) & 1;
+      UInt    bD  = (insn28 >> 22) & 1;
+      UInt    bN  = (insn28 >> 7) & 1;
+      UInt    fM  = (INSN(3,0) << 1) | bM;   /* argR */
+      UInt    fD  = (INSN(15,12) << 1) | bD; /* dst/acc */
+      UInt    fN  = (INSN(19,16) << 1) | bN; /* argL */
+      UInt    bP  = (insn28 >> 23) & 1;
+      UInt    bQ  = (insn28 >> 21) & 1;
+      UInt    bR  = (insn28 >> 20) & 1;
+      UInt    bS  = (insn28 >> 6) & 1;
+      UInt    opc = (bP << 3) | (bQ << 2) | (bR << 1) | bS;
+      IRExpr* rm  = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
+      switch (opc) {
+         case BITS4(0,0,0,0): /* MAC: d + n * m */
+            putFReg(fD, triop(Iop_AddF32, rm,
+                              getFReg(fD),
+                              triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
+                        condT);
+            DIP("fmacs%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         case BITS4(0,0,0,1): /* NMAC: d - n * m */
+            putFReg(fD, triop(Iop_SubF32, rm,
+                              getFReg(fD),
+                              triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
+                        condT);
+            DIP("fnmacs%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         case BITS4(0,0,1,0): /* MSC: - d + n * m */
+            putFReg(fD, triop(Iop_AddF32, rm,
+                              unop(Iop_NegF32, getFReg(fD)),
+                              triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
+                        condT);
+            DIP("fmscs%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         case BITS4(0,0,1,1): /* NMSC: - d - n * m */
+            break; //ATC
+         case BITS4(0,1,0,0): /* MUL: n * m */
+            putFReg(fD, triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM)),
+                        condT);
+            DIP("fmuls%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         case BITS4(0,1,0,1): /* NMUL: - n * m */
+            putFReg(fD, unop(Iop_NegF32,
+                             triop(Iop_MulF32, rm, getFReg(fN),
+                                                   getFReg(fM))),
+                    condT);
+            DIP("fnmuls%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         case BITS4(0,1,1,0): /* ADD: n + m */
+            putFReg(fD, triop(Iop_AddF32, rm, getFReg(fN), getFReg(fM)),
+                        condT);
+            DIP("fadds%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         case BITS4(0,1,1,1): /* SUB: n - m */
+            putFReg(fD, triop(Iop_SubF32, rm, getFReg(fN), getFReg(fM)),
+                        condT);
+            DIP("fsubs%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         case BITS4(1,0,0,0): /* DIV: n / m */
+            putFReg(fD, triop(Iop_DivF32, rm, getFReg(fN), getFReg(fM)),
+                        condT);
+            DIP("fdivs%s s%u, s%u, s%u\n", nCC(conq), fD, fN, fM);
+            goto decode_success_vfp;
+         default:
+            break;
+      }
+   }
+
+   /* --------------------- compares (S) --------------------- */
+   /*          31   27   23   19   15 11   7    3
+                 28   24   20   16 12    8    4    0 
+      FCMPS    cond 1110 1D11 0100 Fd 1010 01M0 Fm
+      FCMPES   cond 1110 1D11 0100 Fd 1010 11M0 Fm
+      FCMPZS   cond 1110 1D11 0101 Fd 1010 0100 0000
+      FCMPZED  cond 1110 1D11 0101 Fd 1010 1100 0000
+                                 Z         N
+
+      Z=0 Compare Fd:D vs Fm:M     and set FPSCR 31:28 accordingly
+      Z=1 Compare Fd:D vs zero
+
+      N=1 generates Invalid Operation exn if either arg is any kind of NaN
+      N=0 generates Invalid Operation exn if either arg is a signalling NaN
+      (Not that we pay any attention to N here)
+   */
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
+      UInt bZ = (insn28 >> 16) & 1;
+      UInt bN = (insn28 >> 7) & 1;
+      UInt bD = (insn28 >> 22) & 1;
+      UInt bM = (insn28 >> 5) & 1;
+      UInt fD = (INSN(15,12) << 1) | bD;
+      UInt fM = (INSN(3,0) << 1) | bM;
+      if (bZ && (INSN(3,0) != 0 || (INSN(7,4) & 3) != 0)) {
+         /* does not decode; fall through */
+      } else {
+         IRTemp argL = newTemp(Ity_F64);
+         IRTemp argR = newTemp(Ity_F64);
+         IRTemp irRes = newTemp(Ity_I32);
+
+         assign(argL, unop(Iop_F32toF64, getFReg(fD)));
+         assign(argR, bZ ? IRExpr_Const(IRConst_F64i(0))
+                         : unop(Iop_F32toF64, getFReg(fM)));
+         assign(irRes, binop(Iop_CmpF64, mkexpr(argL), mkexpr(argR)));
+
+         IRTemp nzcv     = IRTemp_INVALID;
+         IRTemp oldFPSCR = newTemp(Ity_I32);
+         IRTemp newFPSCR = newTemp(Ity_I32);
+
+         /* This is where the fun starts.  We have to convert 'irRes'
+            from an IR-convention return result (IRCmpF64Result) to an
+            ARM-encoded (N,Z,C,V) group.  The final result is in the
+            bottom 4 bits of 'nzcv'. */
+         /* Map compare result from IR to ARM(nzcv) */
+         /*
+            FP cmp result | IR   | ARM(nzcv)
+            --------------------------------
+            UN              0x45   0011
+            LT              0x01   1000
+            GT              0x00   0010
+            EQ              0x40   0110
+         */
+         nzcv = mk_convert_IRCmpF64Result_to_NZCV(irRes);
+
+         /* And update FPSCR accordingly */
+         assign(oldFPSCR, IRExpr_Get(OFFB_FPSCR, Ity_I32));
+         assign(newFPSCR, 
+                binop(Iop_Or32, 
+                      binop(Iop_And32, mkexpr(oldFPSCR), mkU32(0x0FFFFFFF)),
+                      binop(Iop_Shl32, mkexpr(nzcv), mkU8(28))));
+
+         putMiscReg32(OFFB_FPSCR, mkexpr(newFPSCR), condT);
+
+         if (bZ) {
+            DIP("fcmpz%ss%s s%u\n", bN ? "e" : "", nCC(conq), fD);
+         } else {
+            DIP("fcmp%ss%s s%u, s%u\n", bN ? "e" : "",
+                nCC(conq), fD, fM);
+         }
+         goto decode_success_vfp;
+      }
+      /* fall through */
+   }  
+
+   /* --------------------- unary (S) --------------------- */
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,0,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
+      UInt bD = (insn28 >> 22) & 1;
+      UInt bM = (insn28 >> 5) & 1;
+      UInt fD  = (INSN(15,12) << 1) | bD;
+      UInt fM  = (INSN(3,0) << 1) | bM;
+      UInt b16 = (insn28 >> 16) & 1;
+      UInt b7  = (insn28 >> 7) & 1;
+      /**/ if (b16 == 0 && b7 == 0) {
+         // FCPYS
+         putFReg(fD, getFReg(fM), condT);
+         DIP("fcpys%s s%u, s%u\n", nCC(conq), fD, fM);
+         goto decode_success_vfp;
+      }
+      else if (b16 == 0 && b7 == 1) {
+         // FABSS
+         putFReg(fD, unop(Iop_AbsF32, getFReg(fM)), condT);
+         DIP("fabss%s s%u, s%u\n", nCC(conq), fD, fM);
+         goto decode_success_vfp;
+      }
+      else if (b16 == 1 && b7 == 0) {
+         // FNEGS
+         putFReg(fD, unop(Iop_NegF32, getFReg(fM)), condT);
+         DIP("fnegs%s s%u, s%u\n", nCC(conq), fD, fM);
+         goto decode_success_vfp;
+      }
+      else if (b16 == 1 && b7 == 1) {
+         // FSQRTS
+         IRExpr* rm = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
+         putFReg(fD, binop(Iop_SqrtF32, rm, getFReg(fM)), condT);
+         DIP("fsqrts%s s%u, s%u\n", nCC(conq), fD, fM);
+         goto decode_success_vfp;
+      }
+      else
+         vassert(0);
+
+      /* fall through */
+   }
+
+   /* ----------------- I <-> S conversions ----------------- */
+
+   // F{S,U}ITOS fD, fM
+   /* These are more complex than FSITOD/FUITOD.  In the D cases, a 32
+      bit int will always fit within the 53 bit mantissa, so there's
+      no possibility of a loss of precision, but that's obviously not
+      the case here.  Hence this case possibly requires rounding, and
+      so it drags in the current rounding mode. */
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(1,0,0,0) == (INSN(19,16) & BITS4(1,1,1,1))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
+      UInt bM    = (insn28 >> 5) & 1;
+      UInt bD    = (insn28 >> 22) & 1;
+      UInt fM    = (INSN(3,0) << 1) | bM;
+      UInt fD    = (INSN(15,12) << 1) | bD;
+      UInt syned = (insn28 >> 7) & 1;
+      IRTemp rmode = newTemp(Ity_I32);
+      assign(rmode, mkexpr(mk_get_IR_rounding_mode()));
+      if (syned) {
+         // FSITOS
+         putFReg(fD, binop(Iop_F64toF32,
+                           mkexpr(rmode),
+                           unop(Iop_I32StoF64,
+                                unop(Iop_ReinterpF32asI32, getFReg(fM)))),
+                 condT);
+         DIP("fsitos%s s%u, s%u\n", nCC(conq), fD, fM);
+      } else {
+         // FUITOS
+         putFReg(fD, binop(Iop_F64toF32,
+                           mkexpr(rmode),
+                           unop(Iop_I32UtoF64,
+                                unop(Iop_ReinterpF32asI32, getFReg(fM)))),
+                 condT);
+         DIP("fuitos%s s%u, s%u\n", nCC(conq), fD, fM);
+      }
+      goto decode_success_vfp;
+   }
+
+   // FTO{S,U}IS fD, fM
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(1,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
+      UInt   bM    = (insn28 >> 5) & 1;
+      UInt   bD    = (insn28 >> 22) & 1;
+      UInt   fD    = (INSN(15,12) << 1) | bD;
+      UInt   fM    = (INSN(3,0) << 1) | bM;
+      UInt   bZ    = (insn28 >> 7) & 1;
+      UInt   syned = (insn28 >> 16) & 1;
+      IRTemp rmode = newTemp(Ity_I32);
+      assign(rmode, bZ ? mkU32(Irrm_ZERO)
+                       : mkexpr(mk_get_IR_rounding_mode()));
+      if (syned) {
+         // FTOSIS
+         putFReg(fD, unop(Iop_ReinterpI32asF32,
+                          binop(Iop_F64toI32S, mkexpr(rmode),
+                                unop(Iop_F32toF64, getFReg(fM)))),
+                 condT);
+         DIP("ftosi%ss%s s%u, d%u\n", bZ ? "z" : "",
+             nCC(conq), fD, fM);
+         goto decode_success_vfp;
+      } else {
+         // FTOUIS
+         putFReg(fD, unop(Iop_ReinterpI32asF32,
+                          binop(Iop_F64toI32U, mkexpr(rmode),
+                                unop(Iop_F32toF64, getFReg(fM)))),
+                 condT);
+         DIP("ftoui%ss%s s%u, d%u\n", bZ ? "z" : "",
+             nCC(conq), fD, fM);
+         goto decode_success_vfp;
+      }
+   }
+
+   /* ----------------- S <-> D conversions ----------------- */
+
+   // FCVTDS
+   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
+       && BITS4(0,1,1,1) == INSN(19,16)
+       && BITS4(1,0,1,0) == INSN(11,8)
+       && BITS4(1,1,0,0) == (INSN(7,4) & BITS4(1,1,0,1))) {
+      UInt dD = INSN(15,12);
+      UInt bM = (insn28 >> 5) & 1;
+      UInt fM = (INSN(3,0) << 1) | bM;
+      putDReg(dD, unop(Iop_F32toF64, getFReg(fM)), condT);
+      DIP("fcvtds%s d%u, s%u\n", nCC(conq), dD, fM);
+      goto decode_success_vfp;
+   }
+
+   // FCVTSD
+   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
+       && BITS4(0,1,1,1) == INSN(19,16)
+       && BITS4(1,0,1,1) == INSN(11,8)
+       && BITS4(1,1,0,0) == INSN(7,4)) {
+      UInt   bD    = (insn28 >> 22) & 1;
+      UInt   fD    = (INSN(15,12) << 1) | bD;
+      UInt   dM    = INSN(3,0);
+      IRTemp rmode = newTemp(Ity_I32);
+      assign(rmode, mkexpr(mk_get_IR_rounding_mode()));
+      putFReg(fD, binop(Iop_F64toF32, mkexpr(rmode), getDReg(dM)),
+                  condT);
+      DIP("fcvtsd%s s%u, d%u\n", nCC(conq), fD, dM);
+      goto decode_success_vfp;
+   }
+
+   /* FAILURE */
+   return False;
+
+  decode_success_vfp:
+   /* Check that any accepted insn really is a CP10 or CP11 insn, iow,
+      assert that we aren't accepting, in this fn, insns that actually
+      should be handled somewhere else. */
+   vassert(INSN(11,9) == BITS3(1,0,1)); // 11:8 = 1010 or 1011
+   return True;  
+
+#  undef INSN
+}
+
+
+/*------------------------------------------------------------*/
 /*--- Instructions in NV (never) space                     ---*/
 /*------------------------------------------------------------*/
 
@@ -9318,1256 +10722,6 @@ DisResult disInstr_ARM_WRK (
    }
 
    /* ----------------------------------------------------------- */
-   /* -- VFP instructions -- double precision (mostly)         -- */
-   /* ----------------------------------------------------------- */
-
-   /* --------------------- fldmx, fstmx --------------------- */
-   /*
-                                 31   27   23   19 15 11   7   0
-                                         P U WL
-      C4-100, C5-26  1  FSTMX    cond 1100 1000 Rn Dd 1011 offset
-      C4-100, C5-28  2  FSTMIAX  cond 1100 1010 Rn Dd 1011 offset
-      C4-100, C5-30  3  FSTMDBX  cond 1101 0010 Rn Dd 1011 offset
-
-      C4-42, C5-26   1  FLDMX    cond 1100 1001 Rn Dd 1011 offset
-      C4-42, C5-28   2  FLDMIAX  cond 1100 1011 Rn Dd 1011 offset
-      C4-42, C5-30   3  FLDMDBX  cond 1101 0011 Rn Dd 1011 offset
-
-      Regs transferred: Dd .. D(d + (offset-3)/2)
-      offset must be odd, must not imply a reg > 15
-      IA/DB: Rn is changed by (4 + 8 x # regs transferred)
-
-      case coding:
-         1  at-Rn   (access at Rn)
-         2  ia-Rn   (access at Rn, then Rn += 4+8n)
-         3  db-Rn   (Rn -= 4+8n,   then access at Rn)
-   */
-   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
-       && INSN(11,8) == BITS4(1,0,1,1)) {
-      UInt bP     = (insn >> 24) & 1;
-      UInt bU     = (insn >> 23) & 1;
-      UInt bW     = (insn >> 21) & 1;
-      UInt bL     = (insn >> 20) & 1;
-      UInt offset = (insn >> 0) & 0xFF;
-      UInt rN     = INSN(19,16);
-      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
-      UInt nRegs  = (offset - 1) / 2;
-      Int  i;
-
-      /**/ if (bP == 0 && bU == 1 && bW == 0) {
-         summary = 1;
-      }
-      else if (bP == 0 && bU == 1 && bW == 1) {
-         summary = 2;
-      }
-      else if (bP == 1 && bU == 0 && bW == 1) {
-         summary = 3;
-      }
-      else goto after_vfp_fldmx_fstmx;
-
-      /* no writebacks to r15 allowed */
-      if (rN == 15 && (summary == 2 || summary == 3))
-         goto after_vfp_fldmx_fstmx;
-
-      /* offset must be odd, and specify at least one register */
-      if (0 == (offset & 1) || offset < 3)
-         goto after_vfp_fldmx_fstmx;
-
-      /* can't transfer regs after D15 */
-      if (dD + nRegs - 1 >= 32)
-         goto after_vfp_fldmx_fstmx;
-
-      /* Now, we can't do a conditional load or store, since that very
-         likely will generate an exception.  So we have to take a side
-         exit at this point if the condition is false. */
-      if (condT != IRTemp_INVALID) {
-         mk_skip_over_A32_if_cond_is_false( condT );
-         condT = IRTemp_INVALID;
-      }
-      /* Ok, now we're unconditional.  Do the load or store. */
-
-      /* get the old Rn value */
-      IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, getIRegA(rN));
-
-      /* make a new value for Rn, post-insn */
-      IRTemp rnTnew = IRTemp_INVALID;
-      if (summary == 2 || summary == 3) {
-         rnTnew = newTemp(Ity_I32);
-         assign(rnTnew, binop(summary == 2 ? Iop_Add32 : Iop_Sub32,
-                              mkexpr(rnT),
-                              mkU32(4 + 8 * nRegs)));
-      }
-
-      /* decide on the base transfer address */
-      IRTemp taT = newTemp(Ity_I32);
-      assign(taT,  summary == 3 ? mkexpr(rnTnew) : mkexpr(rnT));
-
-      /* update Rn if necessary -- in case 3, we're moving it down, so
-         update before any memory reference, in order to keep Memcheck
-         and V's stack-extending logic (on linux) happy */
-      if (summary == 3)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
-
-      /* generate the transfers */
-      for (i = 0; i < nRegs; i++) {
-         IRExpr* addr = binop(Iop_Add32, mkexpr(taT), mkU32(8*i));
-         if (bL) {
-            putDReg(dD + i, loadLE(Ity_F64, addr), IRTemp_INVALID);
-         } else {
-            storeLE(addr, getDReg(dD + i));
-         }
-      }
-
-      /* update Rn if necessary -- in case 2, we're moving it up, so
-         update after any memory reference, in order to keep Memcheck
-         and V's stack-extending logic (on linux) happy */
-      if (summary == 2)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
-
-      HChar* nm = bL==1 ? "ld" : "st";
-      switch (summary) {
-         case 1:  DIP("f%smx%s r%u, {d%u-d%u}\n", 
-                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
-                  break;
-         case 2:  DIP("f%smiax%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
-                  break;
-         case 3:  DIP("f%smdbx%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
-                  break;
-         default: vassert(0);
-      }
-
-
-      goto decode_success;
-      /* FIXME alignment constraints? */
-   }
-
-  after_vfp_fldmx_fstmx:
-
-   /* --------------------- fldmd, fstmd --------------------- */
-   /*
-                                 31   27   23   19 15 11   7   0
-                                         P U WL
-      C4-96, C5-26   1  FSTMD    cond 1100 1000 Rn Dd 1011 offset
-      C4-96, C5-28   2  FSTMDIA  cond 1100 1010 Rn Dd 1011 offset
-      C4-96, C5-30   3  FSTMDDB  cond 1101 0010 Rn Dd 1011 offset
-
-      C4-38, C5-26   1  FLDMD    cond 1100 1001 Rn Dd 1011 offset
-      C4-38, C5-28   2  FLDMIAD  cond 1100 1011 Rn Dd 1011 offset
-      C4-38, C5-30   3  FLDMDBD  cond 1101 0011 Rn Dd 1011 offset
-
-      Regs transferred: Dd .. D(d + (offset-2)/2)
-      offset must be even, must not imply a reg > 15
-      IA/DB: Rn is changed by (8 x # regs transferred)
-
-      case coding:
-         1  at-Rn   (access at Rn)
-         2  ia-Rn   (access at Rn, then Rn += 8n)
-         3  db-Rn   (Rn -= 8n,     then access at Rn)
-   */
-   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
-       && INSN(11,8) == BITS4(1,0,1,1)) {
-      UInt bP     = (insn >> 24) & 1;
-      UInt bU     = (insn >> 23) & 1;
-      UInt bW     = (insn >> 21) & 1;
-      UInt bL     = (insn >> 20) & 1;
-      UInt offset = (insn >> 0) & 0xFF;
-      UInt rN     = INSN(19,16);
-      UInt dD     = (INSN(22,22) << 4) | INSN(15,12);
-      UInt nRegs  = offset / 2;
-      Int  i;
-
-      /**/ if (bP == 0 && bU == 1 && bW == 0) {
-         summary = 1;
-      }
-      else if (bP == 0 && bU == 1 && bW == 1) {
-         summary = 2;
-      }
-      else if (bP == 1 && bU == 0 && bW == 1) {
-         summary = 3;
-      }
-      else goto after_vfp_fldmd_fstmd;
-
-      /* no writebacks to r15 allowed */
-      if (rN == 15 && (summary == 2 || summary == 3))
-         goto after_vfp_fldmd_fstmd;
-
-      /* offset must be even, and specify at least one register */
-      if (1 == (offset & 1) || offset < 2)
-         goto after_vfp_fldmd_fstmd;
-
-      /* can't transfer regs after D15 */
-      if (dD + nRegs - 1 >= 32)
-         goto after_vfp_fldmd_fstmd;
-
-      /* Now, we can't do a conditional load or store, since that very
-         likely will generate an exception.  So we have to take a side
-         exit at this point if the condition is false. */
-      if (condT != IRTemp_INVALID) {
-         mk_skip_over_A32_if_cond_is_false( condT );
-         condT = IRTemp_INVALID;
-      }
-      /* Ok, now we're unconditional.  Do the load or store. */
-
-      /* get the old Rn value */
-      IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, getIRegA(rN));
-
-      /* make a new value for Rn, post-insn */
-      IRTemp rnTnew = IRTemp_INVALID;
-      if (summary == 2 || summary == 3) {
-         rnTnew = newTemp(Ity_I32);
-         assign(rnTnew, binop(summary == 2 ? Iop_Add32 : Iop_Sub32,
-                              mkexpr(rnT),
-                              mkU32(8 * nRegs)));
-      }
-
-      /* decide on the base transfer address */
-      IRTemp taT = newTemp(Ity_I32);
-      assign(taT, summary == 3 ? mkexpr(rnTnew) : mkexpr(rnT));
-
-      /* update Rn if necessary -- in case 3, we're moving it down, so
-         update before any memory reference, in order to keep Memcheck
-         and V's stack-extending logic (on linux) happy */
-      if (summary == 3)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
-
-      /* generate the transfers */
-      for (i = 0; i < nRegs; i++) {
-         IRExpr* addr = binop(Iop_Add32, mkexpr(taT), mkU32(8*i));
-         if (bL) {
-            putDReg(dD + i, loadLE(Ity_F64, addr), IRTemp_INVALID);
-         } else {
-            storeLE(addr, getDReg(dD + i));
-         }
-      }
-
-      /* update Rn if necessary -- in case 2, we're moving it up, so
-         update after any memory reference, in order to keep Memcheck
-         and V's stack-extending logic (on linux) happy */
-      if (summary == 2)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
-
-      HChar* nm = bL==1 ? "ld" : "st";
-      switch (summary) {
-         case 1:  DIP("f%smd%s r%u, {d%u-d%u}\n", 
-                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
-                  break;
-         case 2:  DIP("f%smiad%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
-                  break;
-         case 3:  DIP("f%smdbd%s r%u!, {d%u-d%u}\n", 
-                      nm, nCC(INSN_COND), rN, dD, dD + nRegs - 1);
-                  break;
-         default: vassert(0);
-      }
-
-      goto decode_success;
-      /* FIXME alignment constraints? */
-   }
-
-  after_vfp_fldmd_fstmd:
-
-   /* ------------------- fmrx, fmxr ------------------- */
-   if (BITS8(1,1,1,0,1,1,1,1) == INSN(27,20)
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS8(0,0,0,1,0,0,0,0) == (insn & 0xFF)) {
-      UInt rD  = INSN(15,12);
-      UInt reg = INSN(19,16);
-      if (reg == BITS4(0,0,0,1)) {
-         if (rD == 15) {
-            IRTemp nzcvT = newTemp(Ity_I32);
-            /* When rD is 15, we are copying the top 4 bits of FPSCR
-               into CPSR.  That is, set the flags thunk to COPY and
-               install FPSCR[31:28] as the value to copy. */
-            assign(nzcvT, binop(Iop_And32,
-                                IRExpr_Get(OFFB_FPSCR, Ity_I32),
-                                mkU32(0xF0000000)));
-            setFlags_D1(ARMG_CC_OP_COPY, nzcvT, condT);
-            DIP("fmstat%s\n", nCC(INSN_COND));
-         } else {
-            /* Otherwise, merely transfer FPSCR to r0 .. r14. */
-            putIRegA(rD, IRExpr_Get(OFFB_FPSCR, Ity_I32), 
-                         condT, Ijk_Boring);
-            DIP("fmrx%s r%u, fpscr\n", nCC(INSN_COND), rD);
-         }
-         goto decode_success;
-      }
-      /* fall through */
-   }
-
-   if (BITS8(1,1,1,0,1,1,1,0) == INSN(27,20)
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS8(0,0,0,1,0,0,0,0) == (insn & 0xFF)) {
-      UInt rD  = INSN(15,12);
-      UInt reg = INSN(19,16);
-      if (reg == BITS4(0,0,0,1)) {
-         putMiscReg32(OFFB_FPSCR, getIRegA(rD), condT);
-         DIP("fmxr%s fpscr, r%u\n", nCC(INSN_COND), rD);
-         goto decode_success;
-      }
-      /* fall through */
-   }
-
-   /* --------------------- vmov --------------------- */
-   // VMOV dM, rD, rN
-   if (0x0C400B10 == (insn & 0x0FF00FD0)) {
-      UInt dM = INSN(3,0) | (INSN(5,5) << 4);
-      UInt rD = INSN(15,12); /* lo32 */
-      UInt rN = INSN(19,16); /* hi32 */
-      if (rD == 15 || rN == 15) {
-         /* fall through */
-      } else {
-         putDReg(dM,
-                 unop(Iop_ReinterpI64asF64,
-                      binop(Iop_32HLto64, getIRegA(rN), getIRegA(rD))),
-                 condT);
-         DIP("vmov%s d%u, r%u, r%u\n", nCC(INSN_COND), dM, rD, rN);
-         goto decode_success;
-      }
-      /* fall through */
-   }
-
-   // VMOV rD, rN, dM
-   if (0x0C500B10 == (insn & 0x0FF00FD0)) {
-      UInt dM = INSN(3,0) | (INSN(5,5) << 4);
-      UInt rD = INSN(15,12); /* lo32 */
-      UInt rN = INSN(19,16); /* hi32 */
-      if (rD == 15 || rN == 15 || rD == rN) {
-         /* fall through */
-      } else {
-         IRTemp i64 = newTemp(Ity_I64);
-         assign(i64, unop(Iop_ReinterpF64asI64, getDReg(dM)));
-         putIRegA(rN, unop(Iop_64HIto32, mkexpr(i64)), condT, Ijk_Boring);
-         putIRegA(rD, unop(Iop_64to32,   mkexpr(i64)), condT, Ijk_Boring);
-         DIP("vmov%s r%u, r%u, d%u\n", nCC(INSN_COND), rD, rN, dM);
-         goto decode_success;
-      }
-      /* fall through */
-   }
-
-   // VMOV rD[x], rT
-   if (0x0E000B10 == (insn & 0x0F900F1F)) {
-      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
-      UInt rT = INSN(15,12);
-      UInt opc = (INSN(22,21) << 2) | INSN(6,5);
-      UInt index;
-      if (rT == 15) {
-         /* fall through */
-      } else {
-         if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
-            index = opc & 7;
-            putDRegI(rD, triop(Iop_SetElem8x8, getDRegI(rD), mkU8(index),
-                               unop(Iop_32to8, getIRegA(rT))), condT);
-            DIP("vmov%s.8 d%u[%u], r%u\n", nCC(INSN_COND), rD, index, rT);
-            goto decode_success;
-         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
-            index = (opc >> 1) & 3;
-            putDRegI(rD, triop(Iop_SetElem16x4, getDRegI(rD), mkU8(index),
-                               unop(Iop_32to16, getIRegA(rT))), condT);
-            DIP("vmov%s.16 d%u[%u], r%u\n", nCC(INSN_COND), rD, index, rT);
-            goto decode_success;
-         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0)) {
-            index = (opc >> 2) & 1;
-            putDRegI(rD, triop(Iop_SetElem32x2, getDRegI(rD), mkU8(index),
-                               getIRegA(rT)), condT);
-            DIP("vmov%s.32 d%u[%u], r%u\n", nCC(INSN_COND), rD, index, rT);
-            goto decode_success;
-         } else {
-            /* fall through */
-         }
-      }
-   }
-
-   // VMOV rT, rD[x]
-   if (0x0E100B10 == (insn & 0x0F100F1F)) {
-      UInt rN = (INSN(7,7) << 4) | INSN(19,16);
-      UInt rT = INSN(15,12);
-      UInt U = INSN(23,23);
-      UInt opc = (INSN(22,21) << 2) | INSN(6,5);
-      UInt index;
-      if (rT == 15) {
-         /* fall through */
-      } else {
-         if ((opc & BITS4(1,0,0,0)) == BITS4(1,0,0,0)) {
-            index = opc & 7;
-            putIRegA(rT, unop(U ? Iop_8Uto32 : Iop_8Sto32,
-                              binop(Iop_GetElem8x8,
-                                    getDRegI(rN),
-                                    mkU8(index))),
-                    condT, Ijk_Boring);
-            DIP("vmov%s.%c8 r%u, d%u[%u]\n", nCC(INSN_COND), U ? 'u' : 's',
-                  rT, rN, index);
-            goto decode_success;
-         } else  if ((opc & BITS4(1,0,0,1)) == BITS4(0,0,0,1)) {
-            index = (opc >> 1) & 3;
-            putIRegA(rT, unop(U ? Iop_16Uto32 : Iop_16Sto32,
-                              binop(Iop_GetElem16x4,
-                                    getDRegI(rN),
-                                    mkU8(index))),
-                    condT, Ijk_Boring);
-            DIP("vmov%s.%c16 r%u, d%u[%u]\n", nCC(INSN_COND), U ? 'u' : 's',
-                  rT, rN, index);
-            goto decode_success;
-         } else if ((opc & BITS4(1,0,1,1)) == BITS4(0,0,0,0) && U == 0) {
-            index = (opc >> 2) & 1;
-            putIRegA(rT, binop(Iop_GetElem32x2, getDRegI(rN), mkU8(index)),
-                     condT, Ijk_Boring);
-            DIP("vmov%s.32 r%u, d%u[%u]\n", nCC(INSN_COND), rT, rN, index);
-            goto decode_success;
-         } else {
-            /* fall through */
-         }
-      }
-   }
-
-   // VMOV.F32 sD, #imm
-   // FCONSTS sD, #imm
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,0)) {
-      UInt rD = (INSN(15,12) << 1) | INSN(22,22);
-      UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
-      UInt b = (imm8 >> 6) & 1;
-      UInt imm;
-      imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,(imm8 >> 5) & 1) << 8)
-             | ((imm8 & 0x1f) << 3);
-      imm <<= 16;
-      putFReg(rD, unop(Iop_ReinterpI32asF32, mkU32(imm)), condT);
-      DIP("focnsts%s s%u #%u", nCC(INSN_COND), rD, imm8);
-      goto decode_success;
-   }
-
-   // VMOV.F64 dD, #imm
-   // FCONSTD dD, #imm
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,0,0,0) == INSN(7,4) && INSN(11,8) == BITS4(1,0,1,1)) {
-      UInt rD = INSN(15,12) | (INSN(22,22) << 4);
-      UInt imm8 = (INSN(19,16) << 4) | INSN(3,0);
-      UInt b = (imm8 >> 6) & 1;
-      ULong imm;
-      imm = (BITS8((imm8 >> 7) & 1,(~b) & 1,b,b,b,b,b,b) << 8)
-             | BITS8(b,b,0,0,0,0,0,0) | (imm8 & 0x3f);
-      imm <<= 48;
-      putDReg(rD, unop(Iop_ReinterpI64asF64, mkU64(imm)), condT);
-      DIP("focnstd%s d%u #%u", nCC(INSN_COND), rD, imm8);
-      goto decode_success;
-   }
-
-   /* ---------------------- vdup ------------------------- */
-   // VDUP dD, rT
-   // VDUP qD, rT
-   if (BITS8(1,1,1,0,1,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,0,0,1))
-       && BITS4(1,0,1,1) == INSN(11,8) && INSN(6,6) == 0 && INSN(4,4) == 1) {
-      UInt rD = (INSN(7,7) << 4) | INSN(19,16);
-      UInt rT = INSN(15,12);
-      UInt Q = INSN(21,21);
-      UInt size = (INSN(22,22) << 1) | INSN(5,5);
-      if (rT == 15 || size == 3i || (Q && (rD & 1))) {
-         /* fall through */
-      } else {
-         if (Q) {
-            rD >>= 1;
-            switch (size) {
-               case 0:
-                  putQReg(rD, unop(Iop_Dup32x4, getIRegA(rT)), condT);
-                  goto decode_success;
-               case 1:
-                  putQReg(rD, unop(Iop_Dup16x8,
-                                   unop(Iop_32to16, getIRegA(rT))),
-                          condT);
-                  goto decode_success;
-               case 2:
-                  putQReg(rD, unop(Iop_Dup8x16, unop(Iop_32to8, getIRegA(rT))),
-                          condT);
-                  goto decode_success;
-               default:
-                  vassert(0);
-            }
-         } else {
-            switch (size) {
-               case 0:
-                  putDRegI(rD, unop(Iop_Dup32x2, getIRegA(rT)), condT);
-                  goto decode_success;
-               case 1:
-                  putDRegI(rD, unop(Iop_Dup16x4,
-                                    unop(Iop_32to16, getIRegA(rT))),
-                           condT);
-                  goto decode_success;
-               case 2:
-                  putDRegI(rD, unop(Iop_Dup8x8, unop(Iop_32to8, getIRegA(rT))),
-                           condT);
-                  goto decode_success;
-               default:
-                  vassert(0);
-            }
-         }
-      }
-   }
-
-   /* --------------------- f{ld,st}d --------------------- */
-   // FLDD, FSTD
-   if (BITS8(1,1,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,1,1,0))
-       && BITS4(1,0,1,1) == INSN(11,8)) {
-      UInt dD     = INSN(15,12);
-      UInt rN     = INSN(19,16);
-      UInt offset = (insn & 0xFF) << 2;
-      UInt bU     = (insn >> 23) & 1; /* 1: +offset  0: -offset */
-      UInt bL     = (insn >> 20) & 1; /* 1: load  0: store */
-      /* make unconditional */
-      if (condT != IRTemp_INVALID) {
-         mk_skip_over_A32_if_cond_is_false( condT );
-         condT = IRTemp_INVALID;
-      }
-      IRTemp ea = newTemp(Ity_I32);
-      assign(ea, binop(bU ? Iop_Add32 : Iop_Sub32,
-                       getIRegA(rN), mkU32(offset)));
-      if (bL) {
-         putDReg(dD, loadLE(Ity_F64,mkexpr(ea)), IRTemp_INVALID);
-      } else {
-         storeLE(mkexpr(ea), getDReg(dD));
-      }
-      DIP("f%sd%s d%u, [r%u, %c#%u]\n",
-          bL ? "ld" : "st", nCC(INSN_COND), dD, rN,
-          bU ? '+' : '-', offset);
-      goto decode_success;
-   }
-
-   /* --------------------- dp insns (D) --------------------- */
-   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,1,0,0))
-       && BITS4(1,0,1,1) == INSN(11,8)
-       && BITS4(0,0,0,0) == (INSN(7,4) & BITS4(1,0,1,1))) {
-      UInt    dM  = INSN(3,0);   /* argR */
-      UInt    dD  = INSN(15,12); /* dst/acc */
-      UInt    dN  = INSN(19,16); /* argL */
-      UInt    bP  = (insn >> 23) & 1;
-      UInt    bQ  = (insn >> 21) & 1;
-      UInt    bR  = (insn >> 20) & 1;
-      UInt    bS  = (insn >> 6) & 1;
-      UInt    opc = (bP << 3) | (bQ << 2) | (bR << 1) | bS;
-      IRExpr* rm  = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
-      switch (opc) {
-         case BITS4(0,0,0,0): /* MAC: d + n * m */
-            putDReg(dD, triop(Iop_AddF64, rm,
-                              getDReg(dD),
-                              triop(Iop_MulF64, rm, getDReg(dN),
-                                                    getDReg(dM))),
-                        condT);
-            DIP("fmacd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(0,0,0,1): /* NMAC: d - n * m */
-            putDReg(dD, triop(Iop_SubF64, rm,
-                              getDReg(dD),
-                              triop(Iop_MulF64, rm, getDReg(dN),
-                                                    getDReg(dM))),
-                        condT);
-            DIP("fnmacd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(0,0,1,0): /* MSC: - d + n * m */
-            putDReg(dD, triop(Iop_AddF64, rm,
-                              unop(Iop_NegF64, getDReg(dD)),
-                              triop(Iop_MulF64, rm, getDReg(dN),
-                                                    getDReg(dM))),
-                        condT);
-            DIP("fmscd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(0,0,1,1): /* NMSC: - d - n * m */
-            putDReg(dD, triop(Iop_SubF64, rm,
-                              unop(Iop_NegF64, getDReg(dD)),
-                              triop(Iop_MulF64, rm, getDReg(dN),
-                                                    getDReg(dM))),
-                        condT);
-            DIP("fnmscd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(0,1,0,0): /* MUL: n * m */
-            putDReg(dD, triop(Iop_MulF64, rm, getDReg(dN), getDReg(dM)),
-                        condT);
-            DIP("fmuld%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(0,1,0,1): /* NMUL: - n * m */
-            putDReg(dD, unop(Iop_NegF64,
-                             triop(Iop_MulF64, rm, getDReg(dN),
-                                                   getDReg(dM))),
-                    condT);
-            DIP("fnmuld%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(0,1,1,0): /* ADD: n + m */
-            putDReg(dD, triop(Iop_AddF64, rm, getDReg(dN), getDReg(dM)),
-                        condT);
-            DIP("faddd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(0,1,1,1): /* SUB: n - m */
-            putDReg(dD, triop(Iop_SubF64, rm, getDReg(dN), getDReg(dM)),
-                        condT);
-            DIP("fsubd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         case BITS4(1,0,0,0): /* DIV: n / m */
-            putDReg(dD, triop(Iop_DivF64, rm, getDReg(dN), getDReg(dM)),
-                        condT);
-            DIP("fdivd%s d%u, d%u, d%u\n", nCC(INSN_COND), dD, dN, dM);
-            goto decode_success;
-         default:
-            break;
-      }
-   }
-
-   /* --------------------- compares (D) --------------------- */
-   /*          31   27   23   19   15 11   7    3
-                 28   24   20   16 12    8    4    0 
-      FCMPD    cond 1110 1011 0100 Dd 1011 0100 Dm
-      FCMPED   cond 1110 1011 0100 Dd 1011 1100 Dm
-      FCMPZD   cond 1110 1011 0101 Dd 1011 0100 0000
-      FCMPZED  cond 1110 1011 0101 Dd 1011 1100 0000
-                                 Z         N
-
-      Z=0 Compare Dd vs Dm     and set FPSCR 31:28 accordingly
-      Z=1 Compare Dd vs zero
-
-      N=1 generates Invalid Operation exn if either arg is any kind of NaN
-      N=0 generates Invalid Operation exn if either arg is a signalling NaN
-      (Not that we pay any attention to N here)
-   */
-   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
-       && BITS4(0,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
-       && BITS4(1,0,1,1) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
-      UInt bZ = (insn >> 16) & 1;
-      UInt bN = (insn >> 7) & 1;
-      UInt dD = INSN(15,12);
-      UInt dM = INSN(3,0);
-      if (bZ && INSN(3,0) != 0) {
-         /* does not decode; fall through */
-      } else {
-         IRTemp argL = newTemp(Ity_F64);
-         IRTemp argR = newTemp(Ity_F64);
-         IRTemp irRes = newTemp(Ity_I32);
-         assign(argL, getDReg(dD));
-         assign(argR, bZ ? IRExpr_Const(IRConst_F64i(0)) : getDReg(dM));
-         assign(irRes, binop(Iop_CmpF64, mkexpr(argL), mkexpr(argR)));
-
-         IRTemp nzcv     = IRTemp_INVALID;
-         IRTemp oldFPSCR = newTemp(Ity_I32);
-         IRTemp newFPSCR = newTemp(Ity_I32);
-
-         /* This is where the fun starts.  We have to convert 'irRes'
-            from an IR-convention return result (IRCmpF64Result) to an
-            ARM-encoded (N,Z,C,V) group.  The final result is in the
-            bottom 4 bits of 'nzcv'. */
-         /* Map compare result from IR to ARM(nzcv) */
-         /*
-            FP cmp result | IR   | ARM(nzcv)
-            --------------------------------
-            UN              0x45   0011
-            LT              0x01   1000
-            GT              0x00   0010
-            EQ              0x40   0110
-         */
-         nzcv = mk_convert_IRCmpF64Result_to_NZCV(irRes);
-
-         /* And update FPSCR accordingly */
-         assign(oldFPSCR, IRExpr_Get(OFFB_FPSCR, Ity_I32));
-         assign(newFPSCR, 
-                binop(Iop_Or32, 
-                      binop(Iop_And32, mkexpr(oldFPSCR), mkU32(0x0FFFFFFF)),
-                      binop(Iop_Shl32, mkexpr(nzcv), mkU8(28))));
-
-         putMiscReg32(OFFB_FPSCR, mkexpr(newFPSCR), condT);
-
-         if (bZ) {
-            DIP("fcmpz%sd%s d%u\n", bN ? "e" : "", nCC(INSN_COND), dD);
-         } else {
-            DIP("fcmp%sd%s d%u, d%u\n", bN ? "e" : "", nCC(INSN_COND), dD, dM);
-         }
-         goto decode_success;
-      }
-      /* fall through */
-   }  
-
-   /* --------------------- unary (D) --------------------- */
-   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
-       && BITS4(0,0,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
-       && BITS4(1,0,1,1) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
-      UInt dD  = INSN(15,12);
-      UInt dM  = INSN(3,0);
-      UInt b16 = (insn >> 16) & 1;
-      UInt b7  = (insn >> 7) & 1;
-      /**/ if (b16 == 0 && b7 == 0) {
-         // FCPYD
-         putDReg(dD, getDReg(dM), condT);
-         DIP("fcpyd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
-         goto decode_success;
-      }
-      else if (b16 == 0 && b7 == 1) {
-         // FABSD
-         putDReg(dD, unop(Iop_AbsF64, getDReg(dM)), condT);
-         DIP("fabsd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
-         goto decode_success;
-      }
-      else if (b16 == 1 && b7 == 0) {
-         // FNEGD
-         putDReg(dD, unop(Iop_NegF64, getDReg(dM)), condT);
-         DIP("fnegd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
-         goto decode_success;
-      }
-      else if (b16 == 1 && b7 == 1) {
-         // FSQRTD
-         IRExpr* rm = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
-         putDReg(dD, binop(Iop_SqrtF64, rm, getDReg(dM)), condT);
-         DIP("fsqrtd%s d%u, d%u\n", nCC(INSN_COND), dD, dM);
-         goto decode_success;
-      }
-      else
-         vassert(0);
-
-      /* fall through */
-   }
-
-   /* ----------------- I <-> D conversions ----------------- */
-
-   // F{S,U}ITOD dD, fM
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,1))
-       && BITS4(1,0,0,0) == (INSN(19,16) & BITS4(1,1,1,1))
-       && BITS4(1,0,1,1) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
-      UInt bM    = (insn >> 5) & 1;
-      UInt fM    = (INSN(3,0) << 1) | bM;
-      UInt dD    = INSN(15,12);
-      UInt syned = (insn >> 7) & 1;
-      if (syned) {
-         // FSITOD
-         putDReg(dD, unop(Iop_I32StoF64,
-                          unop(Iop_ReinterpF32asI32, getFReg(fM))),
-                 condT);
-         DIP("fsitod%s d%u, s%u\n", nCC(INSN_COND), dD, fM);
-      } else {
-         // FUITOD
-         putDReg(dD, unop(Iop_I32UtoF64,
-                          unop(Iop_ReinterpF32asI32, getFReg(fM))),
-                 condT);
-         DIP("fuitod%s d%u, s%u\n", nCC(INSN_COND), dD, fM);
-      }
-      goto decode_success;
-   }
-
-   // FTO{S,U}ID fD, dM
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(1,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
-       && BITS4(1,0,1,1) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,1,1))) {
-      UInt   bD    = (insn >> 22) & 1;
-      UInt   fD    = (INSN(15,12) << 1) | bD;
-      UInt   dM    = INSN(3,0);
-      UInt   bZ    = (insn >> 7) & 1;
-      UInt   syned = (insn >> 16) & 1;
-      IRTemp rmode = newTemp(Ity_I32);
-      assign(rmode, bZ ? mkU32(Irrm_ZERO)
-                       : mkexpr(mk_get_IR_rounding_mode()));
-      if (syned) {
-         // FTOSID
-         putFReg(fD, unop(Iop_ReinterpI32asF32,
-                          binop(Iop_F64toI32S, mkexpr(rmode),
-                                getDReg(dM))),
-                 condT);
-         DIP("ftosi%sd%s s%u, d%u\n", bZ ? "z" : "",
-             nCC(INSN_COND), fD, dM);
-      } else {
-         // FTOUID
-         putFReg(fD, unop(Iop_ReinterpI32asF32,
-                          binop(Iop_F64toI32U, mkexpr(rmode),
-                                getDReg(dM))),
-                 condT);
-         DIP("ftoui%sd%s s%u, d%u\n", bZ ? "z" : "",
-             nCC(INSN_COND), fD, dM);
-      }
-      goto decode_success;
-   }
-
-   /* ----------------------------------------------------------- */
-   /* -- VFP instructions -- single precision                  -- */
-   /* ----------------------------------------------------------- */
-
-   /* --------------------- fldms, fstms --------------------- */
-   /*
-                                 31   27   23   19 15 11   7   0
-                                         P UDWL
-      C4-98, C5-26   1  FSTMD    cond 1100 1x00 Rn Fd 1010 offset
-      C4-98, C5-28   2  FSTMDIA  cond 1100 1x10 Rn Fd 1010 offset
-      C4-98, C5-30   3  FSTMDDB  cond 1101 0x10 Rn Fd 1010 offset
-
-      C4-40, C5-26   1  FLDMD    cond 1100 1x01 Rn Fd 1010 offset
-      C4-40, C5-26   2  FLDMIAD  cond 1100 1x11 Rn Fd 1010 offset
-      C4-40, C5-26   3  FLDMDBD  cond 1101 0x11 Rn Fd 1010 offset
-
-      Regs transferred: F(Fd:D) .. F(Fd:d + offset)
-      offset must not imply a reg > 15
-      IA/DB: Rn is changed by (4 x # regs transferred)
-
-      case coding:
-         1  at-Rn   (access at Rn)
-         2  ia-Rn   (access at Rn, then Rn += 4n)
-         3  db-Rn   (Rn -= 4n,     then access at Rn)
-   */
-   if (BITS8(1,1,0,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,0,0,0,0,0))
-       && INSN(11,8) == BITS4(1,0,1,0)) {
-      UInt bP     = (insn >> 24) & 1;
-      UInt bU     = (insn >> 23) & 1;
-      UInt bW     = (insn >> 21) & 1;
-      UInt bL     = (insn >> 20) & 1;
-      UInt bD     = (insn >> 22) & 1;
-      UInt offset = (insn >> 0) & 0xFF;
-      UInt rN     = INSN(19,16);
-      UInt fD     = (INSN(15,12) << 1) | bD;
-      UInt nRegs  = offset;
-      Int  i;
-
-      /**/ if (bP == 0 && bU == 1 && bW == 0) {
-         summary = 1;
-      }
-      else if (bP == 0 && bU == 1 && bW == 1) {
-         summary = 2;
-      }
-      else if (bP == 1 && bU == 0 && bW == 1) {
-         summary = 3;
-      }
-      else goto after_vfp_fldms_fstms;
-
-      /* no writebacks to r15 allowed */
-      if (rN == 15 && (summary == 2 || summary == 3))
-         goto after_vfp_fldms_fstms;
-
-      /* offset must specify at least one register */
-      if (offset < 1)
-         goto after_vfp_fldms_fstms;
-
-      /* can't transfer regs after S31 */
-      if (fD + nRegs - 1 >= 32)
-         goto after_vfp_fldms_fstms;
-
-      /* Now, we can't do a conditional load or store, since that very
-         likely will generate an exception.  So we have to take a side
-         exit at this point if the condition is false. */
-      if (condT != IRTemp_INVALID) {
-         mk_skip_over_A32_if_cond_is_false( condT );
-         condT = IRTemp_INVALID;
-      }
-      /* Ok, now we're unconditional.  Do the load or store. */
-
-      /* get the old Rn value */
-      IRTemp rnT = newTemp(Ity_I32);
-      assign(rnT, getIRegA(rN));
-
-      /* make a new value for Rn, post-insn */
-      IRTemp rnTnew = IRTemp_INVALID;
-      if (summary == 2 || summary == 3) {
-         rnTnew = newTemp(Ity_I32);
-         assign(rnTnew, binop(summary == 2 ? Iop_Add32 : Iop_Sub32,
-                              mkexpr(rnT),
-                              mkU32(4 * nRegs)));
-      }
-
-      /* decide on the base transfer address */
-      IRTemp taT = newTemp(Ity_I32);
-      assign(taT, summary == 3 ? mkexpr(rnTnew) : mkexpr(rnT));
-
-      /* update Rn if necessary -- in case 3, we're moving it down, so
-         update before any memory reference, in order to keep Memcheck
-         and V's stack-extending logic (on linux) happy */
-      if (summary == 3)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
-
-      /* generate the transfers */
-      for (i = 0; i < nRegs; i++) {
-         IRExpr* addr = binop(Iop_Add32, mkexpr(taT), mkU32(4*i));
-         if (bL) {
-            putFReg(fD + i, loadLE(Ity_F32, addr), IRTemp_INVALID);
-         } else {
-            storeLE(addr, getFReg(fD + i));
-         }
-      }
-
-      /* update Rn if necessary -- in case 2, we're moving it up, so
-         update after any memory reference, in order to keep Memcheck
-         and V's stack-extending logic (on linux) happy */
-      if (summary == 2)
-         putIRegA(rN, mkexpr(rnTnew), IRTemp_INVALID, Ijk_Boring);
-
-      HChar* nm = bL==1 ? "ld" : "st";
-      switch (summary) {
-         case 1:  DIP("f%sms%s r%u, {s%u-s%u}\n", 
-                      nm, nCC(INSN_COND), rN, fD, fD + nRegs - 1);
-                  break;
-         case 2:  DIP("f%smias%s r%u!, {s%u-s%u}\n", 
-                      nm, nCC(INSN_COND), rN, fD, fD + nRegs - 1);
-                  break;
-         case 3:  DIP("f%smdbs%s r%u!, {s%u-s%u}\n", 
-                      nm, nCC(INSN_COND), rN, fD, fD + nRegs - 1);
-                  break;
-         default: vassert(0);
-      }
-
-      goto decode_success;
-      /* FIXME alignment constraints? */
-   }
-
-  after_vfp_fldms_fstms:
-
-   /* --------------------- fmsr, fmrs --------------------- */
-   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,1,1,1,0))
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS4(0,0,0,0) == INSN(3,0)
-       && BITS4(0,0,0,1) == (INSN(7,4) & BITS4(0,1,1,1))) {
-      UInt rD  = INSN(15,12);
-      UInt b7  = (insn >> 7) & 1;
-      UInt fN  = (INSN(19,16) << 1) | b7;
-      UInt b20 = (insn >> 20) & 1;
-      if (rD == 15) {
-         /* fall through */
-         /* Let's assume that no sane person would want to do
-            floating-point transfers to or from the program counter,
-            and simply decline to decode the instruction.  The ARM ARM
-            doesn't seem to explicitly disallow this case, though. */
-      } else {
-         if (b20) {
-            putIRegA(rD, unop(Iop_ReinterpF32asI32, getFReg(fN)),
-                         condT, Ijk_Boring);
-            DIP("fmrs%s r%u, s%u\n", nCC(INSN_COND), rD, fN);
-         } else {
-            putFReg(fN, unop(Iop_ReinterpI32asF32, getIRegA(rD)), condT);
-            DIP("fmsr%s s%u, r%u\n", nCC(INSN_COND), fN, rD);
-         }
-         goto decode_success;
-      }
-      /* fall through */
-   }
-
-   /* --------------------- f{ld,st}s --------------------- */
-   // FLDS, FSTS
-   if (BITS8(1,1,0,1,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,0,1,0))
-       && BITS4(1,0,1,0) == INSN(11,8)) {
-      UInt bD     = (insn >> 22) & 1;
-      UInt fD     = (INSN(15,12) << 1) | bD;
-      UInt rN     = INSN(19,16);
-      UInt offset = (insn & 0xFF) << 2;
-      UInt bU     = (insn >> 23) & 1; /* 1: +offset  0: -offset */
-      UInt bL     = (insn >> 20) & 1; /* 1: load  0: store */
-      /* make unconditional */
-      if (condT != IRTemp_INVALID) {
-         mk_skip_over_A32_if_cond_is_false( condT );
-         condT = IRTemp_INVALID;
-      }
-      IRTemp ea = newTemp(Ity_I32);
-      assign(ea, binop(bU ? Iop_Add32 : Iop_Sub32,
-                       getIRegA(rN), mkU32(offset)));
-      if (bL) {
-         putFReg(fD, loadLE(Ity_F32,mkexpr(ea)), IRTemp_INVALID);
-      } else {
-         storeLE(mkexpr(ea), getFReg(fD));
-      }
-      DIP("f%ss%s s%u, [r%u, %c#%u]\n",
-          bL ? "ld" : "st", nCC(INSN_COND), fD, rN,
-          bU ? '+' : '-', offset);
-      goto decode_success;
-   }
-
-   /* --------------------- dp insns (F) --------------------- */
-   if (BITS8(1,1,1,0,0,0,0,0) == (INSN(27,20) & BITS8(1,1,1,1,0,0,0,0))
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS4(0,0,0,0) == (INSN(7,4) & BITS4(0,0,0,1))) {
-      UInt    bM  = (insn >> 5) & 1;
-      UInt    bD  = (insn >> 22) & 1;
-      UInt    bN  = (insn >> 7) & 1;
-      UInt    fM  = (INSN(3,0) << 1) | bM;   /* argR */
-      UInt    fD  = (INSN(15,12) << 1) | bD; /* dst/acc */
-      UInt    fN  = (INSN(19,16) << 1) | bN; /* argL */
-      UInt    bP  = (insn >> 23) & 1;
-      UInt    bQ  = (insn >> 21) & 1;
-      UInt    bR  = (insn >> 20) & 1;
-      UInt    bS  = (insn >> 6) & 1;
-      UInt    opc = (bP << 3) | (bQ << 2) | (bR << 1) | bS;
-      IRExpr* rm  = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
-      switch (opc) {
-         case BITS4(0,0,0,0): /* MAC: d + n * m */
-            putFReg(fD, triop(Iop_AddF32, rm,
-                              getFReg(fD),
-                              triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
-                        condT);
-            DIP("fmacs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         case BITS4(0,0,0,1): /* NMAC: d - n * m */
-            putFReg(fD, triop(Iop_SubF32, rm,
-                              getFReg(fD),
-                              triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
-                        condT);
-            DIP("fnmacs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         case BITS4(0,0,1,0): /* MSC: - d + n * m */
-            putFReg(fD, triop(Iop_AddF32, rm,
-                              unop(Iop_NegF32, getFReg(fD)),
-                              triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM))),
-                        condT);
-            DIP("fmscs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         case BITS4(0,0,1,1): /* NMSC: - d - n * m */
-            break; //ATC
-         case BITS4(0,1,0,0): /* MUL: n * m */
-            putFReg(fD, triop(Iop_MulF32, rm, getFReg(fN), getFReg(fM)),
-                        condT);
-            DIP("fmuls%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         case BITS4(0,1,0,1): /* NMUL: - n * m */
-            putFReg(fD, unop(Iop_NegF32,
-                             triop(Iop_MulF32, rm, getFReg(fN),
-                                                   getFReg(fM))),
-                    condT);
-            DIP("fnmuls%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         case BITS4(0,1,1,0): /* ADD: n + m */
-            putFReg(fD, triop(Iop_AddF32, rm, getFReg(fN), getFReg(fM)),
-                        condT);
-            DIP("fadds%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         case BITS4(0,1,1,1): /* SUB: n - m */
-            putFReg(fD, triop(Iop_SubF32, rm, getFReg(fN), getFReg(fM)),
-                        condT);
-            DIP("fsubs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         case BITS4(1,0,0,0): /* DIV: n / m */
-            putFReg(fD, triop(Iop_DivF32, rm, getFReg(fN), getFReg(fM)),
-                        condT);
-            DIP("fdivs%s s%u, s%u, s%u\n", nCC(INSN_COND), fD, fN, fM);
-            goto decode_success;
-         default:
-            break;
-      }
-   }
-
-   /* --------------------- compares (S) --------------------- */
-   /*          31   27   23   19   15 11   7    3
-                 28   24   20   16 12    8    4    0 
-      FCMPS    cond 1110 1D11 0100 Fd 1010 01M0 Fm
-      FCMPES   cond 1110 1D11 0100 Fd 1010 11M0 Fm
-      FCMPZS   cond 1110 1D11 0101 Fd 1010 0100 0000
-      FCMPZED  cond 1110 1D11 0101 Fd 1010 1100 0000
-                                 Z         N
-
-      Z=0 Compare Fd:D vs Fm:M     and set FPSCR 31:28 accordingly
-      Z=1 Compare Fd:D vs zero
-
-      N=1 generates Invalid Operation exn if either arg is any kind of NaN
-      N=0 generates Invalid Operation exn if either arg is a signalling NaN
-      (Not that we pay any attention to N here)
-   */
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
-      UInt bZ = (insn >> 16) & 1;
-      UInt bN = (insn >> 7) & 1;
-      UInt bD = (insn >> 22) & 1;
-      UInt bM = (insn >> 5) & 1;
-      UInt fD = (INSN(15,12) << 1) | bD;
-      UInt fM = (INSN(3,0) << 1) | bM;
-      if (bZ && (INSN(3,0) != 0 || (INSN(7,4) & 3) != 0)) {
-         /* does not decode; fall through */
-      } else {
-         IRTemp argL = newTemp(Ity_F64);
-         IRTemp argR = newTemp(Ity_F64);
-         IRTemp irRes = newTemp(Ity_I32);
-
-         assign(argL, unop(Iop_F32toF64, getFReg(fD)));
-         assign(argR, bZ ? IRExpr_Const(IRConst_F64i(0))
-                         : unop(Iop_F32toF64, getFReg(fM)));
-         assign(irRes, binop(Iop_CmpF64, mkexpr(argL), mkexpr(argR)));
-
-         IRTemp nzcv     = IRTemp_INVALID;
-         IRTemp oldFPSCR = newTemp(Ity_I32);
-         IRTemp newFPSCR = newTemp(Ity_I32);
-
-         /* This is where the fun starts.  We have to convert 'irRes'
-            from an IR-convention return result (IRCmpF64Result) to an
-            ARM-encoded (N,Z,C,V) group.  The final result is in the
-            bottom 4 bits of 'nzcv'. */
-         /* Map compare result from IR to ARM(nzcv) */
-         /*
-            FP cmp result | IR   | ARM(nzcv)
-            --------------------------------
-            UN              0x45   0011
-            LT              0x01   1000
-            GT              0x00   0010
-            EQ              0x40   0110
-         */
-         nzcv = mk_convert_IRCmpF64Result_to_NZCV(irRes);
-
-         /* And update FPSCR accordingly */
-         assign(oldFPSCR, IRExpr_Get(OFFB_FPSCR, Ity_I32));
-         assign(newFPSCR, 
-                binop(Iop_Or32, 
-                      binop(Iop_And32, mkexpr(oldFPSCR), mkU32(0x0FFFFFFF)),
-                      binop(Iop_Shl32, mkexpr(nzcv), mkU8(28))));
-
-         putMiscReg32(OFFB_FPSCR, mkexpr(newFPSCR), condT);
-
-         if (bZ) {
-            DIP("fcmpz%ss%s s%u\n", bN ? "e" : "", nCC(INSN_COND), fD);
-         } else {
-            DIP("fcmp%ss%s s%u, s%u\n", bN ? "e" : "",
-                nCC(INSN_COND), fD, fM);
-         }
-         goto decode_success;
-      }
-      /* fall through */
-   }  
-
-   /* --------------------- unary (S) --------------------- */
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,0,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
-      UInt bD = (insn >> 22) & 1;
-      UInt bM = (insn >> 5) & 1;
-      UInt fD  = (INSN(15,12) << 1) | bD;
-      UInt fM  = (INSN(3,0) << 1) | bM;
-      UInt b16 = (insn >> 16) & 1;
-      UInt b7  = (insn >> 7) & 1;
-      /**/ if (b16 == 0 && b7 == 0) {
-         // FCPYS
-         putFReg(fD, getFReg(fM), condT);
-         DIP("fcpys%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
-         goto decode_success;
-      }
-      else if (b16 == 0 && b7 == 1) {
-         // FABSS
-         putFReg(fD, unop(Iop_AbsF32, getFReg(fM)), condT);
-         DIP("fabss%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
-         goto decode_success;
-      }
-      else if (b16 == 1 && b7 == 0) {
-         // FNEGS
-         putFReg(fD, unop(Iop_NegF32, getFReg(fM)), condT);
-         DIP("fnegs%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
-         goto decode_success;
-      }
-      else if (b16 == 1 && b7 == 1) {
-         // FSQRTS
-         IRExpr* rm = get_FAKE_roundingmode(); /* XXXROUNDINGFIXME */
-         putFReg(fD, binop(Iop_SqrtF32, rm, getFReg(fM)), condT);
-         DIP("fsqrts%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
-         goto decode_success;
-      }
-      else
-         vassert(0);
-
-      /* fall through */
-   }
-
-   /* ----------------- I <-> S conversions ----------------- */
-
-   // F{S,U}ITOS fD, fM
-   /* These are more complex than FSITOD/FUITOD.  In the D cases, a 32
-      bit int will always fit within the 53 bit mantissa, so there's
-      no possibility of a loss of precision, but that's obviously not
-      the case here.  Hence this case possibly requires rounding, and
-      so it drags in the current rounding mode. */
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(1,0,0,0) == (INSN(19,16) & BITS4(1,1,1,1))
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
-      UInt bM    = (insn >> 5) & 1;
-      UInt bD    = (insn >> 22) & 1;
-      UInt fM    = (INSN(3,0) << 1) | bM;
-      UInt fD    = (INSN(15,12) << 1) | bD;
-      UInt syned = (insn >> 7) & 1;
-      IRTemp rmode = newTemp(Ity_I32);
-      assign(rmode, mkexpr(mk_get_IR_rounding_mode()));
-      if (syned) {
-         // FSITOS
-         putFReg(fD, binop(Iop_F64toF32,
-                           mkexpr(rmode),
-                           unop(Iop_I32StoF64,
-                                unop(Iop_ReinterpF32asI32, getFReg(fM)))),
-                 condT);
-         DIP("fsitos%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
-      } else {
-         // FUITOS
-         putFReg(fD, binop(Iop_F64toF32,
-                           mkexpr(rmode),
-                           unop(Iop_I32UtoF64,
-                                unop(Iop_ReinterpF32asI32, getFReg(fM)))),
-                 condT);
-         DIP("fuitos%s s%u, s%u\n", nCC(INSN_COND), fD, fM);
-      }
-      goto decode_success;
-   }
-
-   // FTO{S,U}IS fD, fM
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(1,1,0,0) == (INSN(19,16) & BITS4(1,1,1,0))
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS4(0,1,0,0) == (INSN(7,4) & BITS4(0,1,0,1))) {
-      UInt   bM    = (insn >> 5) & 1;
-      UInt   bD    = (insn >> 22) & 1;
-      UInt   fD    = (INSN(15,12) << 1) | bD;
-      UInt   fM    = (INSN(3,0) << 1) | bM;
-      UInt   bZ    = (insn >> 7) & 1;
-      UInt   syned = (insn >> 16) & 1;
-      IRTemp rmode = newTemp(Ity_I32);
-      assign(rmode, bZ ? mkU32(Irrm_ZERO)
-                       : mkexpr(mk_get_IR_rounding_mode()));
-      if (syned) {
-         // FTOSIS
-         putFReg(fD, unop(Iop_ReinterpI32asF32,
-                          binop(Iop_F64toI32S, mkexpr(rmode),
-                                unop(Iop_F32toF64, getFReg(fM)))),
-                 condT);
-         DIP("ftosi%ss%s s%u, d%u\n", bZ ? "z" : "",
-             nCC(INSN_COND), fD, fM);
-         goto decode_success;
-      } else {
-         // FTOUIS
-         putFReg(fD, unop(Iop_ReinterpI32asF32,
-                          binop(Iop_F64toI32U, mkexpr(rmode),
-                                unop(Iop_F32toF64, getFReg(fM)))),
-                 condT);
-         DIP("ftoui%ss%s s%u, d%u\n", bZ ? "z" : "",
-             nCC(INSN_COND), fD, fM);
-         goto decode_success;
-      }
-   }
-
-   /* ----------------- S <-> D conversions ----------------- */
-
-   // FCVTDS
-   if (BITS8(1,1,1,0,1,0,1,1) == INSN(27,20)
-       && BITS4(0,1,1,1) == INSN(19,16)
-       && BITS4(1,0,1,0) == INSN(11,8)
-       && BITS4(1,1,0,0) == (INSN(7,4) & BITS4(1,1,0,1))) {
-      UInt dD = INSN(15,12);
-      UInt bM = (insn >> 5) & 1;
-      UInt fM = (INSN(3,0) << 1) | bM;
-      putDReg(dD, unop(Iop_F32toF64, getFReg(fM)), condT);
-      DIP("fcvtds%s d%u, s%u\n", nCC(INSN_COND), dD, fM);
-      goto decode_success;
-   }
-
-   // FCVTSD
-   if (BITS8(1,1,1,0,1,0,1,1) == (INSN(27,20) & BITS8(1,1,1,1,1,0,1,1))
-       && BITS4(0,1,1,1) == INSN(19,16)
-       && BITS4(1,0,1,1) == INSN(11,8)
-       && BITS4(1,1,0,0) == INSN(7,4)) {
-      UInt   bD    = (insn >> 22) & 1;
-      UInt   fD    = (INSN(15,12) << 1) | bD;
-      UInt   dM    = INSN(3,0);
-      IRTemp rmode = newTemp(Ity_I32);
-      assign(rmode, mkexpr(mk_get_IR_rounding_mode()));
-      putFReg(fD, binop(Iop_F64toF32, mkexpr(rmode), getDReg(dM)),
-                  condT);
-      DIP("fcvtsd%s s%u, d%u\n", nCC(INSN_COND), fD, dM);
-      goto decode_success;
-   }
-
-   /* ----------------------------------------------------------- */
    /* -- ARMv6 instructions                                    -- */
    /* ----------------------------------------------------------- */
 
@@ -11140,6 +11294,19 @@ DisResult disInstr_ARM_WRK (
    }
 
    /* ----------------------------------------------------------- */
+   /* -- VFP (CP 10, CP 11) instructions (in ARM mode)         -- */
+   /* ----------------------------------------------------------- */
+
+   if (INSN_COND != ARMCondNV) {
+      Bool ok_vfp = decode_CP10_CP11_instruction (
+                       &dres, INSN(27,0), condT, INSN_COND,
+                       False/*!isT*/
+                    );
+      if (ok_vfp)
+         goto decode_success;
+   }
+
+   /* ----------------------------------------------------------- */
    /* -- Undecodable                                           -- */
    /* ----------------------------------------------------------- */
 
@@ -11693,6 +11860,19 @@ DisResult disInstr_THUMB_WRK (
       putIRegT(rD, binop(Iop_And32, getIRegT(rM), mkU32(0xFF)),
                    condT);
       DIP("uxtb r%u, r%u\n", rD, rM);
+      goto decode_success;
+   }
+
+   case 0x2C9: {
+      /* ---------------- SXTB Rd, Rm ---------------- */
+      /* Rd = 8Sto32(Rm) */
+      UInt rM = INSN0(5,3);
+      UInt rD = INSN0(2,0);
+      putIRegT(rD, binop(Iop_Sar32,
+                         binop(Iop_Shl32, getIRegT(rM), mkU8(24)),
+                         mkU8(24)),
+                   condT);
+      DIP("sxtb r%u, r%u\n", rD, rM);
       goto decode_success;
    }
 
@@ -12271,6 +12451,27 @@ DisResult disInstr_THUMB_WRK (
       goto decode_success;
    }
 
+   case BITS7(0,1,0,1,0,1,1): {
+      /* ------------- LDRSB Rd, [Rn, Rm] ------------- */
+      /* LDRSB Rd, [Rn + Rm] */
+      UInt    rD = INSN0(2,0);
+      UInt    rN = INSN0(5,3);
+      UInt    rM = INSN0(8,6);
+
+      mk_skip_over_T16_if_cond_is_false(condT);
+      condT = IRTemp_INVALID;
+      // now uncond
+
+      IRExpr* ea = binop(Iop_Add32, getIRegT(rN), getIRegT(rM));
+      put_ITSTATE(old_itstate); // backout
+      putIRegT(rD, unop(Iop_8Sto32, loadLE(Ity_I8, ea)),
+                   IRTemp_INVALID);
+      put_ITSTATE(new_itstate); // restore
+
+      DIP("ldrsb r%u, [r%u, r%u]\n", rD, rN, rM);
+      goto decode_success;
+   }
+
    case BITS7(0,1,0,1,0,1,0):
    case BITS7(0,1,0,1,1,1,0): {
       /* ------------- LDRB Rd, [Rn, Rm] ------------- */
@@ -12788,7 +12989,7 @@ DisResult disInstr_THUMB_WRK (
             /* we're calling ARM code, hence "& 3" to align to a
                valid ARM insn address */
             irsb->next = mkU32( dst & ~3 );
-            DIP("blx 0x%x (switch to ARM mode)\n", dst);
+            DIP("blx 0x%x (switch to ARM mode)\n", dst & ~3);
          }
          irsb->jumpkind = Ijk_Call;
          dres.whatNext = Dis_StopHere;
@@ -12990,6 +13191,59 @@ DisResult disInstr_THUMB_WRK (
       }
    }
 
+   /* -------------- (T1) ADC{S}.W Rd, Rn, #constT -------------- */
+   /* -------------- (T1) SBC{S}.W Rd, Rn, #constT -------------- */
+   if (INSN0(15,11) == BITS5(1,1,1,1,0)
+       && (   INSN0(9,5) == BITS5(0,1,0,1,0)  // ADC
+           || INSN0(9,5) == BITS5(0,1,0,1,1)) // SBC
+       && INSN1(15,15) == 0) {
+      /* ADC:  Rd = Rn + constT + oldC */
+      /* SBC:  Rd = Rn - constT - (oldC ^ 1) */
+      UInt bS    = INSN0(4,4);
+      UInt rN    = INSN0(3,0);
+      UInt rD    = INSN1(11,8);
+      if (!isBadRegT(rN) && !isBadRegT(rD)) {
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         IRTemp res   = newTemp(Ity_I32);
+         IRTemp oldC  = newTemp(Ity_I32);
+         UInt   imm32 = thumbExpandImm_from_I0_I1(NULL, insn0, insn1);
+         assign(argL, getIRegT(rN));
+         assign(argR, mkU32(imm32));
+         assign(oldC, mk_armg_calculate_flag_c() );
+         HChar* nm  = "???";
+         switch (INSN0(9,5)) {
+            case BITS5(0,1,0,1,0): // ADC
+               nm = "adc";
+               assign(res,
+                      binop(Iop_Add32,
+                            binop(Iop_Add32, mkexpr(argL), mkexpr(argR)),
+                            mkexpr(oldC) ));
+               putIRegT(rD, mkexpr(res), condT);
+               if (bS)
+                  setFlags_D1_D2_ND( ARMG_CC_OP_ADC,
+                                     argL, argR, oldC, condT );
+               break;
+            case BITS5(0,1,0,1,1): // SBC
+               nm = "sbc";
+               assign(res,
+                      binop(Iop_Sub32,
+                            binop(Iop_Sub32, mkexpr(argL), mkexpr(argR)),
+                            binop(Iop_Xor32, mkexpr(oldC), mkU32(1)) ));
+               putIRegT(rD, mkexpr(res), condT);
+               if (bS)
+                  setFlags_D1_D2_ND( ARMG_CC_OP_SBB,
+                                     argL, argR, oldC, condT );
+               break;
+            default:
+              vassert(0);
+         }
+         DIP("%s%s.w r%u, r%u, #%u\n",
+             nm, bS == 1 ? "s" : "", rD, rN, imm32);
+         goto decode_success;
+      }
+   }
+
    /* -------------- (T1) ORR{S}.W Rd, Rn, #constT -------------- */
    /* -------------- (T1) AND{S}.W Rd, Rn, #constT -------------- */
    /* -------------- (T1) BIC{S}.W Rd, Rn, #constT -------------- */
@@ -13048,14 +13302,20 @@ DisResult disInstr_THUMB_WRK (
            || INSN0(8,5) == BITS4(1,1,0,1)  // sub subopc
            || INSN0(8,5) == BITS4(1,1,1,0)) // rsb subopc
        && INSN1(15,15) == 0) {
-      UInt rN = INSN0(3,0);
-      UInt rD = INSN1(11,8);
-      UInt rM = INSN1(3,0);
-      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
-         UInt bS   = INSN0(4,4);
-         UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
-         UInt how  = INSN1(5,4);
+      UInt rN   = INSN0(3,0);
+      UInt rD   = INSN1(11,8);
+      UInt rM   = INSN1(3,0);
+      UInt bS   = INSN0(4,4);
+      UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
+      UInt how  = INSN1(5,4);
 
+      Bool valid = !isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM);
+      /* but allow "add.w reg, sp, reg   w/ no shift */
+      if (!valid && INSN0(8,5) == BITS4(1,0,0,0) // add
+          && rN == 13 && imm5 == 0 && how == 0) {
+         valid = True;
+      }
+      if (valid) {
          Bool   swap = False;
          IROp   op   = Iop_INVALID;
          HChar* nm   = "???";
@@ -14112,7 +14372,12 @@ DisResult disInstr_THUMB_WRK (
 
    /* ------------------ UXTB ------------------ */
    /* ------------------ UXTH ------------------ */
-   if ((INSN0(15,0) == 0xFA5F || INSN0(15,0) == 0xFA1F)
+   /* ------------------ SXTB ------------------ */
+   /* ------------------ SXTH ------------------ */
+   if ((INSN0(15,0) == 0xFA5F     // UXTB
+        || INSN0(15,0) == 0xFA1F  // UXTH
+        || INSN0(15,0) == 0xFA4F  // SXTB
+        || INSN0(15,0) == 0xFA0F) // SXTH
        && INSN1(15,12) == BITS4(1,1,1,1)
        && INSN1(7,6) == BITS2(1,0)) {
       UInt rD = INSN1(11,8);
@@ -14134,6 +14399,16 @@ DisResult disInstr_THUMB_WRK (
             case 0xFA1F: // UXTH
                nm = "uxth";
                assign(dstT, unop(Iop_16Uto32,
+                                 unop(Iop_32to16, mkexpr(rotT))));
+               break;
+            case 0xFA4F: // SXTB
+               nm = "sxtb";
+               assign(dstT, unop(Iop_8Sto32,
+                                 unop(Iop_32to8, mkexpr(rotT))));
+               break;
+            case 0xFA0F: // SXTH
+               nm = "sxth";
+               assign(dstT, unop(Iop_16Sto32,
                                  unop(Iop_32to16, mkexpr(rotT))));
                break;
             default:
@@ -14183,19 +14458,23 @@ DisResult disInstr_THUMB_WRK (
 
    /* ------------------ ML{A,S} ------------------ */
    if (INSN0(15,4) == 0xFB0
-       && INSN1(7,4) == BITS4(0,0,0,0)) { // MLS: 0001
+       && (   INSN1(7,4) == BITS4(0,0,0,0)    // MLA
+           || INSN1(7,4) == BITS4(0,0,0,1))) { // MLS
       UInt rN = INSN0(3,0);
       UInt rA = INSN1(15,12);
       UInt rD = INSN1(11,8);
       UInt rM = INSN1(3,0);
       if (!isBadRegT(rD) && !isBadRegT(rN)
           && !isBadRegT(rM) && !isBadRegT(rA)) {
-         IRTemp res = newTemp(Ity_I32);
+         Bool   isMLA = INSN1(7,4) == BITS4(0,0,0,0);
+         IRTemp res   = newTemp(Ity_I32);
          assign(res,
-                binop(Iop_Add32, getIRegT(rA),
+                binop(isMLA ? Iop_Add32 : Iop_Sub32,
+                      getIRegT(rA),
                       binop(Iop_Mul32, getIRegT(rN), getIRegT(rM))));
          putIRegT(rD, mkexpr(res), condT);
-         DIP("%s r%u, r%u, r%u, r%u\n", "mla", rD, rN, rM, rA);
+         DIP("%s r%u, r%u, r%u, r%u\n",
+             isMLA ? "mla" : "mls", rD, rN, rM, rA);
          goto decode_success;
       }
    }
@@ -14258,6 +14537,99 @@ DisResult disInstr_THUMB_WRK (
          }
          goto decode_success;
       }
+   }
+
+   /* ------------------- (T1) SMULBB ------------------- */
+   if (INSN0(15,4) == 0xFB1
+       && INSN1(15,12) == BITS4(1,1,1,1)
+       && INSN1(7,6) == BITS2(0,0)
+       && INSN1(5,4) == BITS2(0,0)) { // other values -> BT/TB/TT
+      UInt rN = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      UInt rM = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
+         putIRegT(rD,
+                  binop(Iop_Mul32,
+                        unop(Iop_16Sto32,
+                             unop(Iop_32to16, getIRegT(rN))),
+                        unop(Iop_16Sto32,
+                             unop(Iop_32to16, getIRegT(rM)))),
+                  condT);
+         DIP("smulbb r%u, r%u, r%u\n", rD, rN, rM);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------- (T1) SXTAH ------------------- */
+   /* ------------------- (T1) UXTAH ------------------- */
+   if ((INSN0(15,4) == 0xFA1      // UXTAH
+        || INSN0(15,4) == 0xFA0)  // SXTAH
+       && INSN1(15,12) == BITS4(1,1,1,1)
+       && INSN1(7,6) == BITS2(1,0)) {
+      Bool isU = INSN0(15,4) == 0xFA1;
+      UInt rN  = INSN0(3,0);
+      UInt rD  = INSN1(11,8);
+      UInt rM  = INSN1(3,0);
+      UInt rot = INSN1(5,4);
+      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
+         IRTemp srcL = newTemp(Ity_I32);
+         IRTemp srcR = newTemp(Ity_I32);
+         IRTemp res  = newTemp(Ity_I32);
+         assign(srcR, getIRegT(rM));
+         assign(srcL, getIRegT(rN));
+         assign(res,  binop(Iop_Add32,
+                            mkexpr(srcL),
+                            unop(isU ? Iop_16Uto32 : Iop_16Sto32,
+                                 unop(Iop_32to16, 
+                                      genROR32(srcR, 8 * rot)))));
+         putIRegT(rD, mkexpr(res), condT);
+         DIP("%cxtah r%u, r%u, r%u, ror #%u\n",
+             isU ? 'u' : 's', rD, rN, rM, rot);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------- (T1) SXTAB ------------------- */
+   /* ------------------- (T1) UXTAB ------------------- */
+   if ((INSN0(15,4) == 0xFA5      // UXTAB
+        || INSN0(15,4) == 0xFA4)  // SXTAB
+       && INSN1(15,12) == BITS4(1,1,1,1)
+       && INSN1(7,6) == BITS2(1,0)) {
+      Bool isU = INSN0(15,4) == 0xFA5;
+      UInt rN  = INSN0(3,0);
+      UInt rD  = INSN1(11,8);
+      UInt rM  = INSN1(3,0);
+      UInt rot = INSN1(5,4);
+      if (!isBadRegT(rD) && !isBadRegT(rN) && !isBadRegT(rM)) {
+         IRTemp srcL = newTemp(Ity_I32);
+         IRTemp srcR = newTemp(Ity_I32);
+         IRTemp res  = newTemp(Ity_I32);
+         assign(srcR, getIRegT(rM));
+         assign(srcL, getIRegT(rN));
+         assign(res,  binop(Iop_Add32,
+                            mkexpr(srcL),
+                            unop(isU ? Iop_8Uto32 : Iop_8Sto32,
+                                 unop(Iop_32to8, 
+                                      genROR32(srcR, 8 * rot)))));
+         putIRegT(rD, mkexpr(res), condT);
+         DIP("%cxtab r%u, r%u, r%u, ror #%u\n",
+             isU ? 'u' : 's', rD, rN, rM, rot);
+         goto decode_success;
+      }
+   }
+
+   /* ----------------------------------------------------------- */
+   /* -- VFP (CP 10, CP 11) instructions (in Thumb mode)       -- */
+   /* ----------------------------------------------------------- */
+
+   if (INSN0(15,12) == BITS4(1,1,1,0)) {
+      UInt insn28 = (INSN0(11,0) << 16) | INSN1(15,0);
+      Bool ok_vfp = decode_CP10_CP11_instruction (
+                       &dres, insn28, condT, ARMCondAL/*bogus*/,
+                       True/*isT*/
+                    );
+      if (ok_vfp)
+         goto decode_success;
    }
 
    /* ----------------------------------------------------------- */
@@ -14376,6 +14748,7 @@ DisResult disInstr_ARM ( IRSB*        irsb_IN,
 
    irsb              = irsb_IN;
    host_is_bigendian = host_bigendian_IN;
+   __curr_is_Thumb   = isThumb;
 
    if (isThumb) {
       guest_R15_curr_instr_notENC = (Addr32)guest_IP_ENCODED - 1;
