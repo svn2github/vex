@@ -525,6 +525,7 @@ void LibVEX_GuestARM_initialise ( /*OUT*/VexGuestARMState* vex_state )
    vex_state->guest_CC_DEP1 = 0;
    vex_state->guest_CC_DEP2 = 0;
    vex_state->guest_CC_NDEP = 0;
+   vex_state->guest_QFLAG32 = 0;
 
    vex_state->guest_EMWARN  = 0;
    vex_state->guest_TISTART = 0;

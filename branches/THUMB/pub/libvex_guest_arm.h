@@ -75,6 +75,12 @@ typedef
       UInt guest_CC_DEP2;
       UInt guest_CC_NDEP;
 
+      /* A 32-bit value which is used to compute the APSR.Q (sticky
+         saturation) flag, when necessary.  If the value stored here
+         is zero, APSR.Q is currently zero.  If it is any other value,
+         APSR.Q is currently one. */
+      UInt guest_QFLAG32;
+
       /* Various pseudo-regs mandated by Vex or Valgrind. */
       /* Emulation warnings */
       UInt guest_EMWARN;

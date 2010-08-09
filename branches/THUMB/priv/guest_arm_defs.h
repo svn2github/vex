@@ -118,14 +118,16 @@ UInt armg_calculate_flag_qc ( UInt resL1, UInt resL2,
 #define ARMG_CC_SHIFT_Z  30
 #define ARMG_CC_SHIFT_C  29
 #define ARMG_CC_SHIFT_V  28
+#define ARMG_CC_SHIFT_Q  27
 
 #define ARMG_CC_MASK_N    (1 << ARMG_CC_SHIFT_N)
 #define ARMG_CC_MASK_Z    (1 << ARMG_CC_SHIFT_Z)
 #define ARMG_CC_MASK_C    (1 << ARMG_CC_SHIFT_C)
 #define ARMG_CC_MASK_V    (1 << ARMG_CC_SHIFT_V)
+#define ARMG_CC_MASK_Q    (1 << ARMG_CC_SHIFT_Q)
 
 /* Flag thunk descriptors.  A four-word thunk is used to record
-   details of the most recent flag-setting operation, so the flags can
+   details of the most recent flag-setting operation, so NZCV can
    be computed later if needed.
 
    The four words are:

@@ -52,6 +52,8 @@
 
    add specialisations for armg_calculate_flag_c and _v, as they
    are moderately often needed in Thumb code.
+
+   Correctness: ITSTATE handling in Thumb SVCs is wrong.
 */
 
 /* Limitations, etc
@@ -419,6 +421,7 @@ static IRExpr* align4if ( IRExpr* e, Bool b )
 #define OFFB_FPSCR    offsetof(VexGuestARMState,guest_FPSCR)
 #define OFFB_TPIDRURO offsetof(VexGuestARMState,guest_TPIDRURO)
 #define OFFB_ITSTATE  offsetof(VexGuestARMState,guest_ITSTATE)
+#define OFFB_QFLAG32  offsetof(VexGuestARMState,guest_QFLAG32)
 
 
 /* ---------------- Integer registers ---------------- */
@@ -839,7 +842,8 @@ static void putMiscReg32 ( UInt    gsoffset,
                            IRTemp  guardT /* :: Ity_I32, 0 or 1 */)
 {
    switch (gsoffset) {
-      case OFFB_FPSCR: break;
+      case OFFB_FPSCR:   break;
+      case OFFB_QFLAG32: break;
       default: vassert(0); /* awaiting more cases */
    }
    vassert(typeOfIRExpr(irsb->tyenv, e) == Ity_I32);
@@ -870,6 +874,26 @@ static void put_ITSTATE ( IRTemp t )
 {
    ASSERT_IS_THUMB;
    stmt( IRStmt_Put( OFFB_ITSTATE, mkexpr(t)) );
+}
+
+static IRTemp get_QFLAG32 ( void )
+{
+   IRTemp t = newTemp(Ity_I32);
+   assign(t, IRExpr_Get( OFFB_QFLAG32, Ity_I32));
+   return t;
+}
+
+static void put_QFLAG32 ( IRTemp t, IRTemp condT )
+{
+   putMiscReg32( OFFB_QFLAG32, mkexpr(t), condT );
+}
+
+static void or_into_QFLAG32 ( IRTemp t, IRTemp condT )
+{
+   IRTemp old = get_QFLAG32();
+   IRTemp nyu = newTemp(Ity_I32);
+   assign(nyu, binop(Iop_Or32, mkexpr(old), mkexpr(t)) );
+   put_QFLAG32(nyu, condT);
 }
 
 
@@ -10652,9 +10676,13 @@ DisResult disInstr_ARM_WRK (
          imm = ROR32(imm, rot);
          imm &= 0xFF000000;
          imm &= (ARMG_CC_MASK_N | ARMG_CC_MASK_Z 
-                 | ARMG_CC_MASK_V | ARMG_CC_MASK_C);
+                 | ARMG_CC_MASK_V | ARMG_CC_MASK_C | ARMG_CC_MASK_Q);
          assign( immT, mkU32(imm & 0xF0000000) );
          setFlags_D1(ARMG_CC_OP_COPY, immT, condT);
+         // Set QFLAG32 to a zero or nonzero value, depending on #imm8.
+         IRTemp qnewT = newTemp(Ity_I32);
+         assign(qnewT, mkU32( imm & ARMG_CC_MASK_Q ));
+         put_QFLAG32(qnewT, condT);
          DIP("msr%s cpsr_f, #0x%08x\n", nCC(INSN_COND), imm);
          goto decode_success;
       }
@@ -10668,10 +10696,15 @@ DisResult disInstr_ARM_WRK (
       if (bitR == 0 && INSN(19,16) == BITS4(1,0,0,0)
           && INSN(11,4) == BITS8(0,0,0,0,0,0,0,0)
           && INSN(3,0) != 15) {
-         UInt rM = INSN(3,0);
+         UInt   rM  = INSN(3,0);
+         IRTemp rMt = newTemp(Ity_I32);
+         assign(rMt, getIRegA(rM));
          IRTemp immT = newTemp(Ity_I32);
-         assign(immT, binop(Iop_And32, getIRegA(rM), mkU32(0xF0000000)) );
+         assign(immT, binop(Iop_And32, mkexpr(rMt), mkU32(0xF0000000)) );
          setFlags_D1(ARMG_CC_OP_COPY, immT, condT);
+         IRTemp qnewT = newTemp(Ity_I32);
+         assign(qnewT, binop(Iop_And32, mkexpr(rMt), mkU32(ARMG_CC_MASK_Q)));
+         put_QFLAG32(qnewT, condT);
          DIP("msr%s cpsr_f, r%u\n", nCC(INSN_COND), rM);
          goto decode_success;
       }
@@ -10685,9 +10718,23 @@ DisResult disInstr_ARM_WRK (
       UInt bitR = (insn >> 22) & 1;
       UInt rD   = INSN(15,12);
       if (bitR == 0 && rD != 15) {
-         IRTemp res = newTemp(Ity_I32);
-         assign( res, mk_armg_calculate_flags_nzcv() );
-         putIRegA( rD, mkexpr(res), condT, Ijk_Boring );
+         IRTemp res1 = newTemp(Ity_I32);
+         // Get NZCV
+         assign( res1, mk_armg_calculate_flags_nzcv() );
+         /// OR in the Q value
+         IRTemp res2 = newTemp(Ity_I32);
+         assign(
+            res2,
+            binop(Iop_Or32,
+                  mkexpr(res1),
+                  binop(Iop_Shl32,
+                        unop(Iop_1Uto32,
+                             binop(Iop_CmpNE32,
+                                   mkexpr(get_QFLAG32()),
+                                   mkU32(0))),
+                        mkU8(ARMG_CC_SHIFT_Q)))
+         );
+         putIRegA( rD, mkexpr(res2), condT, Ijk_Boring );
          DIP("mrs%s r%u, cpsr\n", nCC(INSN_COND), rD);
          goto decode_success;
       }
@@ -12093,6 +12140,28 @@ DisResult disInstr_THUMB_WRK (
 
    switch (INSN0(15,8)) {
 
+   case BITS8(1,1,0,1,1,1,1,1): {
+      /* ---------------- SVC ---------------- */
+      UInt imm8 = INSN0(7,0);
+      if (imm8 == 0) {
+         /* A syscall.  We can't do this conditionally, hence: */
+         mk_skip_over_T16_if_cond_is_false( condT );
+         // FIXME: what if we have to back up and restart this insn?
+         // then ITSTATE will be wrong (we'll have it as "used")
+         // when it isn't.  Correct is to save ITSTATE in a 
+         // stash pseudo-reg, and back up from that if we have to
+         // restart.
+         // uncond after here
+         irsb->next     = mkU32( (guest_R15_curr_instr_notENC + 2) | 1 );
+         irsb->jumpkind = Ijk_Sys_syscall;
+         dres.whatNext  = Dis_StopHere;
+         DIP("svc #0x%08x\n", imm8);
+         goto decode_success;
+      }
+      /* else fall through */
+      break;
+   }
+
    case BITS8(0,1,0,0,0,1,0,0): {
       /* ---------------- ADD(HI) Rd, Rm ---------------- */
       UInt h1 = INSN0(7,7);
@@ -13209,7 +13278,7 @@ DisResult disInstr_THUMB_WRK (
       UInt rN    = INSN0(3,0);
       UInt rD    = INSN1(11,8);
       Bool valid = !isBadRegT(rN) && !isBadRegT(rD);
-      /* but allow "sub.w sp, sp, #constT" */ 
+      /* but allow "sub.w sp, sp, #constT" */
       if (!valid && !isRSB && rN == 13 && rD == 13)
          valid = True;
       if (valid) {
@@ -13357,6 +13426,11 @@ DisResult disInstr_THUMB_WRK (
       /* but allow "add.w reg, sp, reg   w/ no shift */
       if (!valid && INSN0(8,5) == BITS4(1,0,0,0) // add
           && rN == 13 && imm5 == 0 && how == 0) {
+         valid = True;
+      }
+      /* also allow "sub.w sp, sp, reg   w/ no shift */
+      if (!valid && INSN0(8,5) == BITS4(1,1,0,1) // add
+          && rD == 13 && rN == 13 && imm5 == 0 && how == 0) {
          valid = True;
       }
       if (valid) {
@@ -14540,6 +14614,23 @@ DisResult disInstr_THUMB_WRK (
       }
    }
 
+   /* ------------------ (T2) ADR ------------------ */
+   if ((INSN0(15,0) == 0xF2AF || INSN0(15,0) == 0xF6AF)
+       && INSN1(15,15) == 0) {
+      /* rD = align4(PC) - imm32 */
+      UInt rD = INSN1(11,8);
+      if (!isBadRegT(rD)) {
+         UInt imm32 = (INSN0(10,10) << 11)
+                      | (INSN1(14,12) << 8) | INSN1(7,0);
+         putIRegT(rD, binop(Iop_Sub32, 
+                            binop(Iop_And32, getIRegT(15), mkU32(~3UL)),
+                            mkU32(imm32)),
+                      condT);
+         DIP("sub r%u, pc, #%u\n", rD, imm32);
+         goto decode_success;
+      }
+   }
+
    /* ------------------- (T1) BFI ------------------- */
    /* ------------------- (T1) BFC ------------------- */
    if (INSN0(15,4) == 0xF36 && INSN1(15,15) == 0 && INSN1(5,5) == 0) {
@@ -14658,6 +14749,30 @@ DisResult disInstr_THUMB_WRK (
          putIRegT(rD, mkexpr(res), condT);
          DIP("%cxtab r%u, r%u, r%u, ror #%u\n",
              isU ? 'u' : 's', rD, rN, rM, rot);
+         goto decode_success;
+      }
+   }
+
+   /* ------------------- (T1) CLZ ------------------- */
+   if (INSN0(15,4) == 0xFAB
+       && INSN1(15,12) == BITS4(1,1,1,1)
+       && INSN1(7,4) == BITS4(1,0,0,0)) {
+      UInt rM1 = INSN0(3,0);
+      UInt rD = INSN1(11,8);
+      UInt rM2 = INSN1(3,0);
+      if (!isBadRegT(rD) && !isBadRegT(rM1) && rM1 == rM2) {
+         IRTemp arg = newTemp(Ity_I32);
+         IRTemp res = newTemp(Ity_I32);
+         assign(arg, getIRegT(rM1));
+         assign(res, IRExpr_Mux0X(
+                        unop(Iop_1Uto8,binop(Iop_CmpEQ32,
+                                             mkexpr(arg),
+                                             mkU32(0))),
+                        unop(Iop_Clz32, mkexpr(arg)),
+                        mkU32(32)
+         ));
+         putIRegT(rD, mkexpr(res), condT);
+         DIP("clz r%u, r%u\n", rD, rM1);
          goto decode_success;
       }
    }
