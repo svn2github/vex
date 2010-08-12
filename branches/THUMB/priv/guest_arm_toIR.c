@@ -54,6 +54,12 @@
    are moderately often needed in Thumb code.
 
    Correctness: ITSTATE handling in Thumb SVCs is wrong.
+
+   Correctness (obscure): in m_transtab, when invalidating code
+   address ranges, invalidate up to 18 bytes after the end of the
+   range.  This is because the ITSTATE optimisation at the top of
+   _THUMB_WRK below analyses up to 18 bytes before the start of any
+   given instruction, and so might depend on the invalidated area.
 */
 
 /* Limitations, etc
@@ -63,7 +69,6 @@
    - SWP: the restart jump back is Ijk_Boring; it should be
      Ijk_NoRedir but that's expensive.  See comments on casLE() in
      guest_x86_toIR.c.
-
 */
 
 /* "Special" instructions.
@@ -2308,6 +2313,9 @@ static Bool compute_ITSTATE ( /*OUT*/UInt*  itstate,
    vassert(mask <= 0xF);
    *itstate = 0;
    *ch1 = *ch2 = *ch3 = '.';
+   if (mask == 0)
+      return False; /* the logic below actually ensures this anyway,
+                       but clearer to make it explicit. */
    if (firstcond == 0xF)
       return False; /* NV is not allowed */
    if (firstcond == 0xE && popcount32(mask) != 1) 
@@ -9775,6 +9783,7 @@ DisResult disInstr_ARM_WRK (
          case BITS4(0,1,1,1): /* RSC:  Rd = shifter_operand - Rn - (oldC ^ 1) */
             name = "rsc"; goto rd_eq_rn_op_SO_op_oldC;
          rd_eq_rn_op_SO_op_oldC: {
+            // FIXME: shco isn't used for anything.  Get rid of it.
             rNt = newTemp(Ity_I32);
             assign(rNt, getIRegA(rN));
             ok = mk_shifter_operand(
@@ -11552,36 +11561,38 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* ----------------------------------------------------------- */
-#if 0
    /* Spot "Special" instructions (see comment at top of file). */
    {
       UChar* code = (UChar*)guest_instr;
       /* Spot the 16-byte preamble: 
 
-         e1a0c1ec  mov r12, r12, ROR #3
-         e1a0c6ec  mov r12, r12, ROR #13
-         e1a0ceec  mov r12, r12, ROR #29
-         e1a0c9ec  mov r12, r12, ROR #19
+         ea4f 0cfc  mov.w   ip, ip, ror #3
+         ea4f 3c7c  mov.w   ip, ip, ror #13
+         ea4f 7c7c  mov.w   ip, ip, ror #29
+         ea4f 4cfc  mov.w   ip, ip, ror #19
       */
-      UInt word1 = 0xE1A0C1EC;
-      UInt word2 = 0xE1A0C6EC;
-      UInt word3 = 0xE1A0CEEC;
-      UInt word4 = 0xE1A0C9EC;
+      UInt word1 = 0x0CFCEA4F;
+      UInt word2 = 0x3C7CEA4F;
+      UInt word3 = 0x7C7CEA4F;
+      UInt word4 = 0x4CFCEA4F;
       if (getUIntLittleEndianly(code+ 0) == word1 &&
           getUIntLittleEndianly(code+ 4) == word2 &&
           getUIntLittleEndianly(code+ 8) == word3 &&
           getUIntLittleEndianly(code+12) == word4) {
          /* Got a "Special" instruction preamble.  Which one is it? */
-         if (getUIntLittleEndianly(code+16) == 0xE18AA00A
-                                               /* orr r10,r10,r10 */) {
+         // 0x 0A 0A EA 4A
+         if (getUIntLittleEndianly(code+16) == 0x0A0AEA4A
+                                               /* orr.w r10,r10,r10 */) {
             /* R3 = client_request ( R4 ) */
             DIP("r3 = client_request ( %%r4 )\n");
-            irsb->next     = mkU32( guest_R15_curr_instr_notENC + 20 );
+            irsb->next     = mkU32( (guest_R15_curr_instr_notENC + 20) | 1 );
             irsb->jumpkind = Ijk_ClientReq;
             dres.whatNext  = Dis_StopHere;
             goto decode_success;
          }
+#if 0
          else
+         // 0x 0B 0B EA 4B
          if (getUIntLittleEndianly(code+16) == 0xE18BB00B
                                                /* orr r11,r11,r11 */) {
             /* R3 = guest_NRADDR */
@@ -11591,6 +11602,7 @@ DisResult disInstr_THUMB_WRK (
             goto decode_success;
          }
          else
+         // 0x 0C 0C EA 4C
          if (getUIntLittleEndianly(code+16) == 0xE18CC00C
                                                /* orr r12,r12,r12 */) {
             /*  branch-and-link-to-noredir R4 */
@@ -11601,15 +11613,16 @@ DisResult disInstr_THUMB_WRK (
             dres.whatNext  = Dis_StopHere;
             goto decode_success;
          }
-         /* We don't know what it is.  Set opc1/opc2 so decode_failure
+#endif
+         /* We don't know what it is.  Set insn0 so decode_failure
             can print the insn following the Special-insn preamble. */
-         insn = getUIntLittleEndianly(code+16);
+         insn0 = getUShortLittleEndianly(code+16);
          goto decode_failure;
          /*NOTREACHED*/
       }
 
    }
-#endif
+
    /* ----------------------------------------------------------- */
 
    /* Main Thumb instruction decoder starts here.  It's a series of
@@ -11676,7 +11689,9 @@ DisResult disInstr_THUMB_WRK (
             vassert( ( ((UInt)(&hwp[i])) & 0xFFFFF000 )
                       == ( pc & 0xFFFFF000 ) );
             */
-            if ((hwp[i] & 0xFF00) == 0xBF00) {
+            /* All valid IT instructions must have the form 0xBFxy,
+               where x can be anything, but y must be nonzero. */
+            if ((hwp[i] & 0xFF00) == 0xBF00 && (hwp[i] & 0xF) != 0) {
                /* might be an 'it' insn.  Play safe. */
                forceZ = False;
                break;
@@ -11714,14 +11729,43 @@ DisResult disInstr_THUMB_WRK (
       to decide whether they can generate straight-line code, or
       whether they must generate a side exit before the instruction.
       condT :: Ity_I32 and is always either zero or one. */
-   IRTemp condT = newTemp(Ity_I32);
-   assign(condT,
+   IRTemp condT1 = newTemp(Ity_I32);
+   assign(condT1,
           mk_armg_calculate_condition_dyn(
              binop(Iop_Xor32,
                    binop(Iop_And32, mkexpr(old_itstate), mkU32(0xF0)),
                    mkU32(0xE0))
           )
    );
+
+   /* This is a bit complex, but needed to make Memcheck understand
+      that, if the condition in old_itstate[7:4] denotes AL (that is,
+      if this instruction is to be executed unconditionally), then
+      condT does not depend on the results of calling the helper.
+
+      We test explicitly for old_itstate[7:4] == AL ^ 0xE, and in that
+      case set condT directly to 1.  Else we use the results of the
+      helper.  Since old_itstate is always defined and because
+      Memcheck does lazy V-bit propagation through Mux0X, this will
+      cause condT to always be a defined 1 if the condition is 'AL'.
+      From an execution semantics point of view this is irrelevant
+      since we're merely duplicating part of the behaviour of the
+      helper.  But it makes it clear to Memcheck, in this case, that
+      condT does not in fact depend on the contents of the condition
+      code thunk.  Without it, we get quite a lot of false errors.
+
+      So, just to clarify: from a straight semantics point of view, we
+      can simply do "assign(condT, mkexpr(condT1))", and the simulator
+      still runs fine.  It's just that we get loads of false errors
+      from Memcheck. */
+   IRTemp condT = newTemp(Ity_I32);
+   assign(condT, IRExpr_Mux0X(
+                    unop(Iop_32to8, binop(Iop_And32,
+                                          mkexpr(old_itstate),
+                                          mkU32(0xF0))),
+                    mkU32(1),
+                    mkexpr(condT1)
+         ));
 
    /* Something we don't have in ARM: generate a 0 or 1 value
       indicating whether or not we are in an IT block (NB: 0 = in IT
@@ -13506,10 +13550,12 @@ DisResult disInstr_THUMB_WRK (
          IRTemp rMt = newTemp(Ity_I32);
          assign(rMt, getIRegT(rM));
 
-         IRTemp argR = newTemp(Ity_I32);
          IRTemp oldC = newTemp(Ity_I32);
+         assign(oldC, mk_armg_calculate_flag_c());
+
+         IRTemp argR = newTemp(Ity_I32);
          compute_result_and_C_after_shift_by_imm5(
-            dis_buf, &argR, &oldC, rMt, how, imm5, rM
+            dis_buf, &argR, NULL, rMt, how, imm5, rM
          );
 
          HChar* nm  = "???";
@@ -13532,6 +13578,7 @@ DisResult disInstr_THUMB_WRK (
                       binop(Iop_Sub32,
                             binop(Iop_Sub32, mkexpr(argL), mkexpr(argR)),
                             binop(Iop_Xor32, mkexpr(oldC), mkU32(1)) ));
+               putIRegT(rD, mkexpr(res), condT);
                if (bS)
                   setFlags_D1_D2_ND( ARMG_CC_OP_SBB,
                                      argL, argR, oldC, condT );
@@ -13690,14 +13737,17 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* -------------- (T?) TST.W Rn, Rm, {shift} -------------- */
-   // Ditto TEQ
+   /* -------------- (T?) TEQ.W Rn, Rm, {shift} -------------- */
    if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
-       && INSN0(8,4) == BITS5(0,0,0,0,1) // TEQ: 01001
+       && (   INSN0(8,4) == BITS5(0,0,0,0,1)  // TST
+           || INSN0(8,4) == BITS5(0,1,0,0,1)) // TEQ
        && INSN1(15,15) == 0
        && INSN1(11,8) == BITS4(1,1,1,1)) {
       UInt rN = INSN0(3,0);
       UInt rM = INSN1(3,0);
       if (!isBadRegT(rN) && !isBadRegT(rM)) {
+         Bool isTST = INSN0(8,4) == BITS5(0,0,0,0,1);
+
          UInt how  = INSN1(5,4);
          UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
 
@@ -13717,11 +13767,12 @@ DisResult disInstr_THUMB_WRK (
          assign( oldV, mk_armg_calculate_flag_v() );
 
          IRTemp res = newTemp(Ity_I32);
-         assign(res, binop(Iop_And32, mkexpr(argL), mkexpr(argR)));
+         assign(res, binop(isTST ? Iop_And32 : Iop_Xor32,
+                           mkexpr(argL), mkexpr(argR)));
 
          setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV,
                             condT );
-         DIP("tst.w r%u, %s\n", rN, dis_buf);
+         DIP("%s.w r%u, %s\n", isTST ? "tst" : "teq", rN, dis_buf);
          goto decode_success;
       }
    }
@@ -13906,8 +13957,28 @@ DisResult disInstr_THUMB_WRK (
          IRTemp transAddr = bP == 1 ? postAddr : preAddr;
 
          if (isST) {
+
+             /* Store.  If necessary, update the base register before
+                the store itself, so that the common idiom of "str rX,
+                [sp, #-4]!" (store rX at sp-4, then do new sp = sp-4,
+                a.k.a "push rX") doesn't cause Memcheck to complain
+                that the access is below the stack pointer.  Also, not
+                updating sp before the store confuses Valgrind's
+                dynamic stack-extending logic.  So do it before the
+                store.  Hence we need to snarf the store data before
+                doing the basereg update. */
+
+            /* get hold of the data to be stored */
             IRTemp oldRt = newTemp(Ity_I32);
             assign(oldRt, getIRegT(rT));
+
+            /* Update Rn if necessary. */
+            if (bW == 1) {
+               vassert(rN != rT); // assured by validity check above
+               putIRegT(rN, mkexpr(postAddr), IRTemp_INVALID);
+            }
+
+            /* generate the transfer */
             switch (ty) {
                case Ity_I8:
                   storeLE(mkexpr(transAddr),
@@ -13923,7 +13994,12 @@ DisResult disInstr_THUMB_WRK (
               default:
                  vassert(0);
             }
+
          } else {
+
+            /* Load. */
+
+            /* generate the transfer */
             IRTemp newRt = newTemp(Ity_I32);
             IROp   widen = Iop_INVALID;
             switch (ty) {
@@ -13941,7 +14017,12 @@ DisResult disInstr_THUMB_WRK (
             } else {
                assign(newRt, unop(widen, loadLE(ty, mkexpr(transAddr))));
             }
-            putIRegT(rT, mkexpr(newRt), IRTemp_INVALID);
+            if (loadsPC) {
+               vassert(rT == 15);
+               llPutIReg(rT, mkexpr(newRt));
+            } else {
+               putIRegT(rT, mkexpr(newRt), IRTemp_INVALID);
+            }
 
             if (loadsPC) {
                /* Presumably this is an interworking branch. */
@@ -13949,10 +14030,12 @@ DisResult disInstr_THUMB_WRK (
                irsb->jumpkind = Ijk_Boring;  /* or _Ret ? */
                dres.whatNext  = Dis_StopHere;
             }
-         }
 
-         if (bW == 1) {
-            putIRegT(rN, mkexpr(postAddr), IRTemp_INVALID);
+            /* Update Rn if necessary. */
+            if (bW == 1) {
+               vassert(rN != rT); // assured by validity check above
+               putIRegT(rN, mkexpr(postAddr), IRTemp_INVALID);
+            }
          }
 
          if (bP == 1 && bW == 0) {
@@ -14614,6 +14697,41 @@ DisResult disInstr_THUMB_WRK (
       }
    }
 
+   /* ----------------- (T1) UMLAL ----------------- */
+   /* ----------------- (T1) SMLAL ----------------- */
+   if ((INSN0(15,4) == 0xFBE // UMLAL
+        || INSN0(15,4) == 0xFBC) // SMLAL
+       && INSN1(7,4) == BITS4(0,0,0,0)) {
+      UInt rN   = INSN0(3,0);
+      UInt rDlo = INSN1(15,12);
+      UInt rDhi = INSN1(11,8);
+      UInt rM   = INSN1(3,0);
+      if (!isBadRegT(rDlo) && !isBadRegT(rDhi) && !isBadRegT(rN)
+          && !isBadRegT(rM) && rDhi != rDlo) {
+         Bool   isS   = INSN0(15,4) == 0xFBC;
+         IRTemp argL  = newTemp(Ity_I32);
+         IRTemp argR  = newTemp(Ity_I32);
+         IRTemp old   = newTemp(Ity_I64);
+         IRTemp res   = newTemp(Ity_I64);
+         IRTemp resHi = newTemp(Ity_I32);
+         IRTemp resLo = newTemp(Ity_I32);
+         IROp   mulOp = isS ? Iop_MullS32 : Iop_MullU32;
+         assign( argL, getIRegT(rM));
+         assign( argR, getIRegT(rN));
+         assign( old, binop(Iop_32HLto64, getIRegT(rDhi), getIRegT(rDlo)) );
+         assign( res, binop(Iop_Add64,
+                            mkexpr(old),
+                            binop(mulOp, mkexpr(argL), mkexpr(argR))) );
+         assign( resHi, unop(Iop_64HIto32, mkexpr(res)) );
+         assign( resLo, unop(Iop_64to32, mkexpr(res)) );
+         putIRegT( rDhi, mkexpr(resHi), condT );
+         putIRegT( rDlo, mkexpr(resLo), condT );
+         DIP("%cmlal r%u, r%u, r%u, r%u\n",
+             isS ? 's' : 'u', rDlo, rDhi, rN, rM);
+         goto decode_success;
+      }
+   }
+
    /* ------------------ (T2) ADR ------------------ */
    if ((INSN0(15,0) == 0xF2AF || INSN0(15,0) == 0xF6AF)
        && INSN1(15,15) == 0) {
@@ -14773,6 +14891,56 @@ DisResult disInstr_THUMB_WRK (
          ));
          putIRegT(rD, mkexpr(res), condT);
          DIP("clz r%u, r%u\n", rD, rM1);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T1) MSR apsr, reg -------------- */
+   if (INSN0(15,4) == 0xF38 
+       && INSN1(15,12) == BITS4(1,0,0,0) && INSN1(9,0) == 0x000) {
+      UInt rN          = INSN0(3,0);
+      UInt write_ge    = INSN1(10,10);
+      UInt write_nzcvq = INSN1(11,11);
+      if (!isBadRegT(rN) && write_nzcvq && !write_ge) {
+         IRTemp rNt = newTemp(Ity_I32);
+         assign(rNt, getIRegT(rN));
+         // Do NZCV
+         IRTemp immT = newTemp(Ity_I32);
+         assign(immT, binop(Iop_And32, mkexpr(rNt), mkU32(0xF0000000)) );
+         setFlags_D1(ARMG_CC_OP_COPY, immT, condT);
+         // Do Q
+         IRTemp qnewT = newTemp(Ity_I32);
+         assign(qnewT, binop(Iop_And32, mkexpr(rNt), mkU32(ARMG_CC_MASK_Q)));
+         put_QFLAG32(qnewT, condT);
+         // 
+         DIP("msr cpsr_f, r%u\n", rN);
+         goto decode_success;
+      }
+   }
+
+   /* -------------- (T1) MRS reg, apsr -------------- */
+   if (INSN0(15,0) == 0xF3EF
+       && INSN1(15,12) == BITS4(1,0,0,0) && INSN1(7,0) == 0x00) {
+      UInt rD = INSN1(11,8);
+      if (!isBadRegT(rD)) {
+         IRTemp res1 = newTemp(Ity_I32);
+         // Get NZCV
+         assign( res1, mk_armg_calculate_flags_nzcv() );
+         /// OR in the Q value
+         IRTemp res2 = newTemp(Ity_I32);
+         assign(
+            res2,
+            binop(Iop_Or32,
+                  mkexpr(res1),
+                  binop(Iop_Shl32,
+                        unop(Iop_1Uto32,
+                             binop(Iop_CmpNE32,
+                                   mkexpr(get_QFLAG32()),
+                                   mkU32(0))),
+                        mkU8(ARMG_CC_SHIFT_Q)))
+         );
+         putIRegT( rD, mkexpr(res2), condT );
+         DIP("mrs r%u, cpsr\n", rD);
          goto decode_success;
       }
    }
