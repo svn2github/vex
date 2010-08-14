@@ -11824,8 +11824,10 @@ DisResult disInstr_THUMB_WRK (
 
    switch (INSN0(15,6)) {
 
-   case 0x10a: {
+   case 0x10a:   // CMP
+   case 0x10b: { // CMN
       /* ---------------- CMP Rn, Rm ---------------- */
+      Bool   isCMN = INSN0(15,6) == 0x10b;
       UInt   rN    = INSN0(2,0);
       UInt   rM    = INSN0(5,3);
       IRTemp argL  = newTemp(Ity_I32);
@@ -11833,8 +11835,9 @@ DisResult disInstr_THUMB_WRK (
       assign( argL, getIRegT(rN) );
       assign( argR, getIRegT(rM) );
       /* Update flags regardless of whether in an IT block or not. */
-      setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
-      DIP("cmp r%u, r%u\n", rN, rM);
+      setFlags_D1_D2( isCMN ? ARMG_CC_OP_ADD : ARMG_CC_OP_SUB,
+                      argL, argR, condT );
+      DIP("%s r%u, r%u\n", isCMN ? "cmn" : "cmp", rN, rM);
       goto decode_success;
    }
 
@@ -13284,13 +13287,15 @@ DisResult disInstr_THUMB_WRK (
    }
 
    /* -------------- (T1) TST.W Rn, #constT -------------- */
-   // Ditto TEQ
+   /* -------------- (T1) TEQ.W Rn, #constT -------------- */
    if (INSN0(15,11) == BITS5(1,1,1,1,0)
-       && INSN0(9,4) == BITS6(0,0,0,0,0,1)
+       && (   INSN0(9,4) == BITS6(0,0,0,0,0,1)  // TST
+           || INSN0(9,4) == BITS6(0,0,1,0,0,1)) // TEQ
        && INSN1(15,15) == 0
        && INSN1(11,8) == BITS4(1,1,1,1)) {
       UInt rN = INSN0(3,0);
       if (!isBadRegT(rN)) { // yes, really, it's inconsistent with CMP.W
+         Bool  isTST  = INSN0(9,4) == BITS6(0,0,0,0,0,1);
          IRTemp argL  = newTemp(Ity_I32);
          IRTemp argR  = newTemp(Ity_I32);
          IRTemp res   = newTemp(Ity_I32);
@@ -13300,13 +13305,14 @@ DisResult disInstr_THUMB_WRK (
          UInt   imm32 = thumbExpandImm_from_I0_I1(&updC, insn0, insn1);
          assign(argL, getIRegT(rN));
          assign(argR, mkU32(imm32));
-         assign(res,  binop(Iop_And32, mkexpr(argL), mkexpr(argR)));
+         assign(res,  binop(isTST ? Iop_And32 : Iop_Xor32,
+                            mkexpr(argL), mkexpr(argR)));
          assign( oldV, mk_armg_calculate_flag_v() );
          assign( oldC, updC 
                        ? mkU32((imm32 >> 31) & 1)
                        : mk_armg_calculate_flag_c() );
          setFlags_D1_D2_ND( ARMG_CC_OP_LOGIC, res, oldC, oldV, condT );
-         DIP("tst.w r%u, #%u\n", rN, imm32);
+         DIP("%s.w r%u, #%u\n", isTST ? "tst" : "teq", rN, imm32);
          goto decode_success;
       }
    }
@@ -13777,17 +13783,19 @@ DisResult disInstr_THUMB_WRK (
       }
    }
 
-   /* -------------- (T?) CMP.W Rn, Rm, {shift} -------------- */
-   // Ditto CMN
+   /* -------------- (T3) CMP.W Rn, Rm, {shift} -------------- */
+   /* -------------- (T2) CMN.W Rn, Rm, {shift} -------------- */
    if (INSN0(15,9) == BITS7(1,1,1,0,1,0,1)
-       && INSN0(8,4) == BITS5(1,1,0,1,1) // CMN: 10001
+       && (   INSN0(8,4) == BITS5(1,1,0,1,1)  // CMP
+           || INSN0(8,4) == BITS5(1,0,0,0,1)) // CMN
        && INSN1(15,15) == 0
        && INSN1(11,8) == BITS4(1,1,1,1)) {
       UInt rN = INSN0(3,0);
       UInt rM = INSN1(3,0);
       if (!isBadRegT(rN) && !isBadRegT(rM)) {
-         UInt how  = INSN1(5,4);
-         UInt imm5 = (INSN1(14,12) << 2) | INSN1(7,6);
+         Bool isCMN = INSN0(8,4) == BITS5(1,0,0,0,1);
+         UInt how   = INSN1(5,4);
+         UInt imm5  = (INSN1(14,12) << 2) | INSN1(7,6);
 
          IRTemp argL = newTemp(Ity_I32);
          assign(argL, getIRegT(rN));
@@ -13800,9 +13808,10 @@ DisResult disInstr_THUMB_WRK (
             dis_buf, &argR, NULL, rMt, how, imm5, rM
          );
 
-         setFlags_D1_D2( ARMG_CC_OP_SUB, argL, argR, condT );
+         setFlags_D1_D2( isCMN ? ARMG_CC_OP_ADD : ARMG_CC_OP_SUB,
+                         argL, argR, condT );
 
-         DIP("cmp.w r%u, %s\n", rN, dis_buf);
+         DIP("%s.w r%u, %s\n", isCMN ? "cmn" : "cmp", rN, dis_buf);
          goto decode_success;
       }
    }
