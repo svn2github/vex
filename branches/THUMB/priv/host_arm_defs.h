@@ -597,6 +597,7 @@ typedef
       ARMin_NBinaryS,
       ARMin_NShift,
       ARMin_NeonImm,
+      ARMin_NCMovQ,
       /* This is not a NEON instruction. Actually there is no corresponding
          instruction in ARM instruction set at all. We need this one to
          generate spill/reload of 128-bit registers since current register
@@ -885,6 +886,13 @@ typedef
             HReg dst;
             ARMNImm* imm;
          } NeonImm;
+         /* 128-bit Neon move src to dst on the given condition, which
+            may not be ARMcc_AL. */
+         struct {
+            ARMCondCode cond;
+            HReg        dst;
+            HReg        src;
+         } NCMovQ;
          struct {
             /* Note: rD != rN */
             HReg rD;
@@ -940,6 +948,7 @@ extern ARMInstr* ARMInstr_NBinary  ( ARMNeonBinOp, HReg, HReg, HReg,
 extern ARMInstr* ARMInstr_NShift   ( ARMNeonShiftOp, HReg, HReg, HReg,
                                      UInt, Bool );
 extern ARMInstr* ARMInstr_NeonImm  ( HReg, ARMNImm* );
+extern ARMInstr* ARMInstr_NCMovQ   ( ARMCondCode, HReg, HReg );
 extern ARMInstr* ARMInstr_Add32    ( HReg rD, HReg rN, UInt imm32 );
 
 extern void ppARMInstr ( ARMInstr* );

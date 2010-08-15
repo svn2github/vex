@@ -5166,6 +5166,19 @@ static HReg iselNeonExpr_wrk ( ISelEnv* env, IRExpr* e )
       }
    }
 
+   if (e->tag == Iex_Mux0X) {
+      HReg r8;
+      HReg rX  = iselNeonExpr(env, e->Iex.Mux0X.exprX);
+      HReg r0  = iselNeonExpr(env, e->Iex.Mux0X.expr0);
+      HReg dst = newVRegV(env);
+      addInstr(env, ARMInstr_NUnary(ARMneon_COPY, dst, rX, 4, True));
+      r8 = iselIntExpr_R(env, e->Iex.Mux0X.cond);
+      addInstr(env, ARMInstr_CmpOrTst(False/*!isCmp*/, r8,
+                                      ARMRI84_I84(0xFF,0)));
+      addInstr(env, ARMInstr_NCMovQ(ARMcc_EQ, dst, r0));
+      return dst;
+   }
+
   neon_expr_bad:
    ppIRExpr(e);
    vpanic("iselNeonExpr_wrk");
@@ -5939,13 +5952,6 @@ HInstrArray* iselSB_ARM ( IRSB* bb, VexArch      arch_host,
    /* Ok, finally we can iterate over the statements. */
    for (i = 0; i < bb->stmts_used; i++)
       iselStmt(env,bb->stmts[i]);
-
-#if 0
-   if (neon)
-      ppIRSB(bb);
-   //   if (counter > 1600 && counter < 1605)
-   //      ppIRSB(bb);
-#endif
 
    iselNext(env,bb->next,bb->jumpkind);
 

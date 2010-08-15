@@ -1412,6 +1412,16 @@ ARMInstr* ARMInstr_NeonImm (HReg dst, ARMNImm* imm ) {
    return i;
 }
 
+ARMInstr* ARMInstr_NCMovQ ( ARMCondCode cond, HReg dst, HReg src ) {
+   ARMInstr* i = LibVEX_Alloc(sizeof(ARMInstr));
+   i->tag               = ARMin_NCMovQ;
+   i->ARMin.NCMovQ.cond = cond;
+   i->ARMin.NCMovQ.dst  = dst;
+   i->ARMin.NCMovQ.src  = src;
+   vassert(cond != ARMcc_AL);
+   return i;
+}
+
 ARMInstr* ARMInstr_NShift ( ARMNeonShiftOp op,
                             HReg dst, HReg argL, HReg argR,
                             UInt size, Bool Q ) {
@@ -1831,6 +1841,12 @@ void ppARMInstr ( ARMInstr* i ) {
          vex_printf(", ");
          ppARMNImm(i->ARMin.NeonImm.imm);
          return;
+      case ARMin_NCMovQ:
+         vex_printf("vmov%s ", showARMCondCode(i->ARMin.NCMovQ.cond));
+         ppHRegARM(i->ARMin.NCMovQ.dst);
+         vex_printf(", ");
+         ppHRegARM(i->ARMin.NCMovQ.src);
+         return;
       case ARMin_Add32:
          vex_printf("add32 ");
          ppHRegARM(i->ARMin.Add32.rD);
@@ -2105,6 +2121,11 @@ void getRegUsage_ARMInstr ( HRegUsage* u, ARMInstr* i, Bool mode64 )
       case ARMin_NeonImm:
          addHRegUse(u, HRmWrite, i->ARMin.NeonImm.dst);
          return;
+      case ARMin_NCMovQ:
+         addHRegUse(u, HRmWrite, i->ARMin.NCMovQ.dst);
+         addHRegUse(u, HRmRead,  i->ARMin.NCMovQ.dst);
+         addHRegUse(u, HRmRead,  i->ARMin.NCMovQ.src);
+         return;
       case ARMin_Add32:
          addHRegUse(u, HRmWrite, i->ARMin.Add32.rD);
          addHRegUse(u, HRmRead, i->ARMin.Add32.rN);
@@ -2269,6 +2290,10 @@ void mapRegs_ARMInstr ( HRegRemap* m, ARMInstr* i, Bool mode64 )
          return;
       case ARMin_NeonImm:
          i->ARMin.NeonImm.dst = lookupHRegRemap(m, i->ARMin.NeonImm.dst);
+         return;
+      case ARMin_NCMovQ:
+         i->ARMin.NCMovQ.dst = lookupHRegRemap(m, i->ARMin.NCMovQ.dst);
+         i->ARMin.NCMovQ.src = lookupHRegRemap(m, i->ARMin.NCMovQ.src);
          return;
       case ARMin_Add32:
          i->ARMin.Add32.rD = lookupHRegRemap(m, i->ARMin.Add32.rD);
@@ -3988,6 +4013,24 @@ Int emit_ARMInstr ( UChar* buf, Int nbuf, ARMInstr* i,
          }
          insn = XXXXXXXX(0xF, BITS4(0,0,1,j), BITS4(1,D,0,0), imm3, regD,
                          cmode, BITS4(0,Q,op,1), imm4);
+         *p++ = insn;
+         goto done;
+      }
+      case ARMin_NCMovQ: {
+         UInt cc = (UInt)i->ARMin.NCMovQ.cond;
+         UInt qM = qregNo(i->ARMin.NCMovQ.src) << 1;
+         UInt qD = qregNo(i->ARMin.NCMovQ.dst) << 1;
+         UInt vM = qM & 0xF;
+         UInt vD = qD & 0xF;
+         UInt M  = (qM >> 4) & 1;
+         UInt D  = (qD >> 4) & 1;
+         vassert(cc < 16 && cc != ARMcc_AL && cc != ARMcc_NV);
+         /* b!cc here+8: !cc A00 0000 */
+         UInt insn = XXXXXXXX(cc ^ 1, 0xA, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0);
+         *p++ = insn;
+         /* vmov qD, qM */
+         insn = XXXXXXXX(0xF, 0x2, BITS4(0,D,1,0),
+                         vM, vD, BITS4(0,0,0,1), BITS4(M,1,M,1), vM);
          *p++ = insn;
          goto done;
       }
