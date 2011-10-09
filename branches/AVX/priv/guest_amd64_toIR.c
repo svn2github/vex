@@ -13951,6 +13951,7 @@ Long dis_ESC_0F3A__SupSSE3 ( Bool* decode_OK,
 __attribute__((noinline))
 static
 Long dis_ESC_0F__SSE4 ( Bool* decode_OK,
+                        VexArchInfo* archinfo,
                         VexAbiInfo* vbi,
                         Prefix pfx, Int sz, Long deltaIN )
 {
@@ -14005,6 +14006,67 @@ Long dis_ESC_0F__SSE4 ( Bool* decode_OK,
                                 widenUto64(mkexpr(src)),
                                 mkU64(0))),
                      mkU8(AMD64G_CC_SHIFT_Z))));
+
+         goto decode_success;
+      }
+      break;
+
+   case 0xBD:
+      /* F3 0F BD -- LZCNT (count leading zeroes.  An AMD extension,
+         which we can only decode if we're sure this is an AMD cpu
+         that supports LZCNT, since otherwise it's BSR, which behaves
+         differently.  Bizarrely, my Sandy Bridge also accepts these
+         instructions but produces different results. */
+      if (haveF3noF2(pfx) /* so both 66 and 48 are possibilities */
+          && (sz == 2 || sz == 4 || sz == 8) 
+          && 0 != (archinfo->hwcaps & VEX_HWCAPS_AMD64_LZCNT)) {
+         /*IRType*/ ty  = szToITy(sz);
+         IRTemp     src = newTemp(ty);
+         modrm = getUChar(delta);
+         if (epartIsReg(modrm)) {
+            assign(src, getIRegE(sz, pfx, modrm));
+            delta += 1;
+            DIP("lzcnt%c %s, %s\n", nameISize(sz), nameIRegE(sz, pfx, modrm),
+                nameIRegG(sz, pfx, modrm));
+         } else {
+            addr = disAMode( &alen, vbi, pfx, delta, dis_buf, 0);
+            assign(src, loadLE(ty, mkexpr(addr)));
+            delta += alen;
+            DIP("lzcnt%c %s, %s\n", nameISize(sz), dis_buf,
+                nameIRegG(sz, pfx, modrm));
+         }
+
+         IRTemp res = gen_LZCNT(ty, src);
+         putIRegG(sz, pfx, modrm, mkexpr(res));
+
+         // Update flags.  This is pretty lame .. perhaps can do better
+         // if this turns out to be performance critical.
+         // O S A P are cleared.  Z is set if RESULT == 0.
+         // C is set if SRC is zero.
+         IRTemp src64 = newTemp(Ity_I64);
+         IRTemp res64 = newTemp(Ity_I64);
+         assign(src64, widenUto64(mkexpr(src)));
+         assign(res64, widenUto64(mkexpr(res)));
+
+         IRTemp oszacp = newTemp(Ity_I64);
+         assign(
+            oszacp,
+            binop(Iop_Or64,
+                  binop(Iop_Shl64,
+                        unop(Iop_1Uto64,
+                             binop(Iop_CmpEQ64, mkexpr(res64), mkU64(0))),
+                        mkU8(AMD64G_CC_SHIFT_Z)),
+                  binop(Iop_Shl64,
+                        unop(Iop_1Uto64,
+                             binop(Iop_CmpEQ64, mkexpr(src64), mkU64(0))),
+                        mkU8(AMD64G_CC_SHIFT_C))
+            )
+         );
+
+         stmt( IRStmt_Put( OFFB_CC_OP,   mkU64(AMD64G_CC_OP_COPY) ));
+         stmt( IRStmt_Put( OFFB_CC_DEP2, mkU64(0) ));
+         stmt( IRStmt_Put( OFFB_CC_NDEP, mkU64(0) ));
+         stmt( IRStmt_Put( OFFB_CC_DEP1, mkexpr(oszacp) ));
 
          goto decode_success;
       }
@@ -16883,6 +16945,41 @@ Long dis_ESC_NONE (
       DIP("lahf\n");
       return delta;
 
+   case 0xA0: /* MOV Ob,AL */
+      if (have66orF2orF3(pfx)) goto decode_failure;
+      sz = 1;
+      /* Fall through ... */
+   case 0xA1: /* MOV Ov,eAX */
+      if (sz != 8 && sz != 4 && sz != 2 && sz != 1) 
+         goto decode_failure;
+      d64 = getDisp64(delta); 
+      delta += 8;
+      ty = szToITy(sz);
+      addr = newTemp(Ity_I64);
+      assign( addr, handleAddrOverrides(vbi, pfx, mkU64(d64)) );
+      putIRegRAX(sz, loadLE( ty, mkexpr(addr) ));
+      DIP("mov%c %s0x%llx, %s\n", nameISize(sz), 
+                                  segRegTxt(pfx), d64,
+                                  nameIRegRAX(sz));
+      return delta;
+
+   case 0xA2: /* MOV AL,Ob */
+      if (have66orF2orF3(pfx)) goto decode_failure;
+      sz = 1;
+      /* Fall through ... */
+   case 0xA3: /* MOV eAX,Ov */
+      if (sz != 8 && sz != 4 && sz != 2 && sz != 1) 
+         goto decode_failure;
+      d64 = getDisp64(delta); 
+      delta += 8;
+      ty = szToITy(sz);
+      addr = newTemp(Ity_I64);
+      assign( addr, handleAddrOverrides(vbi, pfx, mkU64(d64)) );
+      storeLE( mkexpr(addr), getIRegRAX(sz) );
+      DIP("mov%c %s, %s0x%llx\n", nameISize(sz), nameIRegRAX(sz),
+                                  segRegTxt(pfx), d64);
+      return delta;
+
    case 0xA4:
    case 0xA5:
       /* F3 A4: rep movsb */
@@ -17780,9 +17877,14 @@ Long dis_ESC_0F (
       return delta;
 
    case 0xBD: /* BSR Gv,Ev */
-      if (haveF2orF3(pfx)) goto decode_failure;
-      delta = dis_bs_E_G ( vbi, pfx, sz, delta, False );
-      return delta;
+      if (!haveF2orF3(pfx)) {
+         /* no-F2 no-F3 0F BD = BSR */
+         delta = dis_bs_E_G ( vbi, pfx, sz, delta, False );
+         return delta;
+      }
+      /* Fall through, since F3 0F BD is LZCNT, and needs to
+         be handled by dis_ESC_0F__SSE4. */
+      break;
 
    case 0xBE: /* MOVSXb Eb,Gv */
       if (haveF2orF3(pfx)) goto decode_failure;
@@ -18152,7 +18254,8 @@ Long dis_ESC_0F (
       first. */
    {
       Bool decode_OK = False;
-      delta = dis_ESC_0F__SSE4 ( &decode_OK, vbi, pfx, sz, deltaIN );
+      delta = dis_ESC_0F__SSE4 ( &decode_OK,
+                                 archinfo, vbi, pfx, sz, deltaIN );
       if (decode_OK)
          return delta;
    }
@@ -18600,65 +18703,6 @@ DisResult disInstr_AMD64_WRK (
    /* --- start of the SSE4 decoder                    --- */
    /* ---------------------------------------------------- */
 
-   /* F3 0F BD -- LZCNT (count leading zeroes.  An AMD extension,
-      which we can only decode if we're sure this is an AMD cpu that
-      supports LZCNT, since otherwise it's BSR, which behaves
-      differently. */
-   if (haveF3noF2(pfx) /* so both 66 and 48 are possibilities */
-       && insn[0] == 0x0F && insn[1] == 0xBD
-       && 0 != (archinfo->hwcaps & VEX_HWCAPS_AMD64_LZCNT)) {
-      vassert(sz == 2 || sz == 4 || sz == 8);
-      /*IRType*/ ty  = szToITy(sz);
-      IRTemp     src = newTemp(ty);
-      modrm = insn[2];
-      if (epartIsReg(modrm)) {
-         assign(src, getIRegE(sz, pfx, modrm));
-         delta += 2+1;
-         DIP("lzcnt%c %s, %s\n", nameISize(sz), nameIRegE(sz, pfx, modrm),
-             nameIRegG(sz, pfx, modrm));
-      } else {
-         addr = disAMode( &alen, vbi, pfx, delta+2, dis_buf, 0);
-         assign(src, loadLE(ty, mkexpr(addr)));
-         delta += 2+alen;
-         DIP("lzcnt%c %s, %s\n", nameISize(sz), dis_buf,
-             nameIRegG(sz, pfx, modrm));
-      }
-
-      IRTemp res = gen_LZCNT(ty, src);
-      putIRegG(sz, pfx, modrm, mkexpr(res));
-
-      // Update flags.  This is pretty lame .. perhaps can do better
-      // if this turns out to be performance critical.
-      // O S A P are cleared.  Z is set if RESULT == 0.
-      // C is set if SRC is zero.
-      IRTemp src64 = newTemp(Ity_I64);
-      IRTemp res64 = newTemp(Ity_I64);
-      assign(src64, widenUto64(mkexpr(src)));
-      assign(res64, widenUto64(mkexpr(res)));
-
-      IRTemp oszacp = newTemp(Ity_I64);
-      assign(
-         oszacp,
-         binop(Iop_Or64,
-               binop(Iop_Shl64,
-                     unop(Iop_1Uto64,
-                          binop(Iop_CmpEQ64, mkexpr(res64), mkU64(0))),
-                     mkU8(AMD64G_CC_SHIFT_Z)),
-               binop(Iop_Shl64,
-                     unop(Iop_1Uto64,
-                          binop(Iop_CmpEQ64, mkexpr(src64), mkU64(0))),
-                     mkU8(AMD64G_CC_SHIFT_C))
-         )
-      );
-
-      stmt( IRStmt_Put( OFFB_CC_OP,   mkU64(AMD64G_CC_OP_COPY) ));
-      stmt( IRStmt_Put( OFFB_CC_DEP2, mkU64(0) ));
-      stmt( IRStmt_Put( OFFB_CC_NDEP, mkU64(0) ));
-      stmt( IRStmt_Put( OFFB_CC_DEP1, mkexpr(oszacp) ));
-
-      goto decode_success;
-   }
-
    /* ---------------------------------------------------- */
    /* --- end of the SSE4 decoder                      --- */
    /* ---------------------------------------------------- */
@@ -18745,41 +18789,6 @@ DisResult disInstr_AMD64_WRK (
    /* ------------------------ IMUL ----------------------- */
 
    /* ------------------------ MOV ------------------------ */
- 
-   case 0xA0: /* MOV Ob,AL */
-      if (have66orF2orF3(pfx)) goto decode_failure;
-      sz = 1;
-      /* Fall through ... */
-   case 0xA1: /* MOV Ov,eAX */
-      if (sz != 8 && sz != 4 && sz != 2 && sz != 1) 
-         goto decode_failure;
-      d64 = getDisp64(delta); 
-      delta += 8;
-      ty = szToITy(sz);
-      addr = newTemp(Ity_I64);
-      assign( addr, handleAddrOverrides(vbi, pfx, mkU64(d64)) );
-      putIRegRAX(sz, loadLE( ty, mkexpr(addr) ));
-      DIP("mov%c %s0x%llx, %s\n", nameISize(sz), 
-                                  segRegTxt(pfx), d64,
-                                  nameIRegRAX(sz));
-      break;
-
-   case 0xA2: /* MOV AL,Ob */
-      if (have66orF2orF3(pfx)) goto decode_failure;
-      sz = 1;
-      /* Fall through ... */
-   case 0xA3: /* MOV eAX,Ov */
-      if (sz != 8 && sz != 4 && sz != 2 && sz != 1) 
-         goto decode_failure;
-      d64 = getDisp64(delta); 
-      delta += 8;
-      ty = szToITy(sz);
-      addr = newTemp(Ity_I64);
-      assign( addr, handleAddrOverrides(vbi, pfx, mkU64(d64)) );
-      storeLE( mkexpr(addr), getIRegRAX(sz) );
-      DIP("mov%c %s, %s0x%llx\n", nameISize(sz), nameIRegRAX(sz),
-                                  segRegTxt(pfx), d64);
-      break;
 
    /* ------------------------ MOVx ------------------------ */
 
