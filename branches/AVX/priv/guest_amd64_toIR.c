@@ -17189,6 +17189,37 @@ Long dis_ESC_NONE (
       }
       return delta;
 
+   case 0xC8: /* ENTER */
+      /* Same comments re operand size as for LEAVE below apply.
+         Also, only handles the case "enter $imm16, $0"; other cases
+         for the second operand (nesting depth) are not handled. */
+      if (sz != 4)
+         goto decode_failure;
+      d64 = getUDisp16(delta);
+      delta += 2;
+      vassert(d64 >= 0 && d64 <= 0xFFFF);
+      if (getUChar(delta) != 0)
+         goto decode_failure;
+      delta++;
+      /* Intel docs seem to suggest:
+           push rbp
+           temp = rsp
+           rbp = temp
+           rsp = rsp - imm16
+      */
+      t1 = newTemp(Ity_I64);
+      assign(t1, getIReg64(R_RBP));
+      t2 = newTemp(Ity_I64);
+      assign(t2, binop(Iop_Sub64, getIReg64(R_RSP), mkU64(8)));
+      putIReg64(R_RSP, mkexpr(t2));
+      storeLE(mkexpr(t2), mkexpr(t1));
+      putIReg64(R_RBP, mkexpr(t2));
+      if (d64 > 0) {
+         putIReg64(R_RSP, binop(Iop_Sub64, mkexpr(t2), mkU64(d64)));
+      }
+      DIP("enter $%u, $0\n", (UInt)d64);
+      return delta;
+
    case 0xC9: /* LEAVE */
       /* In 64-bit mode this defaults to a 64-bit operand size.  There
          is no way to encode a 32-bit variant.  Hence sz==4 but we do
@@ -17554,6 +17585,40 @@ Long dis_ESC_0F (
    delta++;
    switch (opc) { /* first switch */
 
+   case 0x01: /* 0F 01 /0 -- SGDT */
+              /* 0F 01 /1 -- SIDT */
+   {
+       /* This is really revolting, but ... since each processor
+          (core) only has one IDT and one GDT, just let the guest
+          see it (pass-through semantics).  I can't see any way to
+          construct a faked-up value, so don't bother to try. */
+      modrm = getUChar(delta);
+      addr = disAMode ( &alen, vbi, pfx, delta, dis_buf, 0 );
+      delta += alen;
+      if (epartIsReg(modrm)) goto decode_failure;
+      if (gregLO3ofRM(modrm) != 0 && gregLO3ofRM(modrm) != 1)
+         goto decode_failure;
+      switch (gregLO3ofRM(modrm)) {
+         case 0: DIP("sgdt %s\n", dis_buf); break;
+         case 1: DIP("sidt %s\n", dis_buf); break;
+         default: vassert(0); /*NOTREACHED*/
+      }
+
+      IRDirty* d = unsafeIRDirty_0_N (
+                       0/*regparms*/,
+                       "amd64g_dirtyhelper_SxDT",
+                       &amd64g_dirtyhelper_SxDT,
+                       mkIRExprVec_2( mkexpr(addr),
+                                      mkU64(gregLO3ofRM(modrm)) )
+                   );
+      /* declare we're writing memory */
+      d->mFx   = Ifx_Write;
+      d->mAddr = mkexpr(addr);
+      d->mSize = 6;
+      stmt( IRStmt_Dirty(d) );
+      return delta;
+   }
+
    case 0x05: /* SYSCALL */
       guest_RIP_next_mustcheck = True;
       guest_RIP_next_assumed = guest_RIP_bbstart + delta;
@@ -17776,6 +17841,16 @@ Long dis_ESC_0F (
       if (haveF2orF3(pfx)) goto decode_failure;
       if (sz != 8 && sz != 4 && sz != 2) goto decode_failure;
       delta = dis_bt_G_E ( vbi, pfx, sz, delta, BtOpNone );
+      return delta;
+
+   case 0xA4: /* SHLDv imm8,Gv,Ev */
+      modrm = getUChar(delta);
+      d64   = delta + lengthAMode(pfx, delta);
+      vex_sprintf(dis_buf, "$%d", (Int)getUChar(d64));
+      delta = dis_SHLRD_Gv_Ev ( 
+                 vbi, pfx, delta, modrm, sz, 
+                 mkU8(getUChar(d64)), True, /* literal */
+                 dis_buf, True /* left */ );
       return delta;
 
    case 0xA5: /* SHLDv %cl,Gv,Ev */
@@ -18728,37 +18803,6 @@ DisResult disInstr_AMD64_WRK (
       DIP("ret %lld\n", d64);
       break;
 
-   case 0xC8: /* ENTER */
-      /* Same comments re operand size as for LEAVE below apply.
-         Also, only handles the case "enter $imm16, $0"; other cases
-         for the second operand (nesting depth) are not handled. */
-      if (sz != 4)
-         goto decode_failure;
-      d64 = getUDisp16(delta);
-      delta += 2;
-      vassert(d64 >= 0 && d64 <= 0xFFFF);
-      if (getUChar(delta) != 0)
-         goto decode_failure;
-      delta++;
-      /* Intel docs seem to suggest:
-           push rbp
-           temp = rsp
-           rbp = temp
-           rsp = rsp - imm16
-      */
-      t1 = newTemp(Ity_I64);
-      assign(t1, getIReg64(R_RBP));
-      t2 = newTemp(Ity_I64);
-      assign(t2, binop(Iop_Sub64, getIReg64(R_RSP), mkU64(8)));
-      putIReg64(R_RSP, mkexpr(t2));
-      storeLE(mkexpr(t2), mkexpr(t1));
-      putIReg64(R_RBP, mkexpr(t2));
-      if (d64 > 0) {
-         putIReg64(R_RSP, binop(Iop_Sub64, mkexpr(t2), mkU64(d64)));
-      }
-      DIP("enter $%u, $0\n", (UInt)d64);
-      break;
-
    /* ------------------------ CWD/CDQ -------------------- */
 
    /* ------------------------ FPU ops -------------------- */
@@ -18973,16 +19017,6 @@ DisResult disInstr_AMD64_WRK (
 
       /* =-=-=-=-=-=-=-=-=- SHLD/SHRD -=-=-=-=-=-=-=-=-= */
 
-      case 0xA4: /* SHLDv imm8,Gv,Ev */
-         modrm = getUChar(delta);
-         d64   = delta + lengthAMode(pfx, delta);
-         vex_sprintf(dis_buf, "$%d", (Int)getUChar(d64));
-         delta = dis_SHLRD_Gv_Ev ( 
-                    vbi, pfx, delta, modrm, sz, 
-                    mkU8(getUChar(d64)), True, /* literal */
-                    dis_buf, True /* left */ );
-         break;
-
       /* =-=-=-=-=-=-=-=-=- SYSCALL -=-=-=-=-=-=-=-=-=-= */
 
       /* =-=-=-=-=-=-=-=-=- XADD -=-=-=-=-=-=-=-=-=-= */
@@ -18996,39 +19030,6 @@ DisResult disInstr_AMD64_WRK (
       }
 
       /* =-=-=-=-=-=-=-=-=- SGDT and SIDT =-=-=-=-=-=-=-=-=-=-= */
-      case 0x01: /* 0F 01 /0 -- SGDT */
-                 /* 0F 01 /1 -- SIDT */
-      {
-          /* This is really revolting, but ... since each processor
-             (core) only has one IDT and one GDT, just let the guest
-             see it (pass-through semantics).  I can't see any way to
-             construct a faked-up value, so don't bother to try. */
-         modrm = getUChar(delta);
-         addr = disAMode ( &alen, vbi, pfx, delta, dis_buf, 0 );
-         delta += alen;
-         if (epartIsReg(modrm)) goto decode_failure;
-         if (gregLO3ofRM(modrm) != 0 && gregLO3ofRM(modrm) != 1)
-            goto decode_failure;
-         switch (gregLO3ofRM(modrm)) {
-            case 0: DIP("sgdt %s\n", dis_buf); break;
-            case 1: DIP("sidt %s\n", dis_buf); break;
-            default: vassert(0); /*NOTREACHED*/
-         }
-
-         IRDirty* d = unsafeIRDirty_0_N (
-                          0/*regparms*/,
-                          "amd64g_dirtyhelper_SxDT",
-                          &amd64g_dirtyhelper_SxDT,
-                          mkIRExprVec_2( mkexpr(addr),
-                                         mkU64(gregLO3ofRM(modrm)) )
-                      );
-         /* declare we're writing memory */
-         d->mFx   = Ifx_Write;
-         d->mAddr = mkexpr(addr);
-         d->mSize = 6;
-         stmt( IRStmt_Dirty(d) );
-         break;
-      }
 
       /* =-=-=-=-=-=-=-=-=- unimp2 =-=-=-=-=-=-=-=-=-=-= */
 
