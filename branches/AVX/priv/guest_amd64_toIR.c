@@ -16161,6 +16161,7 @@ Long dis_ESC_NONE (
      )
 {
    Long   d64   = 0;
+   UChar  abyte = 0;
    IRTemp addr  = IRTemp_INVALID;
    IRTemp t1    = IRTemp_INVALID;
    IRTemp t2    = IRTemp_INVALID;
@@ -16228,7 +16229,6 @@ Long dis_ESC_NONE (
       if (haveF2orF3(pfx)) goto decode_failure;
       delta = dis_op_imm_A( 1, False, Iop_Or8, True, delta, "or" );
       return delta;
-
    case 0x0D: /* OR Iv, eAX */
       if (haveF2orF3(pfx)) goto decode_failure;
       delta = dis_op_imm_A( sz, False, Iop_Or8, True, delta, "or" );
@@ -17408,6 +17408,102 @@ Long dis_ESC_NONE (
          DIP("jrcxz 0x%llx\n", d64);
       }
       return delta;
+
+   case 0xE4: /* IN imm8, AL */
+      sz = 1; 
+      t1 = newTemp(Ity_I64);
+      abyte = getUChar(delta); delta++;
+      assign(t1, mkU64( abyte & 0xFF ));
+      DIP("in%c $%d,%s\n", nameISize(sz), (Int)abyte, nameIRegRAX(sz));
+      goto do_IN;
+   case 0xE5: /* IN imm8, eAX */
+      if (!(sz == 2 || sz == 4)) goto decode_failure;
+      t1 = newTemp(Ity_I64);
+      abyte = getUChar(delta); delta++;
+      assign(t1, mkU64( abyte & 0xFF ));
+      DIP("in%c $%d,%s\n", nameISize(sz), (Int)abyte, nameIRegRAX(sz));
+      goto do_IN;
+   case 0xEC: /* IN %DX, AL */
+      sz = 1; 
+      t1 = newTemp(Ity_I64);
+      assign(t1, unop(Iop_16Uto64, getIRegRDX(2)));
+      DIP("in%c %s,%s\n", nameISize(sz), nameIRegRDX(2), 
+                                         nameIRegRAX(sz));
+      goto do_IN;
+   case 0xED: /* IN %DX, eAX */
+      if (!(sz == 2 || sz == 4)) goto decode_failure;
+      t1 = newTemp(Ity_I64);
+      assign(t1, unop(Iop_16Uto64, getIRegRDX(2)));
+      DIP("in%c %s,%s\n", nameISize(sz), nameIRegRDX(2), 
+                                         nameIRegRAX(sz));
+      goto do_IN;
+   do_IN: {
+      /* At this point, sz indicates the width, and t1 is a 64-bit
+         value giving port number. */
+      IRDirty* d;
+      if (haveF2orF3(pfx)) goto decode_failure;
+      vassert(sz == 1 || sz == 2 || sz == 4);
+      ty = szToITy(sz);
+      t2 = newTemp(Ity_I64);
+      d = unsafeIRDirty_1_N( 
+             t2,
+             0/*regparms*/, 
+             "amd64g_dirtyhelper_IN", 
+             &amd64g_dirtyhelper_IN,
+             mkIRExprVec_2( mkexpr(t1), mkU64(sz) )
+          );
+      /* do the call, dumping the result in t2. */
+      stmt( IRStmt_Dirty(d) );
+      putIRegRAX(sz, narrowTo( ty, mkexpr(t2) ) );
+      return delta;
+   }
+
+   case 0xE6: /* OUT AL, imm8 */
+      sz = 1;
+      t1 = newTemp(Ity_I64);
+      abyte = getUChar(delta); delta++;
+      assign( t1, mkU64( abyte & 0xFF ) );
+      DIP("out%c %s,$%d\n", nameISize(sz), nameIRegRAX(sz), (Int)abyte);
+      goto do_OUT;
+   case 0xE7: /* OUT eAX, imm8 */
+      if (!(sz == 2 || sz == 4)) goto decode_failure;
+      t1 = newTemp(Ity_I64);
+      abyte = getUChar(delta); delta++;
+      assign( t1, mkU64( abyte & 0xFF ) );
+      DIP("out%c %s,$%d\n", nameISize(sz), nameIRegRAX(sz), (Int)abyte);
+      goto do_OUT;
+   case 0xEE: /* OUT AL, %DX */
+      sz = 1;
+      t1 = newTemp(Ity_I64);
+      assign( t1, unop(Iop_16Uto64, getIRegRDX(2)) );
+      DIP("out%c %s,%s\n", nameISize(sz), nameIRegRAX(sz),
+                                          nameIRegRDX(2));
+      goto do_OUT;
+   case 0xEF: /* OUT eAX, %DX */
+      if (!(sz == 2 || sz == 4)) goto decode_failure;
+      t1 = newTemp(Ity_I64);
+      assign( t1, unop(Iop_16Uto64, getIRegRDX(2)) );
+      DIP("out%c %s,%s\n", nameISize(sz), nameIRegRAX(sz),
+                                          nameIRegRDX(2));
+      goto do_OUT;
+   do_OUT: {
+      /* At this point, sz indicates the width, and t1 is a 64-bit
+         value giving port number. */
+      IRDirty* d;
+      if (haveF2orF3(pfx)) goto decode_failure;
+      vassert(sz == 1 || sz == 2 || sz == 4);
+      ty = szToITy(sz);
+      d = unsafeIRDirty_0_N( 
+             0/*regparms*/, 
+             "amd64g_dirtyhelper_OUT", 
+             &amd64g_dirtyhelper_OUT,
+             mkIRExprVec_3( mkexpr(t1),
+                            widenUto64( getIRegRAX(sz) ), 
+                            mkU64(sz) )
+          );
+      stmt( IRStmt_Dirty(d) );
+      return delta;
+   }
 
    case 0xE8: /* CALL J4 */
       if (haveF2orF3(pfx)) goto decode_failure;
@@ -18858,102 +18954,6 @@ DisResult disInstr_AMD64_WRK (
 
    /* ------------------------ IN / OUT ----------------------- */
  
-   case 0xE4: /* IN imm8, AL */
-      sz = 1; 
-      t1 = newTemp(Ity_I64);
-      abyte = getUChar(delta); delta++;
-      assign(t1, mkU64( abyte & 0xFF ));
-      DIP("in%c $%d,%s\n", nameISize(sz), (Int)abyte, nameIRegRAX(sz));
-      goto do_IN;
-   case 0xE5: /* IN imm8, eAX */
-      if (!(sz == 2 || sz == 4)) goto decode_failure;
-      t1 = newTemp(Ity_I64);
-      abyte = getUChar(delta); delta++;
-      assign(t1, mkU64( abyte & 0xFF ));
-      DIP("in%c $%d,%s\n", nameISize(sz), (Int)abyte, nameIRegRAX(sz));
-      goto do_IN;
-   case 0xEC: /* IN %DX, AL */
-      sz = 1; 
-      t1 = newTemp(Ity_I64);
-      assign(t1, unop(Iop_16Uto64, getIRegRDX(2)));
-      DIP("in%c %s,%s\n", nameISize(sz), nameIRegRDX(2), 
-                                         nameIRegRAX(sz));
-      goto do_IN;
-   case 0xED: /* IN %DX, eAX */
-      if (!(sz == 2 || sz == 4)) goto decode_failure;
-      t1 = newTemp(Ity_I64);
-      assign(t1, unop(Iop_16Uto64, getIRegRDX(2)));
-      DIP("in%c %s,%s\n", nameISize(sz), nameIRegRDX(2), 
-                                         nameIRegRAX(sz));
-      goto do_IN;
-   do_IN: {
-      /* At this point, sz indicates the width, and t1 is a 64-bit
-         value giving port number. */
-      IRDirty* d;
-      if (haveF2orF3(pfx)) goto decode_failure;
-      vassert(sz == 1 || sz == 2 || sz == 4);
-      ty = szToITy(sz);
-      t2 = newTemp(Ity_I64);
-      d = unsafeIRDirty_1_N( 
-             t2,
-             0/*regparms*/, 
-             "amd64g_dirtyhelper_IN", 
-             &amd64g_dirtyhelper_IN,
-             mkIRExprVec_2( mkexpr(t1), mkU64(sz) )
-          );
-      /* do the call, dumping the result in t2. */
-      stmt( IRStmt_Dirty(d) );
-      putIRegRAX(sz, narrowTo( ty, mkexpr(t2) ) );
-      break;
-   }
-
-   case 0xE6: /* OUT AL, imm8 */
-      sz = 1;
-      t1 = newTemp(Ity_I64);
-      abyte = getUChar(delta); delta++;
-      assign( t1, mkU64( abyte & 0xFF ) );
-      DIP("out%c %s,$%d\n", nameISize(sz), nameIRegRAX(sz), (Int)abyte);
-      goto do_OUT;
-   case 0xE7: /* OUT eAX, imm8 */
-      if (!(sz == 2 || sz == 4)) goto decode_failure;
-      t1 = newTemp(Ity_I64);
-      abyte = getUChar(delta); delta++;
-      assign( t1, mkU64( abyte & 0xFF ) );
-      DIP("out%c %s,$%d\n", nameISize(sz), nameIRegRAX(sz), (Int)abyte);
-      goto do_OUT;
-   case 0xEE: /* OUT AL, %DX */
-      sz = 1;
-      t1 = newTemp(Ity_I64);
-      assign( t1, unop(Iop_16Uto64, getIRegRDX(2)) );
-      DIP("out%c %s,%s\n", nameISize(sz), nameIRegRAX(sz),
-                                          nameIRegRDX(2));
-      goto do_OUT;
-   case 0xEF: /* OUT eAX, %DX */
-      if (!(sz == 2 || sz == 4)) goto decode_failure;
-      t1 = newTemp(Ity_I64);
-      assign( t1, unop(Iop_16Uto64, getIRegRDX(2)) );
-      DIP("out%c %s,%s\n", nameISize(sz), nameIRegRAX(sz),
-                                          nameIRegRDX(2));
-      goto do_OUT;
-   do_OUT: {
-      /* At this point, sz indicates the width, and t1 is a 64-bit
-         value giving port number. */
-      IRDirty* d;
-      if (haveF2orF3(pfx)) goto decode_failure;
-      vassert(sz == 1 || sz == 2 || sz == 4);
-      ty = szToITy(sz);
-      d = unsafeIRDirty_0_N( 
-             0/*regparms*/, 
-             "amd64g_dirtyhelper_OUT", 
-             &amd64g_dirtyhelper_OUT,
-             mkIRExprVec_3( mkexpr(t1),
-                            widenUto64( getIRegRAX(sz) ), 
-                            mkU64(sz) )
-          );
-      stmt( IRStmt_Dirty(d) );
-      break;
-   }
-
    /* ------------------------ (Grp1 extensions) ---------- */
 
    /* ------------------------ (Grp2 extensions) ---------- */
