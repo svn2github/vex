@@ -41,6 +41,244 @@
 
 
 /*---------------------------------------------------------------*/
+/*--- Printing NCode                                          ---*/
+/*---------------------------------------------------------------*/
+
+static void spaces ( Int n )
+{
+   const HChar* sixteen = "                ";
+   while (n >= 16) {
+      vex_printf("%s", sixteen);
+      n -= 16;
+   }
+   vassert(n < 16);
+   if (n > 0) {
+      vex_printf("%s", &sixteen[16-n]);
+   }
+}
+
+static const HChar* nameNCondCode ( NCondCode ncc ) {
+   switch (ncc) {
+      case Ncc_ALWAYS: return "  ";
+      case Ncc_Z:      return "z ";
+      case Ncc_NZ:     return "nz";
+      default:         return "nameNCondCode???";
+   }
+}
+
+static const HChar* nameNShift ( NShift nsh ) {
+   switch (nsh) {
+      case Nsh_SHL: return "shl";
+      case Nsh_SHR: return "shr";
+      default:      return "nameNShift???";
+   }
+}
+
+static const HChar* nameNAlu ( NAlu nal ) {
+   switch (nal) {
+      case Nalu_AND: return "and";
+      default: return "nameNAlu???";
+   }
+}
+
+static const HChar* nameNSetFlags ( NSetFlags nsf ) {
+   switch (nsf) {
+      case Nsf_CMP:  return "cmp";
+      case Nsf_TEST: return "tst";
+      default:       return "nameNSetFlags???";
+   }
+}
+
+static void ppNReg ( NReg r )
+{
+   if (isNRegINVALID(r)) {
+      vex_printf("nregINVALID");
+   } else {
+      HChar c = '?';
+      switch (r.role) {
+         case Nrr_INVALID:  c = '!'; break;
+         case Nrr_Result:   c = 'r'; break;
+         case Nrr_Argument: c = 'a'; break;
+         case Nrr_Scratch:  c = 's'; break;
+         default: break;
+      }
+      vex_printf("%c%u", c, r.num);
+   }
+}
+
+void ppNLabelZone ( NLabelZone zone )
+{
+   switch (zone) {
+      case Nlz_Cold: vex_printf("cold"); return;
+      case Nlz_Hot:  vex_printf("hot"); return;
+      default:       vex_printf("ppNLabelZone??"); return;
+   }
+}
+
+void ppNLabel ( NLabel lbl )
+{
+   ppNLabelZone(lbl.zone);
+   vex_printf(".%u", lbl.ino);
+}
+
+static void ppNEA ( const NEA* nea )
+{
+   switch (nea->tag) {
+      case Nea_RRS:
+         vex_printf("[");
+         ppNReg(nea->Nea.RRS.base);
+         vex_printf(" + ");
+         ppNReg(nea->Nea.RRS.index);
+         vex_printf(" << #%u]", (UInt)nea->Nea.RRS.shift);
+         break;
+      case Nea_IRS:
+         vex_printf("[0x%llx", (ULong)nea->Nea.IRS.base);
+         vex_printf(" + ");
+         ppNReg(nea->Nea.IRS.index);
+         vex_printf(" << #%u]", (UInt)nea->Nea.IRS.shift);
+         break;
+      default:
+         vex_printf("??nea");
+   }
+}
+
+void ppNInstr ( const NInstr* ni )
+{
+   UInt i;
+   switch (ni->tag) {
+      case Nin_Nop:
+         vex_printf("nop");
+         break;
+      case Nin_Branch:
+         vex_printf("b%s    ", nameNCondCode(ni->Nin.Branch.cc));
+         ppNLabel(ni->Nin.Branch.dst);
+         break;
+      case Nin_Call:
+         vex_printf("call   ");
+         if (!isNRegINVALID(ni->Nin.Call.resHi)) {
+            ppNReg(ni->Nin.Call.resHi);
+            vex_printf(":");
+         }
+         if (!isNRegINVALID(ni->Nin.Call.resLo)) {
+            ppNReg(ni->Nin.Call.resLo);
+            vex_printf(" = ");
+         }
+         vex_printf("%s[%llx](", ni->Nin.Call.name, (ULong)ni->Nin.Call.entry);
+         for (i = 0; !isNRegINVALID(ni->Nin.Call.argRegs[i]); i++) {
+            if (i > 0) vex_printf(",");
+            ppNReg(ni->Nin.Call.argRegs[i]);
+         }
+         vex_printf(")");
+         break;
+      case Nin_ImmW:
+         vex_printf("imm.w  ");
+         ppNReg(ni->Nin.ImmW.dst);
+         vex_printf(", #0x%llx", (ULong)ni->Nin.ImmW.imm);
+         break;
+      case Nin_ShiftWri:
+         vex_printf("%s.w  ", nameNShift(ni->Nin.ShiftWri.how));
+         ppNReg(ni->Nin.ShiftWri.dst);
+         vex_printf(", ");
+         ppNReg(ni->Nin.ShiftWri.srcL);
+         vex_printf(", #%u", (UInt)ni->Nin.ShiftWri.amt);
+         break;
+      case Nin_AluWri:
+         vex_printf("%s.w  ", nameNAlu(ni->Nin.AluWri.how));
+         ppNReg(ni->Nin.AluWri.dst);
+         vex_printf(", ");
+         ppNReg(ni->Nin.AluWri.srcL);
+         vex_printf(", #0x%llx", (ULong)ni->Nin.AluWri.srcR);
+         break;
+      case Nin_SetFlagsWri:
+         vex_printf("%s.w  ", nameNSetFlags(ni->Nin.SetFlagsWri.how));
+         ppNReg(ni->Nin.SetFlagsWri.srcL);
+         vex_printf(", #0x%llx", (ULong)ni->Nin.SetFlagsWri.srcR);
+         break;
+      case Nin_MovW:
+         vex_printf("mov.w  ");
+         ppNReg(ni->Nin.MovW.dst);
+         vex_printf(", ");
+         ppNReg(ni->Nin.MovW.src);
+         break;
+      case Nin_LoadU: {
+         const HChar* str = "??";
+         switch (ni->Nin.LoadU.szB) {
+            case 1: str = "8 "; break;
+            case 2: str = "16"; break;
+            case 4: str = "32"; break;
+            case 8: str = "64"; break;
+            default: break;
+         }
+         vex_printf("ld.%s  ", str);
+         ppNReg(ni->Nin.LoadU.dst);
+         vex_printf(", ");
+         ppNEA(ni->Nin.LoadU.addr);
+         break;
+      }
+      case Nin_Store: {
+         const HChar* str = "??";
+         switch (ni->Nin.Store.szB) {
+            case 1: str = "8 "; break;
+            case 2: str = "16"; break;
+            case 4: str = "32"; break;
+            case 8: str = "64"; break;
+            default: break;
+         }
+         vex_printf("st.%s  ", str);
+         ppNReg(ni->Nin.Store.src);
+         vex_printf(", ");
+         ppNEA(ni->Nin.Store.addr);
+         break;
+      }
+      default:
+        vex_printf("NInstr_Unknown_Tag(%u)", (UInt)ni->tag);
+        break;
+   }
+}
+
+void ppNCodeTemplate ( Int indent, const NCodeTemplate* tmpl )
+{
+   UInt i;
+   spaces(indent);
+   vex_printf("NCode ");
+   if (tmpl->nres > 0) {
+      vex_printf("[");
+      for (i = 0; i < tmpl->nres; i++)
+         vex_printf("r%u%s", i, (i != tmpl->nres-1) ? ", ": "");
+      vex_printf("] =");
+   }
+   vex_printf(" \"%s\" ", tmpl->name);
+   if (tmpl->narg > 0) {
+      vex_printf("[");
+      for (i = 0; i < tmpl->narg; i++)
+         vex_printf("a%u%s", i, (i != tmpl->narg-1) ? ", ": "");
+      vex_printf("] ");
+   }
+   for (i = 0; i < tmpl->nscr; i++)
+      vex_printf("s%u%s", i, (i != tmpl->nscr-1) ? ", ": "");
+   vex_printf(" {\n");
+   spaces(indent+2);
+   vex_printf("hot:\n");
+   for (i = 0; tmpl->hot[i]; i++) {
+      spaces(indent+4);
+      vex_printf("%-2d  ", i);
+      ppNInstr(tmpl->hot[i]);
+      vex_printf("\n");
+   }
+   spaces(indent+2);
+   vex_printf("cold:\n");
+   for (i = 0; tmpl->cold[i]; i++) {
+      spaces(indent+4);
+      vex_printf("%-2d  ", i);
+      ppNInstr(tmpl->cold[i]);
+      vex_printf("\n");
+   }
+   spaces(indent);
+   vex_printf("}\n");
+}
+
+
+/*---------------------------------------------------------------*/
 /*--- Printing the IR                                         ---*/
 /*---------------------------------------------------------------*/
 
@@ -114,6 +352,13 @@ void ppIRTemp ( IRTemp tmp )
       vex_printf("IRTemp_INVALID");
    else
       vex_printf( "t%d", (Int)tmp);
+}
+
+IRTemp* mkIRTempVec_1 ( IRTemp tmp1 ) {
+   IRTemp* vec = LibVEX_Alloc(2 * sizeof(IRTemp*));
+   vec[0] = tmp1;
+   vec[1] = IRTemp_INVALID;
+   return vec;
 }
 
 void ppIROp ( IROp op )
@@ -1594,6 +1839,24 @@ void ppIRStmt ( const IRStmt* s )
          vex_printf("IR-");
          ppIRMBusEvent(s->Ist.MBE.event);
          break;
+      case Ist_NCode: {
+         UInt i;
+         NCodeTemplate* tmpl = s->Ist.NCode.tmpl;
+         if (tmpl->nres > 0) {
+            for (i = 0; i < tmpl->nres; i++) {
+               ppIRTemp(s->Ist.NCode.ress[i]);
+               if (i != tmpl->nres-1) vex_printf(",");
+            }
+            vex_printf(" = ");
+         }
+         vex_printf("NCode:%s(", tmpl->name);
+         for (i = 0; i < tmpl->narg; i++) {
+            ppIRExpr(s->Ist.NCode.args[i]);
+            if (i != tmpl->narg-1) vex_printf(",");
+         }
+         vex_printf(")");
+         break;
+      }
       case Ist_Exit:
          vex_printf( "if (" );
          ppIRExpr(s->Ist.Exit.guard);
@@ -1626,10 +1889,50 @@ void ppIRTypeEnv ( const IRTypeEnv* env )
       vex_printf( "\n"); 
 }
 
+static void ppNCodeTemplates ( const IRSB* bb )
+{
+   /* We need to keep track of which templates we've already shown.
+      No tool is expected to have more than a few of them, and
+      especially not many in any single IRSB. */
+   const UInt nTmplsMax = 20;
+   NCodeTemplate* tmpls[nTmplsMax];
+   UInt nTmpls = 0;
+
+   /* Visit all the IRStmts, printing out NCode templates, but only
+      showing each one once. */
+   UInt i, j;
+   for (i = 0; i < bb->stmts_used; i++) {
+      IRStmt* st = bb->stmts[i];
+      if (st->tag != Ist_NCode)
+         continue;
+      /* We've found a NCode template.  Have we shown it already? */
+      NCodeTemplate* tmpl = st->Ist.NCode.tmpl;
+      for (j = 0; j < nTmpls; j++) {
+         if (tmpls[j] == tmpl)
+            break;
+      }
+      vassert(j >= 0 && j <= nTmpls);
+      if (j < nTmpls)
+         continue; /* we've seen it before */
+
+      vassert(nTmpls >= 0 && nTmpls <= nTmplsMax);
+      if (nTmpls == nTmplsMax)
+         vpanic("ppNCodeTemplates: nTmplsMax is too small");
+
+      tmpls[nTmpls++] = tmpl;
+      if (nTmpls == 1)
+         vex_printf("   Using NCode template(s):\n");
+      ppNCodeTemplate(3, tmpl);
+   }
+   if (nTmpls > 0)
+      vex_printf("\n");
+}
+
 void ppIRSB ( const IRSB* bb )
 {
    Int i;
    vex_printf("IRSB {\n");
+   ppNCodeTemplates(bb);
    ppIRTypeEnv(bb->tyenv);
    vex_printf("\n");
    for (i = 0; i < bb->stmts_used; i++) {
@@ -1646,9 +1949,171 @@ void ppIRSB ( const IRSB* bb )
 
 
 /*---------------------------------------------------------------*/
-/*--- Constructors                                            ---*/
+/*--- Constructors for NCode                                  ---*/
 /*---------------------------------------------------------------*/
 
+NReg mkNReg ( NRegRole role, UInt num )
+{
+   switch (role) {
+      case Nrr_INVALID:
+         vassert(num == 0);
+         break;
+      case Nrr_Argument: case Nrr_Result: case Nrr_Scratch:
+         vassert(num < 10); /* arbitrary */
+         break;
+      default:
+         vassert(0);
+   }
+   NReg reg = { role, num };
+   return reg;
+}
+
+Bool isNRegINVALID ( NReg r )
+{
+   return r.role == Nrr_INVALID && r.num == 0;
+}
+
+NLabel mkNLabel ( NLabelZone zone, UInt ino )
+{
+   vassert(zone == Nlz_Cold || zone == Nlz_Hot);
+   vassert(ino < 20); /* arbitrary */
+   NLabel lbl = { zone, ino };
+   return lbl;
+}
+
+NEA* NEA_RRS ( NAlloc na, NReg base, NReg index, UChar shift )
+{
+   NEA* nea = na(sizeof(NEA));
+   nea->tag           = Nea_RRS;
+   nea->Nea.RRS.base  = base;
+   nea->Nea.RRS.index = index;
+   nea->Nea.RRS.shift = shift;
+   vassert(shift <= 3);
+   return nea;
+}
+NEA* NEA_IRS ( NAlloc na, HWord base, NReg index, UChar shift )
+{
+   NEA* nea = na(sizeof(NEA));
+   nea->tag           = Nea_IRS;
+   nea->Nea.IRS.base  = base;
+   nea->Nea.IRS.index = index;
+   nea->Nea.IRS.shift = shift;
+   vassert(shift <= 3);
+   return nea;
+}
+
+NInstr* NInstr_Nop ( NAlloc na )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag = Nin_Nop;
+   return in;
+}
+NInstr* NInstr_Branch ( NAlloc na, NCondCode cc, NLabel dst )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag            = Nin_Branch;
+   in->Nin.Branch.cc  = cc;
+   in->Nin.Branch.dst = dst;
+   return in;
+}
+NInstr* NInstr_Call ( NAlloc na, 
+                      NReg resHi, NReg resLo, NReg* argRegs,
+                      void* entry, const HChar* name )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag              = Nin_Call;
+   in->Nin.Call.resHi   = resHi;
+   in->Nin.Call.resLo   = resLo;
+   in->Nin.Call.argRegs = argRegs;
+   in->Nin.Call.entry   = entry;
+   in->Nin.Call.name    = name;
+   return in;
+}
+NInstr* NInstr_ImmW ( NAlloc na, NReg dst, HWord imm )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag          = Nin_ImmW;
+   in->Nin.ImmW.dst = dst;
+   in->Nin.ImmW.imm = imm;
+   return in;
+}
+NInstr* NInstr_ShiftWri ( NAlloc na,
+                          NShift how, NReg dst, NReg srcL, UInt amt )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag               = Nin_ShiftWri;
+   in->Nin.ShiftWri.how  = how;
+   in->Nin.ShiftWri.dst  = dst;
+   in->Nin.ShiftWri.srcL = srcL;
+   in->Nin.ShiftWri.amt  = amt;
+   return in;
+}
+NInstr* NInstr_AluWri ( NAlloc na, NAlu how, NReg dst, NReg srcL, HWord srcR )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag             = Nin_AluWri;
+   in->Nin.AluWri.how  = how;
+   in->Nin.AluWri.dst  = dst;
+   in->Nin.AluWri.srcL = srcL;
+   in->Nin.AluWri.srcR = srcR;
+   return in;
+}
+NInstr* NInstr_SetFlagsWri ( NAlloc na, NSetFlags how, NReg srcL, HWord srcR )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag                  = Nin_SetFlagsWri;
+   in->Nin.SetFlagsWri.how  = how;
+   in->Nin.SetFlagsWri.srcL = srcL;
+   in->Nin.SetFlagsWri.srcR = srcR;
+   return in;
+}
+NInstr* NInstr_MovW ( NAlloc na, NReg dst, NReg src )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag          = Nin_MovW;
+   in->Nin.MovW.dst = dst;
+   in->Nin.MovW.src = src;
+   return in;
+}
+NInstr* NInstr_LoadU ( NAlloc na, NReg dst, NEA* addr, UChar szB )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag            = Nin_LoadU;
+   in->Nin.LoadU.dst  = dst;
+   in->Nin.LoadU.addr = addr;
+   in->Nin.LoadU.szB  = szB;
+   return in;
+}
+NInstr* NInstr_Store ( NAlloc na, NReg src, NEA* addr, UChar szB )
+{
+   NInstr* in = na(sizeof(NInstr));
+   in->tag            = Nin_Store;
+   in->Nin.Store.src  = src;
+   in->Nin.Store.addr = addr;
+   in->Nin.Store.szB  = szB;
+   return in;
+}
+
+NCodeTemplate* mkNCodeTemplate (
+                  NAlloc na, const HChar* name, 
+                  UInt nres, UInt narg, UInt nscr,
+                  NInstr** hot, NInstr** cold
+               )
+{
+   NCodeTemplate* tmpl = na(sizeof(NCodeTemplate));
+   tmpl->name = name;
+   tmpl->nres = nres;
+   tmpl->narg = narg;
+   tmpl->nscr = nscr;
+   tmpl->hot  = hot;
+   tmpl->cold = cold;
+   return tmpl;
+}
+
+
+/*---------------------------------------------------------------*/
+/*--- Constructors for the IR                                 ---*/
+/*---------------------------------------------------------------*/
 
 /* Constructors -- IRConst */
 
@@ -2141,6 +2606,15 @@ IRStmt* IRStmt_MBE ( IRMBusEvent event )
    IRStmt* s        = LibVEX_Alloc(sizeof(IRStmt));
    s->tag           = Ist_MBE;
    s->Ist.MBE.event = event;
+   return s;
+}
+IRStmt* IRStmt_NCode ( NCodeTemplate* tmpl, IRExpr** args, IRTemp* ress )
+{
+   IRStmt* s         = LibVEX_Alloc(sizeof(IRStmt));
+   s->tag            = Ist_NCode;
+   s->Ist.NCode.tmpl = tmpl;
+   s->Ist.NCode.args = args;
+   s->Ist.NCode.ress = ress;
    return s;
 }
 IRStmt* IRStmt_Exit ( IRExpr* guard, IRJumpKind jk, IRConst* dst,
@@ -3666,7 +4140,7 @@ Bool isFlatIRStmt ( const IRStmt* st )
                         && isIRAtom(lg->alt) && isIRAtom(lg->guard) );
       }
       case Ist_CAS: {
-        const IRCAS* cas = st->Ist.CAS.details;
+         const IRCAS* cas = st->Ist.CAS.details;
          return toBool( isIRAtom(cas->addr)
                         && (cas->expdHi ? isIRAtom(cas->expdHi) : True)
                         && isIRAtom(cas->expdLo)
@@ -3692,6 +4166,20 @@ Bool isFlatIRStmt ( const IRStmt* st )
       case Ist_IMark:
       case Ist_MBE:
          return True;
+      case Ist_NCode: {
+         const NCodeTemplate* tmpl = st->Ist.NCode.tmpl;
+         for (i = 0; i < tmpl->narg; i++) {
+            IRExpr* arg = st->Ist.NCode.args[i];
+            if (!isIRAtom(arg)) return False;
+         }
+         if (st->Ist.NCode.args[tmpl->narg] != NULL) return False;
+         for (i = 0; i < tmpl->nres; i++) {
+            IRTemp t = st->Ist.NCode.ress[i];
+            if (t == IRTemp_INVALID) return False;
+         }
+         if (st->Ist.NCode.ress[tmpl->nres] != IRTemp_INVALID) return False;
+         return True;
+      }
       case Ist_Exit:
          return isIRAtom(st->Ist.Exit.guard);
       default: 
@@ -3911,7 +4399,7 @@ void useBeforeDef_Stmt ( const IRSB* bb, const IRStmt* stmt, Int* def_counts )
             IRExpr* arg = d->args[i];
             if (UNLIKELY(is_IRExpr_VECRET_or_BBPTR(arg))) {
                /* This is ensured by isFlatIRStmt */
-              ;
+               ;
             } else {
                useBeforeDef_Expr(bb,stmt,arg,def_counts);
             }
@@ -3922,6 +4410,13 @@ void useBeforeDef_Stmt ( const IRSB* bb, const IRStmt* stmt, Int* def_counts )
       case Ist_NoOp:
       case Ist_MBE:
          break;
+      case Ist_NCode: {
+         NCodeTemplate* tmpl = stmt->Ist.NCode.tmpl;
+         for (i = 0; i < tmpl->narg; i++) {
+            useBeforeDef_Expr(bb,stmt,stmt->Ist.NCode.args[i],def_counts);
+         }
+         break;
+      }
       case Ist_Exit:
          useBeforeDef_Expr(bb,stmt,stmt->Ist.Exit.guard,def_counts);
          break;
@@ -4408,6 +4903,23 @@ void tcStmt ( const IRSB* bb, const IRStmt* stmt, IRType gWordTy )
                break;
          }
          break;
+      case Ist_NCode: {
+         NCodeTemplate* tmpl = stmt->Ist.NCode.tmpl;
+         for (i = 0; i < tmpl->narg; i++) {
+            IRExpr* arg = stmt->Ist.NCode.args[i];
+            tcExpr( bb, stmt, arg, gWordTy );
+            if (typeOfIRExpr(tyenv, arg) != gWordTy)
+               sanityCheckFail(bb,stmt,
+                               "IRStmt.NCode.arg: not :: guest word type");
+         }
+         for (i = 0; i < tmpl->nres; i++) {
+            IRTemp t = stmt->Ist.NCode.ress[i];
+            if (typeOfIRTemp(tyenv, t) != gWordTy)
+               sanityCheckFail(bb,stmt,
+                                "IRStmt.NCode.res: not :: guest word type");
+         }
+         break;
+      }
       case Ist_Exit:
          tcExpr( bb, stmt, stmt->Ist.Exit.guard, gWordTy );
          if (typeOfIRExpr(tyenv,stmt->Ist.Exit.guard) != Ity_I1)
@@ -4543,6 +5055,20 @@ void sanityCheckIRSB ( const IRSB* bb, const HChar* caller,
             sanityCheckFail(bb, stmt,
                "IRStmt.LLSC: destination tmp is assigned more than once");
          break;
+      case Ist_NCode: {
+         NCodeTemplate* tmpl = stmt->Ist.NCode.tmpl;
+         UInt j;
+         for (j = 0; j < tmpl->nres; j++) {
+            IRTemp t = stmt->Ist.NCode.ress[j];
+            if (t < 0 || t >= n_temps)
+               sanityCheckFail(bb, stmt,
+                  "IRStmt.NCode: result tmp is out of range");
+         def_counts[t]++;
+         if (def_counts[t] > 1)
+            sanityCheckFail(bb, stmt,
+               "IRStmt.NCode: result tmp is assigned more than once");
+         }
+      }
       default:
          /* explicitly handle the rest, so as to keep gcc quiet */
          break;

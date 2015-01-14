@@ -61,7 +61,7 @@
    integer array index in the register allocator.
 
    Note further that since the class field is never 1111b, no valid
-   register can have the value INVALID_HREG.
+   register can have the value HReg_INVALID.
 
    There are currently 6 register classes:
 
@@ -145,12 +145,64 @@ static inline Bool sameHReg ( HReg r1, HReg r2 )
    return toBool(r1.reg == r2.reg);
 }
 
-static const HReg INVALID_HREG = { 0xFFFFFFFF };
+static const HReg HReg_INVALID = { 0xFFFFFFFF };
 
 static inline Bool hregIsInvalid ( HReg r )
 {
-   return sameHReg(r, INVALID_HREG);
+   return sameHReg(r, HReg_INVALID);
 }
+
+
+/*---------------------------------------------------------*/
+/*--- Representing register sets                        ---*/
+/*---------------------------------------------------------*/
+
+/* This is a very un-clever representation, but we need
+   to start somewhere. */
+
+#define N_HREG_SET 20
+
+typedef
+   struct {
+      HReg regs[N_HREG_SET];
+      UInt regsUsed; /* 0 .. N_HREG_SET inclusive */
+   }
+   HRegSet;
+
+/* Print a register set, using the arch-specific register printing
+   function |regPrinter| supplied. */
+extern void HRegSet__pp ( HRegSet* set, void (*regPrinter)(HReg) );
+
+/* Create a new, empty, set. */
+extern HRegSet* HRegSet__new ( void );
+
+/* Install elements from vec[0 .. nVec-1].  The previous contents of
+   |dst| are lost. */
+extern void HRegSet__fromVec ( /*MOD*/HRegSet* dst,
+                               const HReg* vec, UInt nVec );
+
+/* Copy the contents of |regs| into |dst|.  The previous contents of
+   |dst| are lost. */
+extern void HRegSet__copy ( /*MOD*/HRegSet* dst, const HRegSet* regs );
+
+/* Add |reg| to |dst|. */
+extern void HRegSet__add ( /*MOD*/HRegSet* dst, HReg reg );
+
+/* Remove |reg| from |dst|. */
+extern void HRegSet__del ( /*MOD*/HRegSet* dst, HReg reg );
+
+/* Add |regs| to |dst|. */
+extern void HRegSet__plus ( /*MOD*/HRegSet* dst, const HRegSet* regs );
+
+/* Remove |regs| from |dst|. */
+extern void HRegSet__minus ( /*MOD*/HRegSet* dst, const HRegSet* regs );
+
+/* Returns the number of elements in |set|. */
+extern UInt HRegSet__size ( const HRegSet* set );
+
+/* Returns the |ix|th element of |set|, where |ix| is zero-based. */
+extern HReg HRegSet__index ( const HRegSet* set, UInt ix );
+
 
 /*---------------------------------------------------------*/
 /*--- Recording register usage (for reg-alloc)          ---*/
@@ -186,7 +238,6 @@ static inline void initHRegUsage ( HRegUsage* tab ) {
    create duplicate entries -- each reg should only be mentioned once.  
 */
 extern void addHRegUse ( HRegUsage*, HRegMode, HReg );
-
 
 
 /*---------------------------------------------------------*/
@@ -310,6 +361,185 @@ static inline Bool is_RetLoc_INVALID ( RetLoc rl ) {
 
 
 /*---------------------------------------------------------*/
+/*--- Assembly buffers                                  ---*/
+/*---------------------------------------------------------*/
+
+/* This describes a buffer into which instructions are assembled. */
+
+typedef
+   struct {
+      UChar* buf;     /* buffer */
+      UInt   bufSize; /* max allowable size */
+      UInt   bufUsed; /* next free location */
+   }
+   AssemblyBuffer;
+
+static inline void AssemblyBuffer__init ( /*OUT*/AssemblyBuffer* abuf,
+                                          UChar* buf, UInt bufSize )
+{
+   abuf->buf     = buf;
+   abuf->bufSize = bufSize;
+   abuf->bufUsed = 0;
+}
+
+static inline UChar* AssemblyBuffer__getCursor ( const AssemblyBuffer* abuf )
+{
+   return &abuf->buf[abuf->bufUsed];
+}
+
+static inline UInt AssemblyBuffer__getNext ( const AssemblyBuffer* abuf )
+{
+   return abuf->bufUsed;
+}
+
+static 
+inline Int AssemblyBuffer__getRemainingSize ( const AssemblyBuffer* abuf )
+{
+   return (Int)abuf->bufSize - (Int)abuf->bufUsed;
+}
+
+
+/*---------------------------------------------------------*/
+/*--- Relocations.  Move somewhere else?                ---*/
+/*---------------------------------------------------------*/
+
+/* This describes a place at which a relocation is to be performed, by
+   pairing a hot/cold zone descriptor and an offset in an assembly
+   buffer.
+*/
+typedef
+   struct {
+      NLabelZone zone;
+      UInt       offset; // in the AssemblyBuffer associated with |zone|
+   }
+   RelocWhere;
+
+static inline RelocWhere mkRelocWhere ( NLabelZone zone, UInt offset ) {
+   RelocWhere rw = { zone, offset };
+   return rw;
+}
+
+
+/* This describes a place which is the target of a relocation, that
+   is, a jump target.  The target is in the hot or cold code buffer,
+   hence |zone|, and is further characterised by |num| either as an
+   instruction number (that is, an NLabel) when |isOffset| == False,
+   or as an offset in the assembly buffer when |isOffset| == True.
+
+   RelocDsts are initially created with |isOffset| == False, that is,
+   as an NLabel.  Once we know the know the AssemblyBuffer offsets for
+   each NLabel, |isOffset| is set to True and |num| becomes the
+   offset.  Once it is in that form, it is possible to compute the
+   distance in bytes between it and a RelocWhere, and hence perform
+   the relocation.
+*/
+typedef
+   struct {
+      NLabelZone zone;
+      UInt       num;
+      Bool       isOffset;
+   }
+   RelocDst;
+
+static inline RelocDst mkRelocDst_from_NLabel ( NLabel nl ) {
+   RelocDst rd = { nl.zone, nl.ino, False/*!isOffset*/ };
+   return rd;
+}
+
+
+/* What this describes is as follows.  Let |whereA| be an host address
+   that |where| evaluates to, by whatever means, and let |dstA|
+   likewise be a host address that |dst| evaluates to.
+
+   What this then describes is a modification of a 32 bit integer
+   located at whereA[0..3], interpreted in the host's endianness.  The
+   32 bit value at that location has bits [bitNoMax .. bitNoMin]
+   inclusive replaced by the least significant bits of the following
+   expression
+
+      E = (dstA - whereA + sign_extend(bias)) >>signed rshift
+
+   and all other bits of that 32 bit value are left unchanged.
+   Observe that this description assumes the relocation expression E
+   is signed.  If the bits that we copy out of E and into the 32 bit
+   word do not sign extend back to E, then the offset is too large to
+   be represented and the relocation cannot be performed.
+
+   The use of |bitNo{Max,Min}| facilitates writing an arbitrary bitfield
+   in the middle of (eg) an ARM branch instruction.  For amd64-style
+   32-bit branch offsets we expect the values to be 0 and 31
+   respectively.
+
+   The use of |rshift| facilitates architectures (eg ARM) that use fixed
+   length instructions, and hence require the offset to be stated in
+   number of instructions instead of (eg on amd64) number of bytes.
+
+   The use of |bias| is necessary because on some targets (eg amd64) the
+   processor expects the branch offset to be stated relative to the
+   first byte of the instruction, but |where| points somewhere further
+   along the instruction.  Hence we have to add a small negative bias
+   to "back up" |where| to the start of the instruction.
+
+   So far, so good.  This does assume that the offset bitfield is
+   contiguous (not split into pieces) inside the target instruction.
+*/
+typedef
+   struct {
+      RelocWhere where;     // where the relocation should be applied
+      UChar      bitNoMin;  // 0 .. 31 inclusive
+      UChar      bitNoMax;  // bitNoMin .. 31 inclusive
+      RelocDst   dst;       // destination of the (presumed) jump
+      Int        bias;      // arbitrary, but in practice very small
+      UChar      rshift;    // 0, 1 or 2 only
+   }
+   Relocation;
+
+static
+inline Relocation mkRelocation ( RelocWhere where,
+                                 UChar bitNoMin, UChar bitNoMax,
+                                 RelocDst dst, Int bias, UChar rshift ) {
+   Relocation rl = { where, bitNoMin, bitNoMax, dst, bias, rshift };
+   return rl;
+}
+
+extern void ppRelocation ( Relocation* rl );
+
+
+/*---------------------------------------------------------*/
+/*--- Relocation buffers                                ---*/
+/*---------------------------------------------------------*/
+
+/* This describes a buffer in which relocations are stored. */
+
+typedef
+   struct {
+      Relocation* buf;     /* buffer */
+      UInt        bufSize; /* max allowable size */
+      UInt        bufUsed; /* next free location */
+   }
+   RelocationBuffer;
+
+static inline void RelocationBuffer__init ( /*OUT*/RelocationBuffer* rbuf,
+                                            Relocation* buf, UInt bufSize )
+{
+   rbuf->buf     = buf;
+   rbuf->bufSize = bufSize;
+   rbuf->bufUsed = 0;
+}
+
+static inline UInt RelocationBuffer__getNext ( const RelocationBuffer* rbuf )
+{
+   return rbuf->bufUsed;
+}
+
+static 
+inline Int RelocationBuffer__getRemainingSize ( const RelocationBuffer* rbuf )
+{
+   return (Int)rbuf->bufSize - (Int)rbuf->bufUsed;
+}
+
+
+/*---------------------------------------------------------*/
 /*--- Reg alloc: TODO: move somewhere else              ---*/
 /*---------------------------------------------------------*/
 
@@ -336,8 +566,8 @@ HInstrArray* doRegisterAllocation (
 
    /* Return insn(s) to spill/restore a real reg to a spill slot
       offset.  And optionally a function to do direct reloads. */
-   void    (*genSpill) (  HInstr**, HInstr**, HReg, Int, Bool ),
-   void    (*genReload) ( HInstr**, HInstr**, HReg, Int, Bool ),
+   void    (*genSpill) (  HInstr**, HInstr**, HReg, Bool, Int, Bool ),
+   void    (*genReload) ( HInstr**, HInstr**, HReg, Bool, Int, Bool ),
    HInstr* (*directReload) ( HInstr*, HReg, Short ),
    Int     guest_sizeB,
 

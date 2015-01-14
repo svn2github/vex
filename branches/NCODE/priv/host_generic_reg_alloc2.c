@@ -331,8 +331,8 @@ HInstrArray* doRegisterAllocation (
       attempts to replace a given instruction by one which reads
       directly from a specified spill slot.  May be NULL, in which
       case the optimisation is not attempted. */
-   void    (*genSpill)  ( HInstr**, HInstr**, HReg, Int, Bool ),
-   void    (*genReload) ( HInstr**, HInstr**, HReg, Int, Bool ),
+   void    (*genSpill)  ( HInstr**, HInstr**, HReg, Bool, Int, Bool ),
+   void    (*genReload) ( HInstr**, HInstr**, HReg, Bool, Int, Bool ),
    HInstr* (*directReload) ( HInstr*, HReg, Short ),
    Int     guest_sizeB,
 
@@ -470,7 +470,7 @@ HInstrArray* doRegisterAllocation (
       rreg_state[j].rreg          = available_real_regs[j];
       rreg_state[j].has_hlrs      = False;
       rreg_state[j].disp          = Free;
-      rreg_state[j].vreg          = INVALID_HREG;
+      rreg_state[j].vreg          = HReg_INVALID;
       rreg_state[j].is_spill_cand = False;
       rreg_state[j].eq_spill_slot = False;
    }
@@ -899,7 +899,7 @@ HInstrArray* doRegisterAllocation (
       with as few as possible vregs expressing a preference.  
 
       This is an optimisation: if the .preferred_rreg field is never
-      set to anything different from INVALID_HREG, the allocator still
+      set to anything different from HReg_INVALID, the allocator still
       works. */
 
    /* 30 Dec 04: removed this mechanism as it does not seem to
@@ -1160,6 +1160,7 @@ HInstrArray* doRegisterAllocation (
                   HInstr* spill1 = NULL;
                   HInstr* spill2 = NULL;
                   (*genSpill)( &spill1, &spill2, rreg_state[k].rreg,
+                               False/*!spRel*/,
                                vreg_lrs[m].spill_offset, mode64 );
                   vassert(spill1 || spill2); /* can't both be NULL */
                   if (spill1)
@@ -1171,7 +1172,7 @@ HInstrArray* doRegisterAllocation (
             }
          }
          rreg_state[k].disp = Unavail;
-         rreg_state[k].vreg = INVALID_HREG;
+         rreg_state[k].vreg = HReg_INVALID;
          rreg_state[k].eq_spill_slot = False;
 
          /* check for further rregs entering HLRs at this point */
@@ -1212,7 +1213,7 @@ HInstrArray* doRegisterAllocation (
       
       if (directReload && reg_usage.n_used <= 2) { 
          Bool  debug_direct_reload = True && False;
-         HReg  cand     = INVALID_HREG;
+         HReg  cand     = HReg_INVALID;
          Bool  nreads   = 0;
          Short spilloff = 0;
 
@@ -1341,6 +1342,7 @@ HInstrArray* doRegisterAllocation (
                HInstr* reload1 = NULL;
                HInstr* reload2 = NULL;
                (*genReload)( &reload1, &reload2, rreg_state[k].rreg,
+                             False/*!spRel*/,
                              vreg_lrs[m].spill_offset, mode64 );
                vassert(reload1 || reload2); /* can't both be NULL */
                if (reload1)
@@ -1424,6 +1426,7 @@ HInstrArray* doRegisterAllocation (
             HInstr* spill1 = NULL;
             HInstr* spill2 = NULL;
             (*genSpill)( &spill1, &spill2, rreg_state[spillee].rreg,
+                         False/*!spRel*/,
                          vreg_lrs[m].spill_offset, mode64 );
             vassert(spill1 || spill2); /* can't both be NULL */
             if (spill1)
@@ -1450,6 +1453,7 @@ HInstrArray* doRegisterAllocation (
             HInstr* reload1 = NULL;
             HInstr* reload2 = NULL;
             (*genReload)( &reload1, &reload2, rreg_state[spillee].rreg,
+                          False/*!spRel*/,
                           vreg_lrs[m].spill_offset, mode64 );
             vassert(reload1 || reload2); /* can't both be NULL */
             if (reload1)
@@ -1516,7 +1520,7 @@ HInstrArray* doRegisterAllocation (
          vassert(k < n_rregs);
          vassert(rreg_state[k].disp == Unavail);
          rreg_state[k].disp = Free;
-         rreg_state[k].vreg = INVALID_HREG;
+         rreg_state[k].vreg = HReg_INVALID;
          rreg_state[k].eq_spill_slot = False;
 
          /* check for further rregs leaving HLRs at this point */

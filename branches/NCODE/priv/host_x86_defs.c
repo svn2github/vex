@@ -2782,7 +2782,7 @@ Int emit_X86Instr ( /*MB_MOD*/Bool* is_profInc,
                temporarily swap the source into, so the store can
                happen.  So we have to look at the regs mentioned
                in the amode. */
-            HReg swap = INVALID_HREG;
+            HReg swap = HReg_INVALID;
             HReg  eax = hregX86_EAX(), ebx = hregX86_EBX(), 
                   ecx = hregX86_ECX(), edx = hregX86_EDX();
             Bool a_ok = True, b_ok = True, c_ok = True, d_ok = True;

@@ -86,6 +86,48 @@ static UInt udiv32 ( UInt x, UInt y ) { return x/y; }
 __attribute__((noinline))
 static  Int sdiv32 (  Int x,  Int y ) { return x/y; }
 
+static UInt loadUnaligned32 ( UChar* where, VexEndness endness )
+{
+   UInt w32 = 0;
+   switch (endness) {
+      case VexEndnessLE:
+         w32 = (w32 << 8) | where[3];
+         w32 = (w32 << 8) | where[2];
+         w32 = (w32 << 8) | where[1];
+         w32 = (w32 << 8) | where[0];
+         break;
+      case VexEndnessBE:
+         w32 = (w32 << 8) | where[0];
+         w32 = (w32 << 8) | where[1];
+         w32 = (w32 << 8) | where[2];
+         w32 = (w32 << 8) | where[3];
+         break;
+      default:
+         vassert(0);
+   }
+   return w32;
+}
+
+static void storeUnaligned32 ( UChar* where, UInt w32, VexEndness endness )
+{
+   switch (endness) {
+      case VexEndnessLE:
+         where[0] = (w32 & 0xFF); w32 >>= 8;
+         where[1] = (w32 & 0xFF); w32 >>= 8;
+         where[2] = (w32 & 0xFF); w32 >>= 8;
+         where[3] = (w32 & 0xFF); w32 >>= 8;
+         break;
+      case VexEndnessBE:
+         where[3] = (w32 & 0xFF); w32 >>= 8;
+         where[2] = (w32 & 0xFF); w32 >>= 8;
+         where[1] = (w32 & 0xFF); w32 >>= 8;
+         where[0] = (w32 & 0xFF); w32 >>= 8;
+         break;
+      default:
+         vassert(0);
+   }
+}
+
 
 /* --------- Initialise the library. --------- */
 
@@ -204,7 +246,28 @@ void LibVEX_Init (
 
 /* --------- Make a translation. --------- */
 
+/* FIXME BEGIN KLUDGE */
+/* This needs to be a virtual method call really. */
+static Bool isNCode ( AMD64Instr* i ) {
+   return i->tag == Ain_NCode;
+}
+/* FIXME END KLUDGE */
+
 /* Exported to library client. */
+
+/* Logically |hcode_hot|, |hcode_cold| and |hcode_relocs| are |auto|
+   for |LibVEX_Translate|, but are kept out of the stack frame since
+   Valgrind's thread stacks are small.  Unfortunately this makes it
+   MT-unsafe, should that ever become an issue. */
+
+#define N_HCODE_HOT    40000
+#define N_HCODE_COLD   20000
+#define N_HCODE_RELOCS ((N_HCODE_HOT + N_HCODE_COLD) / 100)
+
+static UChar      hcode_hot   [N_HCODE_HOT];
+static UChar      hcode_cold  [N_HCODE_COLD];
+static Relocation hcode_relocs[N_HCODE_RELOCS];
+
 
 VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
 {
@@ -216,18 +279,17 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
    Bool         (*isMove)       ( const HInstr*, HReg*, HReg* );
    void         (*getRegUsage)  ( HRegUsage*, const HInstr*, Bool );
    void         (*mapRegs)      ( HRegRemap*, HInstr*, Bool );
-   void         (*genSpill)     ( HInstr**, HInstr**, HReg, Int, Bool );
-   void         (*genReload)    ( HInstr**, HInstr**, HReg, Int, Bool );
+   void         (*genSpill)     ( HInstr**, HInstr**, HReg, Bool, Int, Bool );
+   void         (*genReload)    ( HInstr**, HInstr**, HReg, Bool, Int, Bool );
    HInstr*      (*directReload) ( HInstr*, HReg, Short );
    void         (*ppInstr)      ( const HInstr*, Bool );
    void         (*ppReg)        ( HReg );
    HInstrArray* (*iselSB)       ( const IRSB*, VexArch, const VexArchInfo*,
                                   const VexAbiInfo*, Int, Int, Bool, Bool,
                                   Addr );
-   Int          (*emit)         ( /*MB_MOD*/Bool*,
-                                  UChar*, Int, const HInstr*, Bool, VexEndness,
-                                  const void*, const void*, const void*,
-                                  const void* );
+   Bool         (*emit)         ( /*MOD*/AssemblyBuffer*,
+                                  const HInstr*, Bool, VexEndness,
+                                  const VexDispatcherAddresses* );
    IRExpr*      (*specHelper)   ( const HChar*, IRExpr**, IRStmt**, Int );
    Bool         (*preciseMemExnsFn) ( Int, Int );
 
@@ -237,10 +299,9 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
    IRSB*           irsb;
    HInstrArray*    vcode;
    HInstrArray*    rcode;
-   Int             i, j, k, out_used, guest_sizeB;
+   Int             i, j, guest_sizeB;
    Int             offB_CMSTART, offB_CMLEN, offB_GUEST_IP, szB_GUEST_IP;
    Int             offB_HOST_EvC_COUNTER, offB_HOST_EvC_FAILADDR;
-   UChar           insn_bytes[128];
    IRType          guest_word_type;
    IRType          host_word_type;
    Bool            mode64, chainingAllowed;
@@ -277,15 +338,15 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
 
    vassert(vex_initdone);
    vassert(vta->needs_self_check  != NULL);
-   vassert(vta->disp_cp_xassisted != NULL);
+   vassert(vta->vda.disp_cp_xassisted != NULL);
    /* Both the chainers and the indir are either NULL or non-NULL. */
-   if (vta->disp_cp_chain_me_to_slowEP        != NULL) {
-      vassert(vta->disp_cp_chain_me_to_fastEP != NULL);
-      vassert(vta->disp_cp_xindir             != NULL);
+   if (vta->vda.disp_cp_chain_me_to_slowEP        != NULL) {
+      vassert(vta->vda.disp_cp_chain_me_to_fastEP != NULL);
+      vassert(vta->vda.disp_cp_xindir             != NULL);
       chainingAllowed = True;
    } else {
-      vassert(vta->disp_cp_chain_me_to_fastEP == NULL);
-      vassert(vta->disp_cp_xindir             == NULL);
+      vassert(vta->vda.disp_cp_chain_me_to_fastEP == NULL);
+      vassert(vta->vda.disp_cp_xindir             == NULL);
    }
 
    vexSetAllocModeTEMP_and_clear();
@@ -296,6 +357,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
 
    switch (vta->arch_host) {
 
+#if 0
       case VexArchX86:
          mode64       = False;
          getAllocableRegs_X86 ( &n_available_real_regs,
@@ -313,7 +375,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          host_word_type    = Ity_I32;
          vassert(vta->archinfo_host.endness == VexEndnessLE);
          break;
-
+#endif
       case VexArchAMD64:
          mode64      = True;
          getAllocableRegs_AMD64 ( &n_available_real_regs,
@@ -330,7 +392,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          host_word_type    = Ity_I64;
          vassert(vta->archinfo_host.endness == VexEndnessLE);
          break;
-
+#if 0
       case VexArchPPC32:
          mode64      = False;
          getAllocableRegs_PPC ( &n_available_real_regs,
@@ -455,7 +517,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          vassert(vta->archinfo_host.endness == VexEndnessLE
                  || vta->archinfo_host.endness == VexEndnessBE);
          break;
-
+#endif
       default:
          vpanic("LibVEX_Translate: unsupported host insn set");
    }
@@ -465,7 +527,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
    check_hwcaps(vta->arch_host, vta->archinfo_host.hwcaps);
 
    switch (vta->arch_guest) {
-
+#if 0
       case VexArchX86:
          preciseMemExnsFn       = guest_x86_state_requires_precise_mem_exns;
          disInstrFn             = disInstr_X86;
@@ -485,7 +547,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          vassert(sizeof( ((VexGuestX86State*)0)->guest_CMLEN  ) == 4);
          vassert(sizeof( ((VexGuestX86State*)0)->guest_NRADDR ) == 4);
          break;
-
+#endif
       case VexArchAMD64:
          preciseMemExnsFn       = guest_amd64_state_requires_precise_mem_exns;
          disInstrFn             = disInstr_AMD64;
@@ -505,7 +567,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          vassert(sizeof( ((VexGuestAMD64State*)0)->guest_CMLEN   ) == 8);
          vassert(sizeof( ((VexGuestAMD64State*)0)->guest_NRADDR  ) == 8);
          break;
-
+#if 0
       case VexArchPPC32:
          preciseMemExnsFn       = guest_ppc32_state_requires_precise_mem_exns;
          disInstrFn             = disInstr_PPC;
@@ -649,7 +711,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          vassert(sizeof( ((VexGuestMIPS64State*)0)->guest_CMLEN  ) == 8);
          vassert(sizeof( ((VexGuestMIPS64State*)0)->guest_NRADDR ) == 8);
          break;
-
+#endif
       default:
          vpanic("LibVEX_Translate: unsupported guest insn set");
    }
@@ -903,46 +965,183 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
                    "------------------------\n\n");
    }
 
-   out_used = 0; /* tracks along the host_bytes array */
+   AssemblyBuffer ab_hot, ab_cold;
+   AssemblyBuffer__init(&ab_hot,  hcode_hot,  sizeof hcode_hot);
+   AssemblyBuffer__init(&ab_cold, hcode_cold, sizeof hcode_cold);
+
+   RelocationBuffer rb;
+   RelocationBuffer__init(&rb, hcode_relocs,
+                          sizeof hcode_relocs / sizeof hcode_relocs[0]);
+
    for (i = 0; i < rcode->arr_used; i++) {
-      HInstr* hi           = rcode->arr[i];
-      Bool    hi_isProfInc = False;
+      HInstr* hi         = rcode->arr[i];
+      Bool    hi_isNCode = isNCode(hi);
       if (UNLIKELY(vex_traceflags & VEX_TRACE_ASM)) {
          ppInstr(hi, mode64);
          vex_printf("\n");
       }
-      j = emit( &hi_isProfInc,
-                insn_bytes, sizeof insn_bytes, hi,
-                mode64, vta->archinfo_host.endness,
-                vta->disp_cp_chain_me_to_slowEP,
-                vta->disp_cp_chain_me_to_fastEP,
-                vta->disp_cp_xindir,
-                vta->disp_cp_xassisted );
-      if (UNLIKELY(vex_traceflags & VEX_TRACE_ASM)) {
-         for (k = 0; k < j; k++)
-            vex_printf("%02x ", (UInt)insn_bytes[k]);
-         vex_printf("\n\n");
+      if (LIKELY(!hi_isNCode)) {
+         /* "Normal" (non-NCode) instruction.  Emit into the hot
+            buffer.  First, check there's at least 256 bytes available
+            in it.  We assume (require) |emit| to create less than 256
+            bytes of code for each instruction.  Hence there can be no
+            buffer overflow. */
+         if (UNLIKELY( AssemblyBuffer__getRemainingSize(&ab_hot) < 256 )) {
+            goto outputBufferFull;
+         }
+         UInt used_before = ab_hot.bufUsed;
+         Bool hi_isProfInc 
+            = emit( &ab_hot, hi,
+                    mode64, vta->archinfo_host.endness, &vta->vda );
+         if (UNLIKELY(vex_traceflags & VEX_TRACE_ASM)) {
+            UInt used_after = ab_hot.bufUsed;
+            UInt k;
+            for (k = used_before; k < used_after; k++)
+               if (ab_hot.buf[k] < 16)
+                  vex_printf("0%x ",  (UInt)ab_hot.buf[k]);
+               else
+                  vex_printf("%x ", (UInt)ab_hot.buf[k]);
+            vex_printf("\n\n");
+         }
+         if (UNLIKELY(hi_isProfInc)) {
+            vassert(vta->addProfInc); /* else where did it come from? */
+            vassert(res.offs_profInc == -1); /* there can be only one (tm) */
+            res.offs_profInc = (Int)used_before;
+         }
+      } else {
+         /* NCode instruction. */
+         if (UNLIKELY( AssemblyBuffer__getRemainingSize(&ab_hot) < 1024 )
+             || UNLIKELY( AssemblyBuffer__getRemainingSize(&ab_cold) < 1024 ))
+            goto outputBufferFull;
+         Bool ok = emit_AMD64NCode ( &ab_hot, &ab_cold, &rb, hi,
+                                     mode64, vta->archinfo_host.endness,
+                                     !!(vex_traceflags & VEX_TRACE_ASM));
+         if (!ok)
+            goto outputBufferFull;
       }
-      if (UNLIKELY(out_used + j > vta->host_bytes_size)) {
-         vexSetAllocModeTEMP_and_clear();
-         vex_traceflags = 0;
-         res.status = VexTransOutputFull;
-         return res;
-      }
-      if (UNLIKELY(hi_isProfInc)) {
-         vassert(vta->addProfInc); /* else where did it come from? */
-         vassert(res.offs_profInc == -1); /* there can be only one (tm) */
-         vassert(out_used >= 0);
-         res.offs_profInc = out_used;
-      }
-      { UChar* dst = &vta->host_bytes[out_used];
-        for (k = 0; k < j; k++) {
-           dst[k] = insn_bytes[k];
-        }
-        out_used += j;
-      }
+
    }
-   *(vta->host_bytes_used) = out_used;
+
+   if (0)
+      vex_printf("XXXXX %u hot, %u cold, %u relocs\n",
+                 ab_hot.bufUsed, ab_cold.bufUsed, rb.bufUsed);
+
+   /* Copy the final result to the user-specified destination,
+      concatenating the hot and cold buffers.  Also figure out where
+      the cold and hot code ended up, since that information will be
+      needed to process the relocations. */
+   UChar* dstHot  = NULL;
+   UChar* dstCold = NULL;
+
+   if (ab_hot.bufUsed + ab_cold.bufUsed > vta->host_bytes_size) {
+      goto outputBufferFull;
+   }
+   {  const UInt   nHot  = ab_hot.bufUsed;
+      const UInt   nCold = ab_cold.bufUsed;
+      const UChar* hot   = ab_hot.buf;
+      const UChar* cold  = ab_cold.buf;
+      UChar* dst = vta->host_bytes;
+      for (i = 0; i < nHot;  i++) dst[i + 0]    = hot[i];
+      for (i = 0; i < nCold; i++) dst[i + nHot] = cold[i];
+      *(vta->host_bytes_used) = nHot + nCold;
+      dstHot  = dst + 0;
+      dstCold = dst + nHot;
+   }
+
+   /* Process the relocations. */
+   Bool debug_reloc = False;
+   if (debug_reloc)
+      vex_printf("XXXXX hot at %p..%p, cold at %p..%p\n",
+                 dstHot,  dstHot  + ab_hot.bufUsed - 1,
+                 dstCold, dstCold + ab_cold.bufUsed - 1 );
+
+   for (i = 0; i < rb.bufUsed; i++) {
+      Relocation* rl = &rb.buf[i];
+      if (debug_reloc) {
+         ppRelocation(rl); vex_printf("\n");
+      }
+
+      /* Figure out where the relocation should be applied, and sanity
+         check. */
+      UChar* where = NULL;
+      if (rl->where.zone == Nlz_Cold) {
+         vassert(rl->where.offset <= ab_cold.bufUsed);
+         where = dstCold + rl->where.offset;
+      } else {
+         vassert(rl->where.zone == Nlz_Hot);
+         vassert(rl->where.offset <= ab_hot.bufUsed);
+         where = dstHot + rl->where.offset;
+      }
+      vassert(where   >= (UChar*)vta->host_bytes);
+      vassert(where+4 <= (UChar*)vta->host_bytes + *(vta->host_bytes_used));
+
+      /* Figure out where the relocation applies to.  By now the
+         destination must be the "offset" form -- it should no longer
+         be the non-offset (NLabel-number) form. */
+      UChar* dst = NULL;
+      vassert(rl->dst.isOffset);
+
+      if (rl->dst.zone == Nlz_Cold) {
+         vassert(rl->dst.num <= ab_cold.bufUsed);
+         dst = dstCold + rl->dst.num;
+      } else {
+         vassert(rl->dst.zone == Nlz_Hot);
+         vassert(rl->dst.num <= ab_hot.bufUsed);
+         dst = dstHot + rl->dst.num;
+      }
+      vassert(dst >= (UChar*)vta->host_bytes);
+      vassert(dst <= (UChar*)vta->host_bytes + *(vta->host_bytes_used));
+
+      if (debug_reloc)
+         vex_printf("where %p dst %p\n", where, dst);
+
+      /* Compute the 'E' value, using 64 bit arithmetic
+         (see comment on definition of type Relocation) */
+      vassert(rl->rshift <= 2);
+      Long E =
+         ((Long)(ULong)dst) + ((Long)rl->bias) - ((Long)(ULong)where);
+      E = E >>/*signed*/rl->rshift;
+      if (debug_reloc)
+         vex_printf("E = 0x%llx\n", E);
+
+      /* Figure out how many significant bits of E we need, and check
+         that they sign extend back to E.  If they don't, the
+         relocation is impossible to perform, and the system is in
+         deep trouble -- we have to abort.  It should never fail in
+         practice because the jump distances back and forth between
+         the hot and cold zones are small and so are representable in
+         all reasonable instruction sets. */
+      vassert(rl->bitNoMin <= 31);
+      vassert(rl->bitNoMax <= 31);
+      vassert(rl->bitNoMax >= rl->bitNoMin);
+      UInt nBitsOfE = (UInt)rl->bitNoMax - (UInt)rl->bitNoMin + 1;
+      vassert(nBitsOfE >= 1 && nBitsOfE <= 32);
+      if (debug_reloc)
+         vex_printf("nBitsOfE = %u\n", nBitsOfE);
+
+      /* "The lowest nBitsOfE of E sign extend back to E itself". */
+      vassert(E == ((E << (64-nBitsOfE)) >>/*signed*/ (64-nBitsOfE)));
+
+      /* Figure out the 32-bit mask for the location at |where| to be
+         modified.  It contains |nBitsOfE| bits that need to be
+         modified. */
+      vassert(nBitsOfE + rl->bitNoMin <= 32);
+      ULong mask64 = ((1ULL << nBitsOfE) - 1) << rl->bitNoMin;
+      vassert(0 == (mask64 & 0xFFFFFFFF00000000ULL));
+      UInt mask = (UInt)mask64;
+      if (debug_reloc)
+         vex_printf("mask = 0x%x\n", mask);
+      UInt eBits = (((UInt)E) << rl->bitNoMin) & mask;
+
+      /* Actually apply it. */
+      UInt w32old = loadUnaligned32(where, vta->archinfo_host.endness);
+      UInt w32new = (w32old & ~mask) | eBits;
+      if (debug_reloc)
+         vex_printf("changing 0x%08x to 0x%08x\n", w32old, w32new);
+      storeUnaligned32(where, w32new, vta->archinfo_host.endness);
+
+      /* We are done.  Sheesh. */
+   }
 
    vexAllocSanityCheck();
 
@@ -955,11 +1154,18 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          j += vta->guest_extents->len[i];
       }
       if (1) vex_printf("VexExpansionRatio %d %d   %d :10\n\n",
-                        j, out_used, (10 * out_used) / (j == 0 ? 1 : j));
+                        j, ab_hot.bufUsed,
+                           (10 * ab_hot.bufUsed) / (j == 0 ? 1 : j));
    }
 
    vex_traceflags = 0;
    res.status = VexTransOK;
+   return res;
+
+  outputBufferFull:
+   vexSetAllocModeTEMP_and_clear();
+   vex_traceflags = 0;
+   res.status = VexTransOutputFull;
    return res;
 }
 

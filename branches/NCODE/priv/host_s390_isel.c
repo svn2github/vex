@@ -1256,7 +1256,7 @@ s390_isel_int_expr_wrk(ISelEnv *env, IRExpr *expr)
 
          rounding_mode = get_bfp_rounding_mode(env, arg1);
          addInstr(env, s390_insn_bfp128_convert_from(size, conv, res,
-                                                     INVALID_HREG, f13, f15,
+                                                     HReg_INVALID, f13, f15,
                                                      rounding_mode));
          return res;
       }
@@ -1290,7 +1290,7 @@ s390_isel_int_expr_wrk(ISelEnv *env, IRExpr *expr)
 
             rounding_mode = get_dfp_rounding_mode(env, arg1);
             addInstr(env, s390_insn_dfp128_convert_from(size, dconv, res,
-                                                        INVALID_HREG, f13,
+                                                        HReg_INVALID, f13,
                                                         f15, rounding_mode));
             return res;
          }
@@ -2097,7 +2097,7 @@ s390_isel_float128_expr_wrk(HReg *dst_hi, HReg *dst_lo, ISelEnv *env,
          h1 = s390_isel_dfp_expr(env, left);
          addInstr(env, s390_insn_move(8, f4, h1));
          addInstr(env, s390_insn_fp128_convert(16, fpconv, f0, f2,
-                                               f4, INVALID_HREG, r1, rm));
+                                               f4, HReg_INVALID, r1, rm));
          /* (f0, f2) --> destination */
          *dst_hi = newVRegF(env);
          *dst_lo = newVRegF(env);
@@ -2443,7 +2443,7 @@ s390_isel_float_expr_wrk(ISelEnv *env, IRExpr *expr)
          /* operand --> (f4, f6) */
          addInstr(env, s390_insn_move(8, f4, op_hi));
          addInstr(env, s390_insn_move(8, f6, op_lo));
-         addInstr(env, s390_insn_fp128_convert(16, fpconv, f0, INVALID_HREG,
+         addInstr(env, s390_insn_fp128_convert(16, fpconv, f0, HReg_INVALID,
                                                f4, f6, r1, rm));
          /* f0 --> destination */
          addInstr(env, s390_insn_move(8, dst, f0));
@@ -2811,7 +2811,7 @@ s390_isel_dfp128_expr_wrk(HReg *dst_hi, HReg *dst_lo, ISelEnv *env,
          h1 = s390_isel_float_expr(env, left);
          addInstr(env, s390_insn_move(8, f4, h1));
          addInstr(env, s390_insn_fp128_convert(16, fpconv, f0, f2,
-                                               f4, INVALID_HREG, r1, rm));
+                                               f4, HReg_INVALID, r1, rm));
          /* (f0, f2) --> destination */
          *dst_hi = newVRegF(env);
          *dst_lo = newVRegF(env);
@@ -3043,7 +3043,7 @@ s390_isel_dfp_expr_wrk(ISelEnv *env, IRExpr *expr)
          /* operand --> (f4, f6) */
          addInstr(env, s390_insn_move(8, f4, op_hi));
          addInstr(env, s390_insn_move(8, f6, op_lo));
-         addInstr(env, s390_insn_fp128_convert(16, fpconv, f0, INVALID_HREG,
+         addInstr(env, s390_insn_fp128_convert(16, fpconv, f0, HReg_INVALID,
                                                f4, f6, r1, rm));
          /* f0 --> destination */
          addInstr(env, s390_insn_move(8, dst, f0));
@@ -4103,7 +4103,7 @@ iselSB_S390(const IRSB *bb, VexArch arch_host, const VexArchInfo *archinfo_host,
       register. */
    j = 0;
    for (i = 0; i < env->n_vregmap; i++) {
-      hregHI = hreg = INVALID_HREG;
+      hregHI = hreg = HReg_INVALID;
       switch (bb->tyenv->types[i]) {
       case Ity_I1:
       case Ity_I8:

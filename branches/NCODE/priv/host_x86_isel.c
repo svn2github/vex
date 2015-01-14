@@ -520,7 +520,7 @@ void doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
 
    /* If we have a VECRET, allocate space on the stack for the return
       value, and record the stack pointer after that. */
-   HReg r_vecRetAddr = INVALID_HREG;
+   HReg r_vecRetAddr = HReg_INVALID;
    if (nVECRETs == 1) {
       vassert(retTy == Ity_V128 || retTy == Ity_V256);
       vassert(retTy != Ity_V256); // we don't handle that yet (if ever)
@@ -556,7 +556,7 @@ void doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
       argregs[0] = hregX86_EAX();
       argregs[1] = hregX86_EDX();
       argregs[2] = hregX86_ECX();
-      tmpregs[0] = tmpregs[1] = tmpregs[2] = INVALID_HREG;
+      tmpregs[0] = tmpregs[1] = tmpregs[2] = HReg_INVALID;
 
       argreg = cee->regparms;
 
@@ -4462,7 +4462,7 @@ HInstrArray* iselSB_X86 ( const IRSB* bb,
       register. */
    j = 0;
    for (i = 0; i < env->n_vregmap; i++) {
-      hregHI = hreg = INVALID_HREG;
+      hregHI = hreg = HReg_INVALID;
       switch (bb->tyenv->types[i]) {
          case Ity_I1:
          case Ity_I8:

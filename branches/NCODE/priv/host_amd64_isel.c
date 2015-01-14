@@ -522,7 +522,7 @@ void doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
    argregs[5] = hregAMD64_R9();
 
    tmpregs[0] = tmpregs[1] = tmpregs[2] =
-   tmpregs[3] = tmpregs[4] = tmpregs[5] = INVALID_HREG;
+   tmpregs[3] = tmpregs[4] = tmpregs[5] = HReg_INVALID;
 
    fastinstrs[0] = fastinstrs[1] = fastinstrs[2] =
    fastinstrs[3] = fastinstrs[4] = fastinstrs[5] = NULL;
@@ -596,7 +596,7 @@ void doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
 
    /* If we have a vector return type, allocate a place for it on the
       stack and record its address. */
-   HReg r_vecRetAddr = INVALID_HREG;
+   HReg r_vecRetAddr = HReg_INVALID;
    if (retTy == Ity_V128) {
       r_vecRetAddr = newVRegI(env);
       sub_from_rsp(env, 16);
@@ -4744,6 +4744,49 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt )
       goto stmt_fail;
    }
 
+   /* --------- NCODE --------- */
+   case Ist_NCode: {
+      UInt i;
+      NCodeTemplate* tmpl = stmt->Ist.NCode.tmpl;
+
+      // For the result values, find the vregs associated with the
+      // result IRTemps, and pin them on the NCode block.
+      HReg* regsR = LibVEX_Alloc( (tmpl->nres+1) * sizeof(HReg) );
+      for (i = 0; i < tmpl->nres; i++) {
+         IRTemp t = stmt->Ist.NCode.ress[i];
+         vassert(t != IRTemp_INVALID);
+         regsR[i] = lookupIRTemp(env, t);
+      }
+      regsR[tmpl->nres] = HReg_INVALID;
+
+      // Compute each arg into a new vreg.  It's important to move
+      // them into new vregs because the NCode block may modify its
+      // argument registers, but the Rules Of The Game stipulate that
+      // registers returned from the isel*Expr functions may not be
+      // modified.  As usual vreg-vreg move coalescing will remove
+      // those copies in the cases where they are not necessary.
+      HReg* regsA = LibVEX_Alloc( (tmpl->narg+1) * sizeof(HReg) );
+      for (i = 0; i < tmpl->narg; i++) {
+         HReg arg = iselIntExpr_R(env, stmt->Ist.NCode.args[i]);
+         regsA[i] = newVRegI(env);
+         addInstr(env, mk_iMOVsd_RR(arg, regsA[i]));
+
+      }
+      regsA[tmpl->narg] = HReg_INVALID;
+
+      // Allocate vregs for the scratch values.
+      HReg* regsS = LibVEX_Alloc( (tmpl->nscr+1) * sizeof(HReg) );
+      for (i = 0; i < tmpl->nscr; i++) {
+         regsS[i] = newVRegI(env);
+      }
+      regsS[tmpl->nscr] = HReg_INVALID;
+
+      // Hand the template and 3 reg sets on through the pipeline.
+      addInstr(env, AMD64Instr_NCode(tmpl, regsR, regsA, regsS));
+
+      return;
+   }
+
    default: break;
    }
   stmt_fail:
@@ -4905,7 +4948,7 @@ HInstrArray* iselSB_AMD64 ( const IRSB* bb,
       register. */
    j = 0;
    for (i = 0; i < env->n_vregmap; i++) {
-      hregHI = hreg = INVALID_HREG;
+      hregHI = hreg = HReg_INVALID;
       switch (bb->tyenv->types[i]) {
          case Ity_I1:
          case Ity_I8: case Ity_I16: case Ity_I32: case Ity_I64:

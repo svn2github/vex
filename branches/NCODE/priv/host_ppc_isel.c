@@ -822,7 +822,7 @@ void doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
 
    tmpregs[0] = tmpregs[1] = tmpregs[2] =
    tmpregs[3] = tmpregs[4] = tmpregs[5] =
-   tmpregs[6] = tmpregs[7] = INVALID_HREG;
+   tmpregs[6] = tmpregs[7] = HReg_INVALID;
 
    /* First decide which scheme (slow or fast) is to be used.  First
       assume the fast scheme, and select slow if any contraindications
@@ -933,7 +933,7 @@ void doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
          the backchain as it should, since we're not doing st{d,w}u to
          adjust the SP, but .. that doesn't seem to be a big deal.
          Since we're not expecting to have to unwind out of here. */
-      HReg r_vecRetAddr = INVALID_HREG;
+      HReg r_vecRetAddr = HReg_INVALID;
       if (retTy == Ity_V128) {
          r_vecRetAddr = newVRegI(env);
          sub_from_sp(env, 512);
@@ -3500,10 +3500,10 @@ static void iselInt64Expr_wrk ( HReg* rHi, HReg* rLo,
       case Iop_128to64: {
          /* Narrow, return the low 64-bit half as a 32-bit
           * register pair */
-         HReg r_Hi    = INVALID_HREG;
-         HReg r_MedHi = INVALID_HREG;
-         HReg r_MedLo = INVALID_HREG;
-         HReg r_Lo    = INVALID_HREG;
+         HReg r_Hi    = HReg_INVALID;
+         HReg r_MedHi = HReg_INVALID;
+         HReg r_MedLo = HReg_INVALID;
+         HReg r_Lo    = HReg_INVALID;
 
          iselInt128Expr_to_32x4(&r_Hi, &r_MedHi, &r_MedLo, &r_Lo,
                                 env, e->Iex.Unop.arg, IEndianess);
@@ -3515,10 +3515,10 @@ static void iselInt64Expr_wrk ( HReg* rHi, HReg* rLo,
       case Iop_128HIto64: {
          /* Narrow, return the high 64-bit half as a 32-bit
           *  register pair */
-         HReg r_Hi    = INVALID_HREG;
-         HReg r_MedHi = INVALID_HREG;
-         HReg r_MedLo = INVALID_HREG;
-         HReg r_Lo    = INVALID_HREG;
+         HReg r_Hi    = HReg_INVALID;
+         HReg r_MedHi = HReg_INVALID;
+         HReg r_MedLo = HReg_INVALID;
+         HReg r_Lo    = HReg_INVALID;
 
          iselInt128Expr_to_32x4(&r_Hi, &r_MedHi, &r_MedLo, &r_Lo,
                                 env, e->Iex.Unop.arg, IEndianess);
@@ -5862,8 +5862,8 @@ static void iselStmt ( ISelEnv* env, IRStmt* stmt, IREndness IEndianess )
             } else {
                /* The returned value is in %r3:%r4.  Park it in the
                   register-pair associated with tmp. */
-               HReg r_dstHi = INVALID_HREG;
-               HReg r_dstLo = INVALID_HREG;
+               HReg r_dstHi = HReg_INVALID;
+               HReg r_dstLo = HReg_INVALID;
                lookupIRTempPair( &r_dstHi, &r_dstLo, env, d->tmp);
                addInstr(env, mk_iMOVds_RR(r_dstHi, hregPPC_GPR3(mode64)));
                addInstr(env, mk_iMOVds_RR(r_dstLo, hregPPC_GPR4(mode64)));
@@ -6184,7 +6184,7 @@ HInstrArray* iselSB_PPC ( const IRSB* bb,
       register. */
    j = 0;
    for (i = 0; i < env->n_vregmap; i++) {
-      hregLo = hregMedLo = hregMedHi = hregHi = INVALID_HREG;
+      hregLo = hregMedLo = hregMedHi = hregHi = HReg_INVALID;
       switch (bb->tyenv->types[i]) {
       case Ity_I1:
       case Ity_I8:

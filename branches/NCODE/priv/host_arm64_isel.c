@@ -585,7 +585,7 @@ Bool doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
 
    /* If we have a VECRET, allocate space on the stack for the return
       value, and record the stack pointer after that. */
-   HReg r_vecRetAddr = INVALID_HREG;
+   HReg r_vecRetAddr = HReg_INVALID;
    if (nVECRETs == 1) {
       vassert(retTy == Ity_V128 || retTy == Ity_V256);
       vassert(retTy != Ity_V256); // we don't handle that yet (if ever)
@@ -607,8 +607,8 @@ Bool doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
    argregs[6] = hregARM64_X6();
    argregs[7] = hregARM64_X7();
 
-   tmpregs[0] = tmpregs[1] = tmpregs[2] = tmpregs[3] = INVALID_HREG;
-   tmpregs[4] = tmpregs[5] = tmpregs[6] = tmpregs[7] = INVALID_HREG;
+   tmpregs[0] = tmpregs[1] = tmpregs[2] = tmpregs[3] = HReg_INVALID;
+   tmpregs[4] = tmpregs[5] = tmpregs[6] = tmpregs[7] = HReg_INVALID;
 
    /* First decide which scheme (slow or fast) is to be used.  First
       assume the fast scheme, and select slow if any contraindications
@@ -3915,7 +3915,7 @@ HInstrArray* iselSB_ARM64 ( const IRSB* bb,
       register. */
    j = 0;
    for (i = 0; i < env->n_vregmap; i++) {
-      hregHI = hreg = INVALID_HREG;
+      hregHI = hreg = HReg_INVALID;
       switch (bb->tyenv->types[i]) {
          case Ity_I1:
          case Ity_I8: case Ity_I16: case Ity_I32: case Ity_I64:

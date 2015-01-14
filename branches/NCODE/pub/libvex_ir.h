@@ -398,6 +398,9 @@ extern void ppIRTemp ( IRTemp );
 
 #define IRTemp_INVALID ((IRTemp)0xFFFFFFFF)
 
+/* IRTemp_INVALID-terminated IRTemp vector constructors. */
+extern IRTemp* mkIRTempVec_1 ( IRTemp );
+
 
 /* --------------- Primops (arity 1,2,3 and 4) --------------- */
 
@@ -2600,6 +2603,252 @@ extern IRLoadG* mkIRLoadG ( IREndness end, IRLoadGOp cvt,
                             IRExpr* guard );
 
 
+/* -------------------- NCode blocks -------------------- */
+
+/* These describe small bits of abstractified machine code that
+   instrumentation functions can generate -- bits of inline assembly,
+   in effect.  We definitely do not expect front ends to generate it.
+   It was going to be called "MCode" as a tip of the hat to the same
+   idea in that was used in Thomas Johnsson and Lennart Augustsson's
+   groundbreaking compiler for Lazy ML in the late 1980s, but the M
+   prefixes involved conflict too much with the MIPS back end
+   instruction-artefact names.  So it's called NCode instead.
+
+   Note that the storage management for NCode blocks is different from
+   the rest of IR.  MCode blocks are complex, readonly structures, for
+   which the expected use case is that the VEX client will allocate
+   them once at startup and keep them alive essentially for ever.
+   This is in contrast to IR proper in which all allocations become
+   invalid at the end of each translation.
+
+   We therefore leave the allocation of NCode to the client, by making
+   it pass in an allocation function, and so the client owns all NCode
+   artefacts.  There is no way to free them up right now, but that is
+   not expected to be a problem.  To make this work, VEX promises not
+   to modify any MCode artefacts.  The only point of interface between
+   IR world and NCode world is in IRStmt_NCode, which contains a
+   pointer from IR world to the NCode world. */
+
+/* --- NCode memory allocator, as just described --- */
+
+typedef  void*(*NAlloc)(UInt);  /* Utterly insane C syntax :-( */
+
+/* --- Various small enums in NCode --- */
+
+typedef
+   enum {
+      Ncc_ALWAYS=0x1D10, /* unconditionally true */
+      Ncc_Z,             /* zero after compare or test */
+      Ncc_NZ,            /* non-zero after compare or test */
+   }
+   NCondCode;
+
+typedef
+   enum {
+      Nsh_SHL=0x1D20, /* left */
+      Nsh_SHR         /* right, zero fill */
+   }
+   NShift;
+
+typedef
+   enum {
+      Nalu_AND=0x1D30
+   }
+   NAlu;
+
+typedef
+   enum {
+      Nsf_CMP=0x1D50, /* subtract the operands */
+      Nsf_TEST        /* AND the operands */
+   }
+   NSetFlags;
+
+/* --- Registers used in NCode blocks --- */
+
+typedef
+   enum {
+      Nrr_INVALID=0x1D60, /* This isn't a valid register. */
+      Nrr_Result,         /* Carries results out of the block. */
+      Nrr_Argument,       /* Carries arguments into the block. */
+      Nrr_Scratch         /* Scratch register used by the block. */
+   }
+   NRegRole;
+
+typedef
+   struct {
+      NRegRole role;
+      UInt     num;  /* Must be zero for Nrr_INVALID */
+   }
+   NReg;
+
+extern NReg mkNReg ( NRegRole role, UInt num );
+extern Bool isNRegINVALID ( NReg reg );
+
+/* --- Labels used in NCode blocks --- */
+
+typedef
+   enum {
+      Nlz_Cold=0x1D70, /* Label is in the cold zone */
+      Nlz_Hot          /* Label is in the hot zone */
+   }
+   NLabelZone;
+
+typedef
+   struct {
+      NLabelZone zone; /* What zone is it in? */
+      UInt       ino;  /* The instruction number in that zone */
+   }
+   NLabel;
+
+extern NLabel mkNLabel ( NLabelZone zone, UInt ino );
+
+extern void ppNLabelZone ( NLabelZone zone );
+
+extern void ppNLabel ( NLabel lbl );
+
+/* --- Memory effective addresses used in NCode blocks --- */
+
+typedef
+   enum {
+      Nea_RRS=0x1D80,  /* Reg + shifted reg */
+      Nea_IRS,         /* Imm + shifted reg */
+   }
+   NEATag;
+
+typedef
+   struct {
+      NEATag tag;
+      union {
+         struct {
+            NReg  base;
+            NReg  index;
+            UChar shift; /* 0, 1, 2, 3 only */
+         } RRS;
+         struct {
+            HWord base;
+            NReg  index;
+            UChar shift; /* 0, 1, 2, 3 only */
+         } IRS;
+      } Nea;
+   }
+   NEA;
+
+extern NEA* NEA_RRS ( NAlloc na, NReg base, NReg index, UChar shift );
+extern NEA* NEA_IRS ( NAlloc na, HWord base, NReg index, UChar shift );
+
+/* --- NCode instructions --- */
+
+typedef
+   enum {
+      Nin_Nop=0x1D90,
+      Nin_Branch,
+      Nin_Call,
+      Nin_ImmW,
+      Nin_ShiftWri,
+      Nin_AluWri,
+      Nin_SetFlagsWri,
+      Nin_MovW,
+      Nin_LoadU,
+      Nin_Store
+   }
+   NInstrTag;
+
+typedef
+   struct {
+      NInstrTag tag;
+      union {
+         struct {
+         } Nop;
+         struct {
+            NCondCode cc;
+            NLabel    dst;
+         } Branch;
+         struct {
+            NReg  resHi;   /* High word of doubleword result, or Nrr_INVALID */
+            NReg  resLo;   /* Result word, or Nrr_INVALID */
+            NReg* argRegs; /* Nrr_INVALID terminated */
+            void* entry;   /* where we are calling to */
+            const HChar* name; /* for printing purposes only */
+         } Call;
+        struct {
+           NReg  dst;
+           HWord imm;
+        } ImmW;
+        struct {
+           NShift how;
+           NReg   dst;
+           NReg   srcL;
+           UInt   amt;  /* 1 .. host-word-size-1 only */
+        } ShiftWri;
+        struct {
+           NAlu  how;
+           NReg  dst;
+           NReg  srcL;
+           HWord srcR;
+        } AluWri;
+        struct {
+           NSetFlags how;
+           NReg      srcL;
+           HWord     srcR;
+        } SetFlagsWri;
+        struct {
+           NReg dst;
+           NReg src;
+        } MovW;
+        struct {
+           NReg  dst;
+           NEA*  addr;
+           UChar szB; /* 1, 2, 4 or (for 64 bit hosts) 8 */
+        } LoadU;
+        struct {
+           NReg  src;
+           NEA*  addr;
+           UChar szB; /* 1, 2, 4 or (for 64 bit hosts) 8 */
+        } Store;
+      }
+      Nin;
+   }
+   NInstr;
+
+extern NInstr* NInstr_Nop         ( NAlloc na );
+extern NInstr* NInstr_Branch      ( NAlloc na, NCondCode cc, NLabel dst );
+extern NInstr* NInstr_Call        ( NAlloc na,
+                                    NReg resHi, NReg resLo, NReg* argRegs,
+                                    void* entry, const HChar* name );
+extern NInstr* NInstr_ImmW        ( NAlloc na, NReg dst, HWord imm );
+extern NInstr* NInstr_ShiftWri    ( NAlloc na,
+                                    NShift how, NReg dst, NReg srcL, UInt amt );
+extern NInstr* NInstr_AluWri      ( NAlloc na,
+                                    NAlu how, NReg dst, NReg srcL, HWord srcR );
+extern NInstr* NInstr_SetFlagsWri ( NAlloc na,
+                                    NSetFlags how, NReg srcL, HWord srcR );
+extern NInstr* NInstr_MovW        ( NAlloc na, NReg dst, NReg src );
+extern NInstr* NInstr_LoadU       ( NAlloc na, NReg dst, NEA* addr, UChar szB );
+extern NInstr* NInstr_Store       ( NAlloc na, NReg src, NEA* addr, UChar szB );
+
+extern void ppNInstr ( const NInstr* );
+
+
+typedef
+   struct {
+      const HChar* name;  /* Comment only */
+      UInt         nres;  /* Number of result registers */
+      UInt         narg;  /* Number of parameter registers */
+      UInt         nscr;  /* Number of scratch registers */
+      NInstr**     hot;   /* hot instruction vector, ends in NULL. */
+      NInstr**     cold;  /* cold instruction vector, ends in NULL. */
+   }
+   NCodeTemplate;
+
+extern NCodeTemplate* mkNCodeTemplate (
+                         NAlloc na, const HChar* name, 
+                         UInt nres, UInt narg, UInt nscr,
+                         NInstr** hot, NInstr** cold
+                      );
+
+extern void ppNCodeTemplate ( Int indent, const NCodeTemplate* tmpl );
+
+
 /* ------------------ Statements ------------------ */
 
 /* The different kinds of statements.  Their meaning is explained
@@ -2627,6 +2876,7 @@ typedef
       Ist_LLSC,
       Ist_Dirty,
       Ist_MBE,
+      Ist_NCode,
       Ist_Exit
    } 
    IRStmtTag;
@@ -2855,6 +3105,19 @@ typedef
             IRMBusEvent event;
          } MBE;
 
+         /* Inline abstract machine code (NCode) block, used for
+            instrumentation purposes only.  Not generated by front
+            ends.  The args-expr and result-tmp types may only be the
+            host machine word types (Ity_I32 or Ity_I64 depending on
+            the host).  No other types are allowed. */
+         struct {
+            NCodeTemplate* tmpl;
+            IRExpr**       args; /* arg vector, length = tmpl->nparm+1,
+                                    ends in NULL */
+            IRTemp*        ress; /* result vector, length = tmpl->nres+1,
+                                    ends in IRTemp_INVALID */
+         } NCode;
+
          /* Conditional exit from the middle of an IRSB.
             ppIRStmt output: if (<guard>) goto {<jk>} <dst>
                          eg. if (t69) goto {Boring} 0x4000AAA:I32
@@ -2889,6 +3152,8 @@ extern IRStmt* IRStmt_LLSC    ( IREndness end, IRTemp result,
                                 IRExpr* addr, IRExpr* storedata );
 extern IRStmt* IRStmt_Dirty   ( IRDirty* details );
 extern IRStmt* IRStmt_MBE     ( IRMBusEvent event );
+extern IRStmt* IRStmt_NCode   ( NCodeTemplate* tmpl,
+                                IRExpr** args, IRTemp* ress );
 extern IRStmt* IRStmt_Exit    ( IRExpr* guard, IRJumpKind jk, IRConst* dst,
                                 Int offsIP );
 

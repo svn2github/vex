@@ -484,7 +484,7 @@ Bool doHelperCall ( /*OUT*/UInt*   stackAdjustAfterCall,
    argregs[3] = hregARM_R3();
 
    tmpregs[0] = tmpregs[1] = tmpregs[2] =
-   tmpregs[3] = INVALID_HREG;
+   tmpregs[3] = HReg_INVALID;
 
    /* First decide which scheme (slow or fast) is to be used.  First
       assume the fast scheme, and select slow if any contraindications
@@ -6365,7 +6365,7 @@ HInstrArray* iselSB_ARM ( const IRSB* bb,
       register. */
    j = 0;
    for (i = 0; i < env->n_vregmap; i++) {
-      hregHI = hreg = INVALID_HREG;
+      hregHI = hreg = HReg_INVALID;
       switch (bb->tyenv->types[i]) {
          case Ity_I1:
          case Ity_I8:

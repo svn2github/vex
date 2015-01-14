@@ -402,7 +402,7 @@ static void doHelperCall(/*OUT*/UInt*   stackAdjustAfterCall,
    Bool go_fast;
    Int n_args, i, argreg;
    UInt argiregs;
-   HReg src = INVALID_HREG;
+   HReg src = HReg_INVALID;
 
    /* Set default returns.  We'll update them later if needed. */
    *stackAdjustAfterCall = 0;
@@ -463,14 +463,14 @@ static void doHelperCall(/*OUT*/UInt*   stackAdjustAfterCall,
       argiregs = 0;
       tmpregs[0] = tmpregs[1] = tmpregs[2] =
       tmpregs[3] = tmpregs[4] = tmpregs[5] =
-      tmpregs[6] = tmpregs[7] = INVALID_HREG;
+      tmpregs[6] = tmpregs[7] = HReg_INVALID;
    } else {
       argregs[0] = hregMIPS_GPR4(mode64);
       argregs[1] = hregMIPS_GPR5(mode64);
       argregs[2] = hregMIPS_GPR6(mode64);
       argregs[3] = hregMIPS_GPR7(mode64);
       argiregs = 0;
-      tmpregs[0] = tmpregs[1] = tmpregs[2] = tmpregs[3] = INVALID_HREG;
+      tmpregs[0] = tmpregs[1] = tmpregs[2] = tmpregs[3] = HReg_INVALID;
    }
 
    /* First decide which scheme (slow or fast) is to be used. First assume the
@@ -4212,7 +4212,7 @@ HInstrArray *iselSB_MIPS ( const IRSB* bb,
       register. */
    j = 0;
    for (i = 0; i < env->n_vregmap; i++) {
-      hregHI = hreg = INVALID_HREG;
+      hregHI = hreg = HReg_INVALID;
       switch (bb->tyenv->types[i]) {
          case Ity_I1:
          case Ity_I8:

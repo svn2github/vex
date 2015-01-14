@@ -582,6 +582,34 @@ typedef
    VexGuestExtents;
 
 
+/* Used by the VEX client to describe to VEX, the despatcher addresses
+   that need to be baked into the generated code.  For all four
+   addresses, transferring to that address causes guest execution to
+   continue at the guest program counter value, but with various
+   entry-point specific actions before that. */
+typedef
+   struct {
+      /* Calling here also causes the calling translation to be
+         chained to the destination's slow entry point, if it
+         exists. */
+      const void* disp_cp_chain_me_to_slowEP;
+      /* Calling here also causes the calling translation to be
+         chained to the destination's fast entry point, if it
+         exists. */
+      const void* disp_cp_chain_me_to_fastEP;
+      /* Jumping here merely causes a execution to resume at the guest
+         program counter.  This is necessary for dealing with
+         transfers to addresses not known at JIT time (indirect
+         branches, and function returns.) */
+      const void* disp_cp_xindir;
+      /* This is like disp_cp_xindir, except that one of a variety of
+         special events (eg, syscall for the guest, client request,
+         etc) happens before continuing. */
+      const void* disp_cp_xassisted;
+   }
+   VexDispatcherAddresses;
+
+
 /* A structure to carry arguments for LibVEX_Translate.  There are so
    many of them, it seems better to have a structure. */
 typedef
@@ -669,43 +697,8 @@ typedef
 
       /* IN: address of the dispatcher entry points.  Describes the
          places where generated code should jump to at the end of each
-         bb.
-
-         At the end of each translation, the next guest address is
-         placed in the host's standard return register (x86: %eax,
-         amd64: %rax, ppc32: %r3, ppc64: %r3).  Optionally, the guest
-         state pointer register (on host x86: %ebp; amd64: %rbp;
-         ppc32/64: r31) may be set to a VEX_TRC_ value to indicate any
-         special action required before the next block is run.
-
-         Control is then passed back to the dispatcher (beyond Vex's
-         control; caller supplies this) in the following way:
-
-         - On host archs which lack a link register (x86, amd64), by a
-           jump to the host address specified in
-           'dispatcher_assisted', if the guest state pointer has been
-           changed so as to request some action before the next block
-           is run, or 'dispatcher_unassisted' (the fast path), in
-           which it is assumed that the guest state pointer is
-           unchanged and we wish to continue directly with the next
-           translation.  Both of these must be non-NULL.
-
-         - On host archs which have a link register (ppc32, ppc64), by
-           a branch to the link register (which is guaranteed to be
-           unchanged from whatever it was at entry to the
-           translation).  'dispatch_assisted' and
-           'dispatch_unassisted' must be NULL.
-
-         The aim is to get back and forth between translations and the
-         dispatcher without creating memory traffic to store return
-         addresses.
-
-         FIXME: update this comment
-      */
-      const void* disp_cp_chain_me_to_slowEP;
-      const void* disp_cp_chain_me_to_fastEP;
-      const void* disp_cp_xindir;
-      const void* disp_cp_xassisted;
+         bb. */
+      VexDispatcherAddresses vda;
    }
    VexTranslateArgs;
 

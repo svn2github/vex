@@ -2695,6 +2695,17 @@ static IRStmt* subst_and_fold_Stmt ( IRExpr** env, IRStmt* st )
       case Ist_MBE:
          return IRStmt_MBE(st->Ist.MBE.event);
 
+      case Ist_NCode: {
+         UInt i;
+         NCodeTemplate* tmpl  = st->Ist.NCode.tmpl;
+         IRExpr**       args2 = shallowCopyIRExprVec(st->Ist.NCode.args);
+         for (i = 0; args2[i]; i++) {
+            vassert(isIRAtom(args2[i]));
+            args2[i] = subst_Expr(env, args2[i]);
+         }
+         return IRStmt_NCode(tmpl, args2, st->Ist.NCode.ress);
+      }
+
       case Ist_Exit: {
          IRExpr* fcond;
          vassert(isIRAtom(st->Ist.Exit.guard));
@@ -3025,6 +3036,12 @@ static void addUses_Stmt ( Bool* set, IRStmt* st )
       case Ist_IMark:
       case Ist_MBE:
          return;
+      case Ist_NCode: {
+         NCodeTemplate* tmpl = st->Ist.NCode.tmpl;
+         for (i = 0; i < tmpl->narg; i++)
+            addUses_Expr(set, st->Ist.NCode.args[i]);
+         return;
+      }
       case Ist_Exit:
          addUses_Expr(set, st->Ist.Exit.guard);
          return;
@@ -5124,6 +5141,12 @@ static void aoccCount_Stmt ( UShort* uses, IRStmt* st )
       case Ist_IMark:
       case Ist_MBE:
          return;
+      case Ist_NCode: {
+         NCodeTemplate* tmpl = st->Ist.NCode.tmpl;
+         for (i = 0; i < tmpl->narg; i++)
+            aoccCount_Expr(uses, st->Ist.NCode.args[i]);
+         return;
+      }
       case Ist_Exit:
          aoccCount_Expr(uses, st->Ist.Exit.guard);
          return;
@@ -5511,6 +5534,13 @@ static IRStmt* atbSubst_Stmt ( ATmpInfo* env, IRStmt* st )
                d2->args[i] = atbSubst_Expr(env, arg);
          }
          return IRStmt_Dirty(d2);
+      case Ist_NCode: {
+         NCodeTemplate* tmpl  = st->Ist.NCode.tmpl;
+         IRExpr**       args2 = shallowCopyIRExprVec(st->Ist.NCode.args);
+         for (i = 0; i < tmpl->narg; i++)
+            args2[i] = atbSubst_Expr(env, args2[i]);
+         return IRStmt_NCode(tmpl, args2, st->Ist.NCode.ress);
+      }
       default: 
          vex_printf("\n"); ppIRStmt(st); vex_printf("\n");
          vpanic("atbSubst_Stmt");

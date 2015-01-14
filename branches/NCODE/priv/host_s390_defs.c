@@ -5560,8 +5560,8 @@ s390_insn_bfp_binop(UChar size, s390_bfp_binop_t tag, HReg dst, HReg op2)
    insn->variant.bfp_binop.tag = tag;
    insn->variant.bfp_binop.dst_hi = dst;
    insn->variant.bfp_binop.op2_hi = op2;
-   insn->variant.bfp_binop.dst_lo = INVALID_HREG;
-   insn->variant.bfp_binop.op2_lo = INVALID_HREG;
+   insn->variant.bfp_binop.dst_lo = HReg_INVALID;
+   insn->variant.bfp_binop.op2_lo = HReg_INVALID;
 
    return insn;
 }
@@ -5579,8 +5579,8 @@ s390_insn_bfp_unop(UChar size, s390_bfp_unop_t tag, HReg dst, HReg op)
    insn->variant.bfp_unop.tag = tag;
    insn->variant.bfp_unop.dst_hi = dst;
    insn->variant.bfp_unop.op_hi  = op;
-   insn->variant.bfp_unop.dst_lo = INVALID_HREG;
-   insn->variant.bfp_unop.op_lo  = INVALID_HREG;
+   insn->variant.bfp_unop.dst_lo = HReg_INVALID;
+   insn->variant.bfp_unop.op_lo  = HReg_INVALID;
 
    return insn;
 }
@@ -5598,8 +5598,8 @@ s390_insn_bfp_compare(UChar size, HReg dst, HReg op1, HReg op2)
    insn->variant.bfp_compare.dst = dst;
    insn->variant.bfp_compare.op1_hi = op1;
    insn->variant.bfp_compare.op2_hi = op2;
-   insn->variant.bfp_compare.op1_lo = INVALID_HREG;
-   insn->variant.bfp_compare.op2_lo = INVALID_HREG;
+   insn->variant.bfp_compare.op1_lo = HReg_INVALID;
+   insn->variant.bfp_compare.op2_lo = HReg_INVALID;
 
    return insn;
 }
@@ -5618,8 +5618,8 @@ s390_insn_bfp_convert(UChar size, s390_bfp_conv_t tag, HReg dst, HReg op,
    insn->variant.bfp_convert.tag = tag;
    insn->variant.bfp_convert.dst_hi = dst;
    insn->variant.bfp_convert.op_hi  = op;
-   insn->variant.bfp_convert.dst_lo = INVALID_HREG;
-   insn->variant.bfp_convert.op_lo  = INVALID_HREG;
+   insn->variant.bfp_convert.dst_lo = HReg_INVALID;
+   insn->variant.bfp_convert.op_lo  = HReg_INVALID;
    insn->variant.bfp_convert.rounding_mode = rounding_mode;
 
    return insn;
@@ -5745,7 +5745,7 @@ s390_insn_bfp128_convert_to(UChar size, s390_bfp_conv_t tag, HReg dst_hi,
    s390_bfp_round_t rounding_mode = S390_BFP_ROUND_NEAREST_EVEN;
 
    return s390_insn_bfp128_convert(size, tag, dst_hi, dst_lo, op,
-                                   INVALID_HREG, rounding_mode);
+                                   HReg_INVALID, rounding_mode);
 }
 
 
@@ -5776,9 +5776,9 @@ s390_insn_dfp_binop(UChar size, s390_dfp_binop_t tag, HReg dst, HReg op2,
    dfp_binop->dst_hi = dst;
    dfp_binop->op2_hi = op2;
    dfp_binop->op3_hi = op3;
-   dfp_binop->dst_lo = INVALID_HREG;
-   dfp_binop->op2_lo = INVALID_HREG;
-   dfp_binop->op3_lo = INVALID_HREG;
+   dfp_binop->dst_lo = HReg_INVALID;
+   dfp_binop->op2_lo = HReg_INVALID;
+   dfp_binop->op3_lo = HReg_INVALID;
    dfp_binop->rounding_mode = rounding_mode;
 
    return insn;
@@ -5797,8 +5797,8 @@ s390_insn_dfp_unop(UChar size, s390_dfp_unop_t tag, HReg dst, HReg op)
    insn->variant.dfp_unop.tag = tag;
    insn->variant.dfp_unop.dst_hi = dst;
    insn->variant.dfp_unop.op_hi  = op;
-   insn->variant.dfp_unop.dst_lo = INVALID_HREG;
-   insn->variant.dfp_unop.op_lo  = INVALID_HREG;
+   insn->variant.dfp_unop.dst_lo = HReg_INVALID;
+   insn->variant.dfp_unop.op_lo  = HReg_INVALID;
 
    return insn;
 }
@@ -5818,8 +5818,8 @@ s390_insn_dfp_intop(UChar size, s390_dfp_intop_t tag, HReg dst, HReg op2,
    insn->variant.dfp_intop.dst_hi = dst;
    insn->variant.dfp_intop.op2    = op2;
    insn->variant.dfp_intop.op3_hi = op3;
-   insn->variant.dfp_intop.dst_lo = INVALID_HREG;
-   insn->variant.dfp_intop.op3_lo = INVALID_HREG;
+   insn->variant.dfp_intop.dst_lo = HReg_INVALID;
+   insn->variant.dfp_intop.op3_lo = HReg_INVALID;
 
    return insn;
 }
@@ -5839,8 +5839,8 @@ s390_insn_dfp_compare(UChar size, s390_dfp_cmp_t tag, HReg dst,
    insn->variant.dfp_compare.dst = dst;
    insn->variant.dfp_compare.op1_hi = op1;
    insn->variant.dfp_compare.op2_hi = op2;
-   insn->variant.dfp_compare.op1_lo = INVALID_HREG;
-   insn->variant.dfp_compare.op2_lo = INVALID_HREG;
+   insn->variant.dfp_compare.op1_lo = HReg_INVALID;
+   insn->variant.dfp_compare.op2_lo = HReg_INVALID;
 
    return insn;
 }
@@ -5859,8 +5859,8 @@ s390_insn_dfp_convert(UChar size, s390_dfp_conv_t tag, HReg dst, HReg op,
    insn->variant.dfp_convert.tag = tag;
    insn->variant.dfp_convert.dst_hi = dst;
    insn->variant.dfp_convert.op_hi  = op;
-   insn->variant.dfp_convert.dst_lo = INVALID_HREG;
-   insn->variant.dfp_convert.op_lo  = INVALID_HREG;
+   insn->variant.dfp_convert.dst_lo = HReg_INVALID;
+   insn->variant.dfp_convert.op_lo  = HReg_INVALID;
    insn->variant.dfp_convert.rounding_mode = rounding_mode;
 
    return insn;
@@ -5880,8 +5880,8 @@ s390_insn_dfp_reround(UChar size, HReg dst, HReg op2, HReg op3,
    insn->variant.dfp_reround.dst_hi = dst;
    insn->variant.dfp_reround.op2 = op2;
    insn->variant.dfp_reround.op3_hi = op3;
-   insn->variant.dfp_reround.dst_lo = INVALID_HREG;
-   insn->variant.dfp_reround.op3_lo = INVALID_HREG;
+   insn->variant.dfp_reround.dst_lo = HReg_INVALID;
+   insn->variant.dfp_reround.op3_lo = HReg_INVALID;
    insn->variant.dfp_reround.rounding_mode = rounding_mode;
 
    return insn;
@@ -5905,8 +5905,8 @@ s390_insn_fp_convert(UChar size, s390_fp_conv_t tag, HReg dst, HReg op,
    fp_convert->dst_hi = dst;
    fp_convert->op_hi  = op;
    fp_convert->r1 = r1;
-   fp_convert->dst_lo = INVALID_HREG;
-   fp_convert->op_lo  = INVALID_HREG;
+   fp_convert->dst_lo = HReg_INVALID;
+   fp_convert->op_lo  = HReg_INVALID;
    fp_convert->rounding_mode = rounding_mode;
 
    return insn;
@@ -5983,7 +5983,7 @@ s390_insn_dfp128_unop(UChar size, s390_dfp_unop_t tag, HReg dst,
    insn->size = size;
    insn->variant.dfp_unop.tag = tag;
    insn->variant.dfp_unop.dst_hi = dst;
-   insn->variant.dfp_unop.dst_lo = INVALID_HREG;
+   insn->variant.dfp_unop.dst_lo = HReg_INVALID;
    insn->variant.dfp_unop.op_hi = op_hi;
    insn->variant.dfp_unop.op_lo = op_lo;
 
@@ -6075,7 +6075,7 @@ s390_insn_dfp128_convert_to(UChar size, s390_dfp_conv_t tag, HReg dst_hi,
    s390_dfp_round_t rounding_mode = S390_DFP_ROUND_NEAREST_EVEN_4;
 
    return s390_insn_dfp128_convert(size, tag, dst_hi, dst_lo, op,
-                                   INVALID_HREG, rounding_mode);
+                                   HReg_INVALID, rounding_mode);
 }
 
 
