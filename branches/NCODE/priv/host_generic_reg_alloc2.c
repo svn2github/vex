@@ -39,6 +39,10 @@
 #include "main_util.h"
 #include "host_generic_regs.h"
 
+// ******** WARNING KLUDGE DO NOT COMMIT
+#include "host_amd64_defs.h"
+// ******** WARNING KLUDGE DO NOT COMMIT
+
 /* Set to 1 for lots of debugging output. */
 #define DEBUG_REGALLOC 0
 
@@ -1532,6 +1536,27 @@ HInstrArray* doRegisterAllocation (
       PRINT_STATE;
       vex_printf("\n");
 #     endif
+
+      /* ------ Post-instruction actions for NCode blocks ------ */
+
+      /* If this instruction is an NCode block, annotate it with the
+         set of registers that are live after it. */
+      { AMD64Instr* ai = instrs_in->arr[ii];
+        if (ai->tag == Ain_NCode) {
+           //vex_printf("RA: after NCode: ");
+           vassert(ai->Ain.NCode.liveAfter == NULL);
+           HRegSet* live_after_NCode = HRegSet__new();
+           for (k = 0; k < n_rregs; k++) {
+              if (rreg_state[k].disp == Free) 
+                 continue;
+              //ppHRegAMD64(rreg_state[k].rreg);
+              HRegSet__add(live_after_NCode, rreg_state[k].rreg);
+              //vex_printf(" ");
+           }
+           //vex_printf("\n");
+           ai->Ain.NCode.liveAfter = live_after_NCode;
+        }
+      }
 
    } /* iterate over insns */
 

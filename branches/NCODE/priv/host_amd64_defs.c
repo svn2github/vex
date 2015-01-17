@@ -981,11 +981,12 @@ AMD64Instr* AMD64Instr_ProfInc ( void ) {
 AMD64Instr* AMD64Instr_NCode ( NCodeTemplate* tmpl, HReg* regsR,
                                HReg* regsA, HReg* regsS ) {
    AMD64Instr* i = LibVEX_Alloc(sizeof(AMD64Instr));
-   i->tag             = Ain_NCode;
-   i->Ain.NCode.tmpl  = tmpl;
-   i->Ain.NCode.regsR = regsR;
-   i->Ain.NCode.regsA = regsA;
-   i->Ain.NCode.regsS = regsS;
+   i->tag                 = Ain_NCode;
+   i->Ain.NCode.tmpl      = tmpl;
+   i->Ain.NCode.regsR     = regsR;
+   i->Ain.NCode.regsA     = regsA;
+   i->Ain.NCode.regsS     = regsS;
+   i->Ain.NCode.liveAfter = NULL;
    return i;
 }
 AMD64Instr* AMD64Instr_NC_Jmp32 ( AMD64CondCode cc ) {
@@ -3643,6 +3644,7 @@ static void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
                                /*MOD*/RelocationBuffer* rb,
                                const NInstr* ni,
                                const NRegMap* nregMap,
+                               const HRegSet* hregsLiveAfter,
                                /* for debug printing only */
                                Bool verbose, NLabel niLabel );
 
@@ -3671,6 +3673,7 @@ Bool emit_AMD64NCode ( /*MOD*/AssemblyBuffer*   ab_hot,
    vassert(endness_host == VexEndnessLE);
    vassert(hi->tag == Ain_NCode);
    const NCodeTemplate* tmpl = hi->Ain.NCode.tmpl;
+   const HRegSet* hregsLiveAfter = hi->Ain.NCode.liveAfter;
 
    NRegMap nregMap;
    nregMap.regsR  = hi->Ain.NCode.regsR;
@@ -3718,14 +3721,16 @@ Bool emit_AMD64NCode ( /*MOD*/AssemblyBuffer*   ab_hot,
    for (i = 0; i < nHot; i++) {
       offsetsHot[i] = AssemblyBuffer__getNext(ab_hot);
       NLabel lbl = mkNLabel(Nlz_Hot, i);
-      emit_AMD64NInstr(ab_hot, rb, tmpl->hot[i], &nregMap, verbose, lbl);
+      emit_AMD64NInstr(ab_hot, rb, tmpl->hot[i], &nregMap,
+                       hregsLiveAfter, verbose, lbl);
    }   
 
    /* And the cold code */
    for (i = 0; i < nCold; i++) {
       offsetsCold[i] = AssemblyBuffer__getNext(ab_cold);
       NLabel lbl = mkNLabel(Nlz_Cold, i);
-      emit_AMD64NInstr(ab_cold, rb, tmpl->cold[i], &nregMap, verbose, lbl);
+      emit_AMD64NInstr(ab_cold, rb, tmpl->cold[i], &nregMap,
+                       hregsLiveAfter, verbose, lbl);
    }
 
    /* Now visit the new relocation entries. */
@@ -3867,7 +3872,9 @@ static AMD64Instr* mk_iMOVsd_RR ( HReg src, HReg dst )
 static
 void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
                         /*MOD*/RelocationBuffer* rb,
-                        const NInstr* ni, const NRegMap* nregMap,
+                        const NInstr* ni,
+                        const NRegMap* nregMap,
+                        const HRegSet* hregsLiveAfter,
                         /* the next 2 are for debug printing only */
                         Bool verbose, NLabel niLabel )
 {
@@ -3957,8 +3964,9 @@ void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
             overestimate of (1) -- for example, all regs available to
             reg-alloc -- and refine it later.
          */
-         HRegSet* set_1 = HRegSet__new();
-         { Int nregs; HReg* arr;
+         const HRegSet* set_1 = hregsLiveAfter; //HRegSet__new();
+         if (0) { 
+           Int nregs; HReg* arr;
            getAllocableRegs_AMD64(&nregs, &arr);
            HRegSet__fromVec(set_1, arr, nregs);
          }
@@ -4017,8 +4025,10 @@ void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
          stackMove = (stackMove + 31) & ~31;
 
          UInt i;
-         HI( AMD64Instr_Alu64R(Aalu_SUB, AMD64RMI_Imm(stackMove), 
-                                         hregAMD64_RSP()) );
+         if (stackMove > 0) {
+            HI( AMD64Instr_Alu64R(Aalu_SUB, AMD64RMI_Imm(stackMove), 
+                                            hregAMD64_RSP()) );
+         }
          for (i = 0; i < n_to_preserve; i++) {
             HReg r = HRegSet__index(to_preserve, i);
             AMD64Instr* i1 = NULL;
@@ -4067,9 +4077,10 @@ void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
             if (i1) HI(i1);
             if (i2) HI(i2);
          }
-         HI( AMD64Instr_Alu64R(Aalu_ADD, AMD64RMI_Imm(stackMove), 
-                                         hregAMD64_RSP()) );
-
+         if (stackMove > 0) {
+            HI( AMD64Instr_Alu64R(Aalu_ADD, AMD64RMI_Imm(stackMove), 
+                                            hregAMD64_RSP()) );
+         }
          break;
       }
 
