@@ -82,7 +82,8 @@ static void ppHRegAMD64_lo32 ( HReg reg )
    Int r;
    static const HChar* ireg32_names[16] 
      = { "%eax",  "%ecx",  "%edx",  "%ebx",  "%esp",  "%ebp",  "%esi",  "%edi",
-         "%r8d",  "%r9d",  "%r10d", "%r11d", "%r12d", "%r13d", "%r14d", "%r15d" };
+         "%r8d",  "%r9d",  "%r10d", "%r11d",
+         "%r12d", "%r13d", "%r14d", "%r15d" };
    /* Be generic for all virtual regs. */
    if (hregIsVirtual(reg)) {
       ppHReg(reg);
@@ -98,6 +99,31 @@ static void ppHRegAMD64_lo32 ( HReg reg )
          return;
       default:
          vpanic("ppHRegAMD64_lo32: invalid regclass");
+   }
+}
+
+static void ppHRegAMD64_lo16 ( HReg reg ) 
+{
+   Int r;
+   static const HChar* ireg16_names[16] 
+     = { "%ax",  "%cx",  "%dx",  "%bx",  "%sp",  "%bp",  "%si",  "%di",
+         "%r8w",  "%r9w",  "%r10w", "%r11w",
+         "%r12w", "%r13w", "%r14w", "%r15w" };
+   /* Be generic for all virtual regs. */
+   if (hregIsVirtual(reg)) {
+      ppHReg(reg);
+      vex_printf("w");
+      return;
+   }
+   /* But specific for real regs. */
+   switch (hregClass(reg)) {
+      case HRcInt64:
+         r = hregNumber(reg);
+         vassert(r >= 0 && r < 16);
+         vex_printf("%s", ireg16_names[r]);
+         return;
+      default:
+         vpanic("ppHRegAMD64_lo16: invalid regclass");
    }
 }
 
@@ -178,6 +204,15 @@ AMD64AMode* AMD64AMode_IR ( UInt imm32, HReg reg ) {
    am->Aam.IR.reg = reg;
    return am;
 }
+AMD64AMode* AMD64AMode_IRS ( UInt imm32, HReg reg, Int shift ) {
+   AMD64AMode* am = LibVEX_Alloc(sizeof(AMD64AMode));
+   am->tag           = Aam_IRS;
+   am->Aam.IRS.imm   = imm32;
+   am->Aam.IRS.reg   = reg;
+   am->Aam.IRS.shift = shift;
+   vassert(shift >= 0 && shift <= 3);
+   return am;
+}
 AMD64AMode* AMD64AMode_IRRS ( UInt imm32, HReg base, HReg indEx, Int shift ) {
    AMD64AMode* am = LibVEX_Alloc(sizeof(AMD64AMode));
    am->tag = Aam_IRRS;
@@ -199,6 +234,11 @@ void ppAMD64AMode ( AMD64AMode* am ) {
          ppHRegAMD64(am->Aam.IR.reg);
          vex_printf(")");
          return;
+      case Aam_IRS:
+         vex_printf("0x%x(,", am->Aam.IRS.imm);
+         ppHRegAMD64(am->Aam.IRS.reg);
+         vex_printf(",%d)", 1 << am->Aam.IRS.shift);
+         return;
       case Aam_IRRS:
          vex_printf("0x%x(", am->Aam.IRRS.imm);
          ppHRegAMD64(am->Aam.IRRS.base);
@@ -216,6 +256,9 @@ static void addRegUsage_AMD64AMode ( HRegUsage* u, AMD64AMode* am ) {
       case Aam_IR: 
          addHRegUse(u, HRmRead, am->Aam.IR.reg);
          return;
+      case Aam_IRS: 
+         addHRegUse(u, HRmRead, am->Aam.IRS.reg);
+         return;
       case Aam_IRRS:
          addHRegUse(u, HRmRead, am->Aam.IRRS.base);
          addHRegUse(u, HRmRead, am->Aam.IRRS.index);
@@ -229,6 +272,9 @@ static void mapRegs_AMD64AMode ( HRegRemap* m, AMD64AMode* am ) {
    switch (am->tag) {
       case Aam_IR: 
          am->Aam.IR.reg = lookupHRegRemap(m, am->Aam.IR.reg);
+         return;
+      case Aam_IRS: 
+         am->Aam.IRS.reg = lookupHRegRemap(m, am->Aam.IRS.reg);
          return;
       case Aam_IRRS:
          am->Aam.IRRS.base = lookupHRegRemap(m, am->Aam.IRRS.base);
@@ -722,6 +768,14 @@ AMD64Instr* AMD64Instr_MovxLQ ( Bool syned, HReg src, HReg dst ) {
    i->Ain.MovxLQ.dst   = dst;
    return i;
 }
+AMD64Instr* AMD64Instr_MovxWQ ( Bool syned, HReg src, HReg dst ) {
+   AMD64Instr* i       = LibVEX_Alloc(sizeof(AMD64Instr));
+   i->tag              = Ain_MovxWQ;
+   i->Ain.MovxWQ.syned = syned;
+   i->Ain.MovxWQ.src   = src;
+   i->Ain.MovxWQ.dst   = dst;
+   return i;
+}
 AMD64Instr* AMD64Instr_LoadEX ( UChar szSmall, Bool syned,
                                 AMD64AMode* src, HReg dst ) {
    AMD64Instr* i         = LibVEX_Alloc(sizeof(AMD64Instr));
@@ -1000,6 +1054,13 @@ AMD64Instr* AMD64Instr_NC_CallR11 ( void ) {
    i->tag        = Ain_NC_CallR11;
    return i;
 }
+AMD64Instr* AMD64Instr_NC_TestQ ( HReg src, HReg dst ) {
+   AMD64Instr* i = LibVEX_Alloc(sizeof(AMD64Instr));
+   i->tag              = Ain_NC_TestQ;
+   i->Ain.NC_TestQ.src = src;
+   i->Ain.NC_TestQ.dst = dst;
+   return i;
+}
 
 void ppAMD64Instr ( const AMD64Instr* i, Bool mode64 ) 
 {
@@ -1117,6 +1178,12 @@ void ppAMD64Instr ( const AMD64Instr* i, Bool mode64 )
          ppHRegAMD64_lo32(i->Ain.MovxLQ.src);
          vex_printf(",");
          ppHRegAMD64(i->Ain.MovxLQ.dst);
+         return;
+      case Ain_MovxWQ:
+         vex_printf("mov%cwq ", i->Ain.MovxWQ.syned ? 's' : 'z');
+         ppHRegAMD64_lo16(i->Ain.MovxWQ.src);
+         vex_printf(",");
+         ppHRegAMD64(i->Ain.MovxWQ.dst);
          return;
       case Ain_LoadEX:
          if (i->Ain.LoadEX.szSmall==4 && !i->Ain.LoadEX.syned) {
@@ -1342,6 +1409,13 @@ void ppAMD64Instr ( const AMD64Instr* i, Bool mode64 )
          vex_printf("call* %%r11");
          return;
       }
+      case Ain_NC_TestQ: {
+         vex_printf("testq ");
+         ppHRegAMD64(i->Ain.NC_TestQ.src);
+         vex_printf(",");
+         ppHRegAMD64(i->Ain.NC_TestQ.dst);
+         return;
+      }
       default:
          vpanic("ppAMD64Instr");
    }
@@ -1488,6 +1562,10 @@ void getRegUsage_AMD64Instr ( HRegUsage* u, const AMD64Instr* i, Bool mode64 )
       case Ain_MovxLQ:
          addHRegUse(u, HRmRead,  i->Ain.MovxLQ.src);
          addHRegUse(u, HRmWrite, i->Ain.MovxLQ.dst);
+         return;
+      case Ain_MovxWQ:
+         addHRegUse(u, HRmRead,  i->Ain.MovxWQ.src);
+         addHRegUse(u, HRmWrite, i->Ain.MovxWQ.dst);
          return;
       case Ain_LoadEX:
          addRegUsage_AMD64AMode(u, i->Ain.LoadEX.src);
@@ -1738,6 +1816,10 @@ void mapRegs_AMD64Instr ( HRegRemap* m, AMD64Instr* i, Bool mode64 )
       case Ain_MovxLQ:
          mapReg(m, &i->Ain.MovxLQ.src);
          mapReg(m, &i->Ain.MovxLQ.dst);
+         return;
+      case Ain_MovxWQ:
+         mapReg(m, &i->Ain.MovxWQ.src);
+         mapReg(m, &i->Ain.MovxWQ.dst);
          return;
       case Ain_LoadEX:
          mapRegs_AMD64AMode(m, i->Ain.LoadEX.src);
@@ -2098,6 +2180,12 @@ static Bool fitsIn32Bits ( ULong x )
      greg,  d32(base,index,scale)
                |  index != RSP
                =  10 greg 100, scale index base, d32
+
+     -----------------------------------------------
+
+     greg,  d32(,index,scale)
+               |  index != RSP
+               =  00 greg 100, scale index 101, d32
 */
 static void doAMode_M ( /*MOD*/AssemblyBuffer* ab, HReg greg, AMD64AMode* am ) 
 {
@@ -2168,6 +2256,17 @@ static void doAMode_M ( /*MOD*/AssemblyBuffer* ab, HReg greg, AMD64AMode* am )
       vpanic("doAMode_M: can't emit amode IRRS");
       /*NOTREACHED*/
    }
+   if (am->tag == Aam_IRS) {
+      if (! sameHReg(am->Aam.IRS.reg, hregAMD64_RSP())) {
+         PUT(ab, mkModRegRM(0, iregBits210(greg), 4));
+         PUT(ab, mkSIB(am->Aam.IRS.shift, iregBits210(am->Aam.IRS.reg), 5));
+         emit32(ab, am->Aam.IRS.imm);
+         return;
+      }
+      ppAMD64AMode(am);
+      vpanic("doAMode_M: can't emit amode IRRS");
+      /*NOTREACHED*/
+   }
    vpanic("doAMode_M: unknown amode");
    /*NOTREACHED*/
 }
@@ -2191,19 +2290,30 @@ static inline UChar clearWBit ( UChar rex )
 /* Make up a REX byte, with W=1 (size=64), for a (greg,amode) pair. */
 static UChar rexAMode_M ( HReg greg, AMD64AMode* am )
 {
-   if (am->tag == Aam_IR) {
-      UChar W = 1;  /* we want 64-bit mode */
-      UChar R = iregBit3(greg);
-      UChar X = 0; /* not relevant */
-      UChar B = iregBit3(am->Aam.IR.reg);
-      return toUChar(0x40 + ((W << 3) | (R << 2) | (X << 1) | (B << 0)));
-   }
-   if (am->tag == Aam_IRRS) {
-      UChar W = 1;  /* we want 64-bit mode */
-      UChar R = iregBit3(greg);
-      UChar X = iregBit3(am->Aam.IRRS.index);
-      UChar B = iregBit3(am->Aam.IRRS.base);
-      return toUChar(0x40 + ((W << 3) | (R << 2) | (X << 1) | (B << 0)));
+   switch (am->tag) {
+      case Aam_IR: {
+         UChar W = 1;  /* we want 64-bit mode */
+         UChar R = iregBit3(greg);
+         UChar X = 0; /* not relevant */
+         UChar B = iregBit3(am->Aam.IR.reg);
+         return toUChar(0x40 + ((W << 3) | (R << 2) | (X << 1) | (B << 0)));
+      }
+      case Aam_IRS: {
+         UChar W = 1;  /* we want 64-bit mode */
+         UChar R = iregBit3(greg);
+         UChar X = iregBit3(am->Aam.IRS.reg);
+         UChar B = 0; /* there is no base register -- base is a constant. */
+         return toUChar(0x40 + ((W << 3) | (R << 2) | (X << 1) | (B << 0)));
+      }
+      case Aam_IRRS: {
+         UChar W = 1;  /* we want 64-bit mode */
+         UChar R = iregBit3(greg);
+         UChar X = iregBit3(am->Aam.IRRS.index);
+         UChar B = iregBit3(am->Aam.IRRS.base);
+         return toUChar(0x40 + ((W << 3) | (R << 2) | (X << 1) | (B << 0)));
+      }
+      default:
+         break;
    }
    vassert(0);
    return 0; /*NOTREACHED*/
@@ -2339,7 +2449,7 @@ Bool emit_AMD64Instr ( /*MOD*/AssemblyBuffer* ab,
    switch (i->tag) {
 
    case Ain_Imm64:
-      if (i->Ain.Imm64.imm64 <= 0xFFFFFULL) {
+      if (i->Ain.Imm64.imm64 <= /*0xFFFFFULL*/ 0x39000000ULL) {
          /* Use the short form (load into 32 bit reg, + default
             widening rule) for constants under 1 million.  We could
             use this form for the range 0 to 0x7FFFFFFF inclusive, but
@@ -2984,6 +3094,14 @@ Bool emit_AMD64Instr ( /*MOD*/AssemblyBuffer* ab,
       }
       goto done;
 
+   case Ain_MovxWQ:
+      /* Need REX.W = 1 here, but rexAMode_R does that for us. */
+      PUT(ab, rexAMode_R(i->Ain.MovxWQ.dst, i->Ain.MovxWQ.src));
+      PUT(ab, 0x0F);
+      PUT(ab, i->Ain.MovxWQ.syned ? 0xBF : 0xB7);
+      doAMode_R(ab, i->Ain.MovxWQ.dst, i->Ain.MovxWQ.src);
+      goto done;
+
    case Ain_LoadEX:
       if (i->Ain.LoadEX.szSmall == 1 && !i->Ain.LoadEX.syned) {
          /* movzbq */
@@ -3600,6 +3718,15 @@ Bool emit_AMD64Instr ( /*MOD*/AssemblyBuffer* ab,
       goto done;
    }
 
+   case Ain_NC_TestQ: {
+      HReg greg = i->Ain.NC_TestQ.src;
+      HReg ereg = i->Ain.NC_TestQ.dst;
+      PUT(ab, rexAMode_R(greg, ereg));
+      PUT(ab, 0x85);
+      doAMode_R(ab, greg, ereg);
+      goto done;
+   }
+
    default: 
       goto bad;
    }
@@ -4118,11 +4245,16 @@ void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
          HReg  dstR  = mapNReg(nregMap, ni->Nin.AluWri.dst);
          HReg  srcLR = mapNReg(nregMap, ni->Nin.AluWri.srcL);
          HWord imm   = ni->Nin.AluWri.srcR;
-         if (how == Nalu_AND && fitsIn32Bits((ULong)imm)) {
-            if (!sameHReg(srcLR, dstR)) {
-               HI( mk_iMOVsd_RR(srcLR, dstR) );
-            }
-            HI( AMD64Instr_Alu64R(Aalu_AND, AMD64RMI_Imm(imm), dstR) );
+         // Verified correct, but currently unused
+         //if (how == Nalu_AND && fitsIn32Bits((ULong)imm)) {
+         //   if (!sameHReg(srcLR, dstR)) {
+         //      HI( mk_iMOVsd_RR(srcLR, dstR) );
+         //   }
+         //   HI( AMD64Instr_Alu64R(Aalu_AND, AMD64RMI_Imm(imm), dstR) );
+         //   break;
+         //}
+         if (how == Nalu_AND && imm == 0xFFFFULL) {
+            HI( AMD64Instr_MovxWQ(False/*!syned*/, srcLR, dstR) );
             break;
          }
          goto unhandled;
@@ -4134,7 +4266,7 @@ void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
          if (ni->Nin.SetFlagsWri.how == Nsf_TEST) {
          HReg r11 = hregAMD64_R11();
             HI( AMD64Instr_Imm64((ULong)imm, r11) );
-            HI( AMD64Instr_Alu64R(Aalu_AND, AMD64RMI_Reg(reg), r11) );
+            HI( AMD64Instr_NC_TestQ(r11, reg) );
             break;
          }
          if (ni->Nin.SetFlagsWri.how == Nsf_CMP && fitsIn32Bits((ULong)imm)) {
@@ -4163,9 +4295,7 @@ void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
             HReg  indexR = mapNReg(nregMap, addr->Nea.IRS.index);
             UChar shift  = addr->Nea.IRS.shift;
             if (szB == 8 && shift <= 3) {
-               HReg        r11 = hregAMD64_R11();
-               AMD64AMode* am  = AMD64AMode_IRRS((UInt)imm, r11, indexR, shift);
-               HI( AMD64Instr_Imm64(0, r11) );
+               AMD64AMode* am = AMD64AMode_IRS((UInt)imm, indexR, shift);
                HI( AMD64Instr_Alu64R(Aalu_MOV, AMD64RMI_Mem(am), dstR) );
                break;
             }

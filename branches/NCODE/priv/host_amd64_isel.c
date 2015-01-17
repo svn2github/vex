@@ -266,6 +266,10 @@ static Bool sane_AMode ( AMD64AMode* am )
             toBool( hregClass(am->Aam.IR.reg) == HRcInt64
                     && (hregIsVirtual(am->Aam.IR.reg)
                         || sameHReg(am->Aam.IR.reg, hregAMD64_RBP())) );
+      case Aam_IRS:
+         return 
+            toBool( hregClass(am->Aam.IRS.reg) == HRcInt64
+                    && hregIsVirtual(am->Aam.IRS.reg) );
       case Aam_IRRS:
          return 
             toBool( hregClass(am->Aam.IRRS.base) == HRcInt64
@@ -1036,8 +1040,7 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
                                 Aalu_AND, AMD64RMI_Imm(0xFF), dst));
                break;
             case Iop_Shr16:
-               addInstr(env, AMD64Instr_Alu64R(
-                                Aalu_AND, AMD64RMI_Imm(0xFFFF), dst));
+               addInstr(env, AMD64Instr_MovxWQ(False, dst, dst));
                break;
             case Iop_Shr32:
                addInstr(env, AMD64Instr_MovxLQ(False, dst, dst));
@@ -1047,8 +1050,7 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
                addInstr(env, AMD64Instr_Sh64(Ash_SAR, 56, dst));
                break;
             case Iop_Sar16:
-               addInstr(env, AMD64Instr_Sh64(Ash_SHL, 48, dst));
-               addInstr(env, AMD64Instr_Sh64(Ash_SAR, 48, dst));
+               addInstr(env, AMD64Instr_MovxWQ(True, dst, dst));
                break;
             case Iop_Sar32:
                addInstr(env, AMD64Instr_MovxLQ(True, dst, dst));
@@ -1467,32 +1469,36 @@ static HReg iselIntExpr_R_wrk ( ISelEnv* env, IRExpr* e )
          }
          case Iop_8Uto16:
          case Iop_8Uto32:
-         case Iop_8Uto64:
-         case Iop_16Uto64:
-         case Iop_16Uto32: {
-            HReg dst     = newVRegI(env);
-            HReg src     = iselIntExpr_R(env, e->Iex.Unop.arg);
-            Bool srcIs16 = toBool( e->Iex.Unop.op==Iop_16Uto32
-                                   || e->Iex.Unop.op==Iop_16Uto64 );
-            UInt mask    = srcIs16 ? 0xFFFF : 0xFF;
+         case Iop_8Uto64: {
+            HReg dst = newVRegI(env);
+            HReg src = iselIntExpr_R(env, e->Iex.Unop.arg);
             addInstr(env, mk_iMOVsd_RR(src,dst) );
             addInstr(env, AMD64Instr_Alu64R(Aalu_AND,
-                                            AMD64RMI_Imm(mask), dst));
+                                            AMD64RMI_Imm(0xFF), dst));
+            return dst;
+         }
+         case Iop_16Uto64:
+         case Iop_16Uto32: {
+            HReg dst = newVRegI(env);
+            HReg src = iselIntExpr_R(env, e->Iex.Unop.arg);
+            addInstr(env, AMD64Instr_MovxWQ(False/*!syned*/, src, dst));
             return dst;
          }
          case Iop_8Sto16:
-         case Iop_8Sto64:
          case Iop_8Sto32:
+         case Iop_8Sto64: {
+            HReg dst = newVRegI(env);
+            HReg src = iselIntExpr_R(env, e->Iex.Unop.arg);
+            addInstr(env, mk_iMOVsd_RR(src,dst) );
+            addInstr(env, AMD64Instr_Sh64(Ash_SHL, 56, dst));
+            addInstr(env, AMD64Instr_Sh64(Ash_SAR, 56, dst));
+            return dst;
+         }
          case Iop_16Sto32:
          case Iop_16Sto64: {
-            HReg dst     = newVRegI(env);
-            HReg src     = iselIntExpr_R(env, e->Iex.Unop.arg);
-            Bool srcIs16 = toBool( e->Iex.Unop.op==Iop_16Sto32
-                                   || e->Iex.Unop.op==Iop_16Sto64 );
-            UInt amt     = srcIs16 ? 48 : 56;
-            addInstr(env, mk_iMOVsd_RR(src,dst) );
-            addInstr(env, AMD64Instr_Sh64(Ash_SHL, amt, dst));
-            addInstr(env, AMD64Instr_Sh64(Ash_SAR, amt, dst));
+            HReg dst = newVRegI(env);
+            HReg src = iselIntExpr_R(env, e->Iex.Unop.arg);
+            addInstr(env, AMD64Instr_MovxWQ(True/*syned*/, src, dst));
             return dst;
          }
  	 case Iop_Not8:
@@ -1991,9 +1997,19 @@ static AMD64AMode* iselIntExpr_AMode_wrk ( ISelEnv* env, IRExpr* e )
        && e->Iex.Binop.arg2->Iex.Binop.arg2->Iex.Const.con->tag == Ico_U8) {
       UInt shift = e->Iex.Binop.arg2->Iex.Binop.arg2->Iex.Const.con->Ico.U8;
       if (shift == 1 || shift == 2 || shift == 3) {
-         HReg r1 = iselIntExpr_R(env, e->Iex.Binop.arg1);
-         HReg r2 = iselIntExpr_R(env, e->Iex.Binop.arg2->Iex.Binop.arg1 );
-         return AMD64AMode_IRRS(0, r1, r2, shift);
+         IRExpr* expr1 = e->Iex.Binop.arg1;
+         IRExpr* expr2 = e->Iex.Binop.arg2->Iex.Binop.arg1;
+         if (expr1->tag == Iex_Const
+             && expr1->Iex.Const.con->tag == Ico_U64/*must always be true*/
+             && fitsIn32Bits(expr1->Iex.Const.con->Ico.U64)) {
+            HReg r2 = iselIntExpr_R(env, expr2);
+            return AMD64AMode_IRS(toUInt(expr1->Iex.Const.con->Ico.U64),
+                                  r2, shift);
+         } else {
+            HReg r1 = iselIntExpr_R(env, expr1);
+            HReg r2 = iselIntExpr_R(env, expr2);
+            return AMD64AMode_IRRS(0, r1, r2, shift);
+         }
       }
    }
 

@@ -175,6 +175,7 @@ extern const HChar* showAMD64CondCode ( AMD64CondCode );
 typedef
    enum {
      Aam_IR,        /* Immediate + Reg */
+     Aam_IRS,       /* Immediate + (Reg << Shift) */
      Aam_IRRS       /* Immediate + Reg1 + (Reg2 << Shift) */
    }
    AMD64AModeTag;
@@ -189,6 +190,11 @@ typedef
          } IR;
          struct {
             UInt imm;
+            HReg reg;
+            Int  shift; /* 0, 1, 2 or 3 only */
+         } IRS;
+         struct {
+            UInt imm;
             HReg base;
             HReg index;
             Int  shift; /* 0, 1, 2 or 3 only */
@@ -198,9 +204,8 @@ typedef
    AMD64AMode;
 
 extern AMD64AMode* AMD64AMode_IR   ( UInt, HReg );
+extern AMD64AMode* AMD64AMode_IRS  ( UInt, HReg, Int );
 extern AMD64AMode* AMD64AMode_IRRS ( UInt, HReg, HReg, Int );
-
-extern AMD64AMode* dopyAMD64AMode ( AMD64AMode* );
 
 extern void ppAMD64AMode ( AMD64AMode* );
 
@@ -417,7 +422,8 @@ typedef
       Ain_XIndir,      /* indirect transfer to GA */
       Ain_XAssisted,   /* assisted transfer to GA */
       Ain_CMov64,      /* conditional move */
-      Ain_MovxLQ,      /* reg-reg move, zx-ing/sx-ing top half */
+      Ain_MovxLQ,      /* reg-reg move, zx-ing/sx-ing top 32 bits */
+      Ain_MovxWQ,      /* reg-reg move, zx-ing/sx-ing top 48 bits */
       Ain_LoadEX,      /* mov{s,z}{b,w,l}q from mem to reg */
       Ain_Store,       /* store 32/16/8 bit value in memory */
       Ain_Set64,       /* convert condition code to 64-bit value */
@@ -456,7 +462,8 @@ typedef
       // The following for NCode only
       Ain_NC_Jmp32,    /* cond. br. w/ 32-bit offset,  0F 8x xx xx xx xx */
                        /* or cond==Acc_ALWAYS, giving, E9 xx xx xx xx */
-      Ain_NC_CallR11   /* Literally "call *%r11" */
+      Ain_NC_CallR11,  /* Literally "call *%r11" */
+      Ain_NC_TestQ     /* testq reg, reg */
    }
    AMD64InstrTag;
 
@@ -559,12 +566,18 @@ typedef
             AMD64RM*      src;
             HReg          dst;
          } CMov64;
-         /* reg-reg move, sx-ing/zx-ing top half */
+         /* reg-reg move, sx-ing/zx-ing top 32 bits */
          struct {
             Bool syned;
             HReg src;
             HReg dst;
          } MovxLQ;
+         /* reg-reg move, sx-ing/zx-ing top 32 bits */
+         struct {
+            Bool syned;
+            HReg src;
+            HReg dst;
+         } MovxWQ;
          /* Sign/Zero extending loads.  Dst size is always 64 bits. */
          struct {
             UChar       szSmall; /* only 1, 2 or 4 */
@@ -758,6 +771,15 @@ typedef
          struct {
             /* Literally "call *%r11" */
          } NC_CallR11;
+         struct {
+            /* testq reg, reg.  The src and dst characterisation is
+               somewhat spurious considering that the registers can be
+               swapped without affecting the result, and that there is
+               no result. */
+            HReg src;
+            HReg dst;
+         }
+         NC_TestQ;
       } Ain;
    }
    AMD64Instr;
@@ -782,6 +804,7 @@ extern AMD64Instr* AMD64Instr_XAssisted  ( HReg dstGA, AMD64AMode* amRIP,
                                            AMD64CondCode cond, IRJumpKind jk );
 extern AMD64Instr* AMD64Instr_CMov64     ( AMD64CondCode, AMD64RM* src, HReg dst );
 extern AMD64Instr* AMD64Instr_MovxLQ     ( Bool syned, HReg src, HReg dst );
+extern AMD64Instr* AMD64Instr_MovxWQ     ( Bool syned, HReg src, HReg dst );
 extern AMD64Instr* AMD64Instr_LoadEX     ( UChar szSmall, Bool syned,
                                            AMD64AMode* src, HReg dst );
 extern AMD64Instr* AMD64Instr_Store      ( UChar sz, HReg src, AMD64AMode* dst );
@@ -819,6 +842,7 @@ extern AMD64Instr* AMD64Instr_NCode      ( NCodeTemplate* tmpl, HReg* regsR,
                                            HReg* regsA, HReg* regsS );
 extern AMD64Instr* AMD64Instr_NC_Jmp32   ( AMD64CondCode cc );
 extern AMD64Instr* AMD64Instr_NC_CallR11 ( void );
+extern AMD64Instr* AMD64Instr_NC_TestQ   ( HReg src, HReg dst );
 
 
 extern void ppAMD64Instr ( const AMD64Instr*, Bool );
