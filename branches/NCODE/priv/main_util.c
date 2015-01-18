@@ -68,8 +68,8 @@ static HChar* permanent_curr  = &permanent[0];
 static HChar* permanent_last  = &permanent[N_PERMANENT_BYTES-1];
 
 static HChar* private_LibVEX_alloc_first = &temporary[0];
-static HChar* private_LibVEX_alloc_curr  = &temporary[0];
-static HChar* private_LibVEX_alloc_last  = &temporary[N_TEMPORARY_BYTES-1];
+       HChar* private_LibVEX_alloc_curr  = &temporary[0];
+       HChar* private_LibVEX_alloc_last  = &temporary[N_TEMPORARY_BYTES-1];
 
 
 static VexAllocMode mode = VexAllocModeTEMP;
@@ -155,7 +155,7 @@ VexAllocMode vexGetAllocMode ( void )
 }
 
 __attribute__((noreturn))
-static void private_LibVEX_alloc_OOM(void)
+void private_LibVEX_alloc_OOM(void)
 {
    const HChar* pool = "???";
    if (private_LibVEX_alloc_first == &temporary[0]) pool = "TEMP";
@@ -203,43 +203,10 @@ void vexSetAllocModeTEMP_and_clear ( void )
    translation of the current basic block is complete.
  */
 
-void* LibVEX_Alloc ( SizeT nbytes )
-{
-   struct align {
-      char c;
-      union {
-         char c;
-         short s;
-         int i;
-         long l;
-         long long ll;
-         float f;
-         double d;
-         /* long double is currently not used and would increase alignment
-            unnecessarily. */
-         /* long double ld; */
-         void *pto;
-         void (*ptf)(void);
-      } x;
-   };
+/* void* LibVEX_Alloc ( SizeT nbytes )
+   is now in libvex.h, so it can be inlined.
+*/
 
-#if 0
-  /* Nasty debugging hack, do not use. */
-  return malloc(nbytes);
-#else
-   HChar* curr;
-   HChar* next;
-   SizeT  ALIGN;
-   ALIGN  = offsetof(struct align,x) - 1;
-   nbytes = (nbytes + ALIGN) & ~ALIGN;
-   curr   = private_LibVEX_alloc_curr;
-   next   = curr + nbytes;
-   if (next >= private_LibVEX_alloc_last)
-      private_LibVEX_alloc_OOM();
-   private_LibVEX_alloc_curr = next;
-   return curr;
-#endif
-}
 
 void LibVEX_ShowAllocStats ( void )
 {

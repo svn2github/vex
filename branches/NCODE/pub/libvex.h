@@ -453,7 +453,51 @@ void LibVEX_default_VexControl ( /*OUT*/ VexControl* vcon );
    callback that you have previously specified in a call to
    LibVEX_Translate.  The storage allocated will only stay alive until
    translation of the current basic block is complete. */
-extern void* LibVEX_Alloc ( SizeT nbytes );
+
+extern HChar* private_LibVEX_alloc_curr;
+extern HChar* private_LibVEX_alloc_last;
+__attribute__((noreturn))
+extern void private_LibVEX_alloc_OOM(void);
+
+static inline void* LibVEX_Alloc ( SizeT nbytes )
+{
+#  define my_offsetof(type,memb) ((SizeT)(HWord)&((type*)0)->memb)
+#  define my_UNLIKELY(x)         __builtin_expect(!!(x), 0)
+
+   struct align {
+      char c;
+      union {
+         char c;
+         short s;
+         int i;
+         long l;
+         long long ll;
+         float f;
+         double d;
+         /* long double is currently not used and would increase alignment
+            unnecessarily. */
+         /* long double ld; */
+         void *pto;
+         void (*ptf)(void);
+      } x;
+   };
+
+   HChar* curr;
+   HChar* next;
+   SizeT  ALIGN;
+   ALIGN  = my_offsetof(struct align,x) - 1;
+   nbytes = (nbytes + ALIGN) & ~ALIGN;
+   curr   = private_LibVEX_alloc_curr;
+   next   = curr + nbytes;
+   if (my_UNLIKELY(next >= private_LibVEX_alloc_last))
+      private_LibVEX_alloc_OOM();
+   private_LibVEX_alloc_curr = next;
+   return curr;
+
+#  undef my_UNLIKELY
+#  undef my_offsetof
+}
+
 
 /* Show Vex allocation statistics. */
 extern void LibVEX_ShowAllocStats ( void );
