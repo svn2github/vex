@@ -1034,13 +1034,15 @@ AMD64Instr* AMD64Instr_ProfInc ( void ) {
 }
 AMD64Instr* AMD64Instr_NCode ( NCodeTemplate* tmpl, HReg* regsR,
                                HReg* regsA, HReg* regsS ) {
+   AMD64InstrNCode* details = LibVEX_Alloc(sizeof(AMD64InstrNCode));
+   details->tmpl      = tmpl;
+   details->regsR     = regsR;
+   details->regsA     = regsA;
+   details->regsS     = regsS;
+   details->liveAfter = NULL;
    AMD64Instr* i = LibVEX_Alloc(sizeof(AMD64Instr));
-   i->tag                 = Ain_NCode;
-   i->Ain.NCode.tmpl      = tmpl;
-   i->Ain.NCode.regsR     = regsR;
-   i->Ain.NCode.regsA     = regsA;
-   i->Ain.NCode.regsS     = regsS;
-   i->Ain.NCode.liveAfter = NULL;
+   i->tag               = Ain_NCode;
+   i->Ain.NCode.details = details;
    return i;
 }
 AMD64Instr* AMD64Instr_NC_Jmp32 ( AMD64CondCode cc ) {
@@ -1380,20 +1382,21 @@ void ppAMD64Instr ( const AMD64Instr* i, Bool mode64 )
          return;
       case Ain_NCode: {
          UInt j;
-         NCodeTemplate* tmpl = i->Ain.NCode.tmpl;
+         AMD64InstrNCode* details = i->Ain.NCode.details;
+         NCodeTemplate*   tmpl    = details->tmpl;
          vex_printf("NCode-AMD64:%s [", tmpl->name);
          for (j = 0; j < tmpl->nres; j++) {
-            ppHRegAMD64(i->Ain.NCode.regsR[j]);
+            ppHRegAMD64(details->regsR[j]);
             if (j != tmpl->nres-1) vex_printf(" ");
          }
          vex_printf("] <= [");
          for (j = 0; j < tmpl->narg; j++) {
-            ppHRegAMD64(i->Ain.NCode.regsA[j]);
+            ppHRegAMD64(details->regsA[j]);
             if (j != tmpl->narg-1) vex_printf(" ");
          }
          vex_printf("] scratch [");
          for (j = 0; j < tmpl->nscr; j++) {
-            ppHRegAMD64(i->Ain.NCode.regsS[j]);
+            ppHRegAMD64(details->regsS[j]);
             if (j != tmpl->nscr-1) vex_printf(" ");
          }
          vex_printf("]");
@@ -1726,13 +1729,14 @@ void getRegUsage_AMD64Instr ( HRegUsage* u, const AMD64Instr* i, Bool mode64 )
          addHRegUse(u, HRmWrite, hregAMD64_R11());
          return;
       case Ain_NCode: {
-         UInt j;
-         NCodeTemplate* tmpl = i->Ain.NCode.tmpl;
+         AMD64InstrNCode* details = i->Ain.NCode.details;
+         NCodeTemplate*   tmpl    = details->tmpl;
          // It writes the result and scratch registers.
+         UInt j;
          for (j = 0; j < tmpl->nres; j++)
-            addHRegUse(u, HRmWrite, i->Ain.NCode.regsR[j]);
+            addHRegUse(u, HRmWrite, details->regsR[j]);
          for (j = 0; j < tmpl->nscr; j++)
-            addHRegUse(u, HRmWrite, i->Ain.NCode.regsS[j]);
+            addHRegUse(u, HRmWrite, details->regsS[j]);
          // It both reads and writes the arg regs.  We have to say
          // they are written in order to force them to be allocated
          // different registers from the arg and scratch registers,
@@ -1740,7 +1744,7 @@ void getRegUsage_AMD64Instr ( HRegUsage* u, const AMD64Instr* i, Bool mode64 )
          // doesn't write its scratch and result registers and later
          // on read the argument registers.
          for (j = 0; j < tmpl->narg; j++)
-            addHRegUse(u, HRmModify, i->Ain.NCode.regsA[j]);
+            addHRegUse(u, HRmModify, details->regsA[j]);
          return;
       }
       default:
@@ -1931,14 +1935,15 @@ void mapRegs_AMD64Instr ( HRegRemap* m, AMD64Instr* i, Bool mode64 )
          /* hardwires r11 -- nothing to modify. */
          return;
       case Ain_NCode: {
+         AMD64InstrNCode* details = i->Ain.NCode.details;
+         NCodeTemplate*   tmpl    = details->tmpl;
          UInt j;
-         NCodeTemplate* tmpl = i->Ain.NCode.tmpl;
          for (j = 0; j < tmpl->nres; j++)
-            mapReg(m, &i->Ain.NCode.regsR[j]);
+            mapReg(m, &details->regsR[j]);
          for (j = 0; j < tmpl->nscr; j++)
-            mapReg(m, &i->Ain.NCode.regsS[j]);
+            mapReg(m, &details->regsS[j]);
          for (j = 0; j < tmpl->narg; j++)
-            mapReg(m, &i->Ain.NCode.regsA[j]);
+            mapReg(m, &details->regsA[j]);
          return;
       }
       default:
@@ -3792,20 +3797,22 @@ static UInt hregVecLen ( const HReg* vec )
 Bool emit_AMD64NCode ( /*MOD*/AssemblyBuffer*   ab_hot,
                        /*MOD*/AssemblyBuffer*   ab_cold,
                        /*MOD*/RelocationBuffer* rb,
-                       const AMD64Instr* hi,
+                       const AMD64Instr*        hi,
                        Bool mode64, VexEndness endness_host,
                        Bool verbose )
 {
    vassert(mode64 == True);
    vassert(endness_host == VexEndnessLE);
    vassert(hi->tag == Ain_NCode);
-   const NCodeTemplate* tmpl = hi->Ain.NCode.tmpl;
-   const HRegSet* hregsLiveAfter = hi->Ain.NCode.liveAfter;
+
+   const AMD64InstrNCode* hi_details     = hi->Ain.NCode.details;
+   const NCodeTemplate*   tmpl           = hi_details->tmpl;
+   const HRegSet*         hregsLiveAfter = hi_details->liveAfter;
 
    NRegMap nregMap;
-   nregMap.regsR  = hi->Ain.NCode.regsR;
-   nregMap.regsA  = hi->Ain.NCode.regsA;
-   nregMap.regsS  = hi->Ain.NCode.regsS;
+   nregMap.regsR  = hi_details->regsR;
+   nregMap.regsA  = hi_details->regsA;
+   nregMap.regsS  = hi_details->regsS;
    nregMap.nRegsR = tmpl->nres;
    nregMap.nRegsA = tmpl->narg;
    nregMap.nRegsS = tmpl->nscr;

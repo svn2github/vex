@@ -391,6 +391,7 @@ VexTranslateResult LibVEX_Translate ( VexTranslateArgs* vta )
          emit         = (__typeof__(emit)) emit_AMD64Instr;
          host_word_type    = Ity_I64;
          vassert(vta->archinfo_host.endness == VexEndnessLE);
+         vassert(sizeof(AMD64Instr) <= 40); /* avoid space regressions */
          break;
 #if 0
       case VexArchPPC32:

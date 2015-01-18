@@ -1543,8 +1543,9 @@ HInstrArray* doRegisterAllocation (
          set of registers that are live after it. */
       { AMD64Instr* ai = instrs_in->arr[ii];
         if (ai->tag == Ain_NCode) {
+           AMD64InstrNCode* details = ai->Ain.NCode.details;
            //vex_printf("RA: after NCode: ");
-           vassert(ai->Ain.NCode.liveAfter == NULL);
+           vassert(details->liveAfter == NULL);
            HRegSet* live_after_NCode = HRegSet__new();
            for (k = 0; k < n_rregs; k++) {
               if (rreg_state[k].disp == Free) 
@@ -1554,7 +1555,7 @@ HInstrArray* doRegisterAllocation (
               //vex_printf(" ");
            }
            //vex_printf("\n");
-           ai->Ain.NCode.liveAfter = live_after_NCode;
+           details->liveAfter = live_after_NCode;
         }
       }
 

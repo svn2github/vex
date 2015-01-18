@@ -467,6 +467,21 @@ typedef
    }
    AMD64InstrTag;
 
+
+/* --------- */
+typedef
+   struct {
+      NCodeTemplate* tmpl;
+      HReg*          regsR; /* Result regs, INVALID_HREG terminated */
+      HReg*          regsA; /* Arg regs, ditto */
+      HReg*          regsS; /* Scratch regs, ditto */
+      HRegSet*       liveAfter; /* initially NULL, filled in by RA */
+   }
+   AMD64InstrNCode;
+
+
+/* --------- */
+
 /* Destinations are on the RIGHT (second operand) */
 
 typedef
@@ -754,11 +769,8 @@ typedef
                as it is not known at translation time. */
          } ProfInc;
          struct {
-            NCodeTemplate* tmpl;
-            HReg*          regsR; /* Result regs, INVALID_HREG terminated */
-            HReg*          regsA; /* Arg regs, ditto */
-            HReg*          regsS; /* Scratch regs, ditto */
-            HRegSet*       liveAfter; /* initially NULL, filled in by RA */
+            /* Out of line so as to keep sizeof(AMD64Instr) at 40. */
+            AMD64InstrNCode* details;
          } NCode;
 
          /* --- for NCode only --- */
@@ -856,10 +868,10 @@ extern Bool emit_AMD64Instr        ( /*MOD*/AssemblyBuffer*,
                                      const AMD64Instr*, Bool, VexEndness,
                                      const VexDispatcherAddresses* );
 
-extern Bool emit_AMD64NCode ( /*MOD*/AssemblyBuffer* ab_hot,
-                              /*MOD*/AssemblyBuffer* ab_cold,
+extern Bool emit_AMD64NCode ( /*MOD*/AssemblyBuffer*   ab_hot,
+                              /*MOD*/AssemblyBuffer*   ab_cold,
                               /*MOD*/RelocationBuffer* rb,
-                              const AMD64Instr* i,
+                              const AMD64Instr*        hi,
                               Bool mode64, VexEndness endness_host,
                               Bool verbose );
 
