@@ -2796,14 +2796,14 @@ typedef
            NReg src;
         } MovW;
         struct {
+           UChar szB; /* 1, 2, 4 or (for 64 bit hosts) 8 */
            NReg  dst;
            NEA*  addr;
-           UChar szB; /* 1, 2, 4 or (for 64 bit hosts) 8 */
         } LoadU;
         struct {
+           UChar szB; /* 1, 2, 4 or (for 64 bit hosts) 8 */
            NReg  src;
            NEA*  addr;
-           UChar szB; /* 1, 2, 4 or (for 64 bit hosts) 8 */
         } Store;
       }
       Nin;
@@ -2823,8 +2823,8 @@ extern NInstr* NInstr_AluWri      ( NAlloc na,
 extern NInstr* NInstr_SetFlagsWri ( NAlloc na,
                                     NSetFlags how, NReg srcL, HWord srcR );
 extern NInstr* NInstr_MovW        ( NAlloc na, NReg dst, NReg src );
-extern NInstr* NInstr_LoadU       ( NAlloc na, NReg dst, NEA* addr, UChar szB );
-extern NInstr* NInstr_Store       ( NAlloc na, NReg src, NEA* addr, UChar szB );
+extern NInstr* NInstr_LoadU       ( NAlloc na, UChar szB, NReg dst, NEA* addr );
+extern NInstr* NInstr_Store       ( NAlloc na, UChar szB, NReg src, NEA* addr );
 
 extern void ppNInstr ( const NInstr* );
 

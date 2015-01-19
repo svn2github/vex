@@ -2075,22 +2075,22 @@ NInstr* NInstr_MovW ( NAlloc na, NReg dst, NReg src )
    in->Nin.MovW.src = src;
    return in;
 }
-NInstr* NInstr_LoadU ( NAlloc na, NReg dst, NEA* addr, UChar szB )
+NInstr* NInstr_LoadU ( NAlloc na, UChar szB, NReg dst, NEA* addr )
 {
    NInstr* in = na(sizeof(NInstr));
    in->tag            = Nin_LoadU;
+   in->Nin.LoadU.szB  = szB;
    in->Nin.LoadU.dst  = dst;
    in->Nin.LoadU.addr = addr;
-   in->Nin.LoadU.szB  = szB;
    return in;
 }
-NInstr* NInstr_Store ( NAlloc na, NReg src, NEA* addr, UChar szB )
+NInstr* NInstr_Store ( NAlloc na, UChar szB, NReg src, NEA* addr )
 {
    NInstr* in = na(sizeof(NInstr));
    in->tag            = Nin_Store;
+   in->Nin.Store.szB  = szB;
    in->Nin.Store.src  = src;
    in->Nin.Store.addr = addr;
-   in->Nin.Store.szB  = szB;
    return in;
 }
 
