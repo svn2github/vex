@@ -4313,7 +4313,7 @@ void emit_AMD64NInstr ( /*MOD*/AssemblyBuffer* ab,
             UChar shift = addr->Nea.RRS.shift;
             if (shift <= 3) {
                AMD64AMode* am = AMD64AMode_IRRS(0, baseR, indexR, shift);
-               if (szB == 2) {
+               if (szB == 2 || szB == 1) {
                   HI( AMD64Instr_LoadEX(szB, False/*!syned*/, am, dstR) );
                   break;
                }
